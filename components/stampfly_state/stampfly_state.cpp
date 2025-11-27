@@ -112,15 +112,21 @@ void StampFlyState::clearError()
 void StampFlyState::getIMUData(Vec3& accel, Vec3& gyro) const
 {
     xSemaphoreTake(mutex_, portMAX_DELAY);
-    accel = accel_;
-    gyro = gyro_;
+    accel.x = accel_.x;
+    accel.y = accel_.y;
+    accel.z = accel_.z;
+    gyro.x = gyro_.x;
+    gyro.y = gyro_.y;
+    gyro.z = gyro_.z;
     xSemaphoreGive(mutex_);
 }
 
 void StampFlyState::getMagData(Vec3& mag) const
 {
     xSemaphoreTake(mutex_, portMAX_DELAY);
-    mag = mag_;
+    mag.x = mag_.x;
+    mag.y = mag_.y;
+    mag.z = mag_.z;
     xSemaphoreGive(mutex_);
 }
 
@@ -143,8 +149,8 @@ void StampFlyState::getToFData(float& bottom, float& front) const
 void StampFlyState::getFlowData(float& vx, float& vy) const
 {
     xSemaphoreTake(mutex_, portMAX_DELAY);
-    vx = flow_vx_;
-    vy = flow_vy_;
+    vx = static_cast<float>(flow_delta_x_);
+    vy = static_cast<float>(flow_delta_y_);
     xSemaphoreGive(mutex_);
 }
 
@@ -156,8 +162,41 @@ void StampFlyState::getPowerData(float& voltage, float& current) const
     xSemaphoreGive(mutex_);
 }
 
+// Simple getters
+float StampFlyState::getAltitude() const
+{
+    xSemaphoreTake(mutex_, portMAX_DELAY);
+    float alt = baro_altitude_;
+    xSemaphoreGive(mutex_);
+    return alt;
+}
+
+float StampFlyState::getVoltage() const
+{
+    xSemaphoreTake(mutex_, portMAX_DELAY);
+    float v = power_voltage_;
+    xSemaphoreGive(mutex_);
+    return v;
+}
+
+StateVector3 StampFlyState::getVelocity() const
+{
+    xSemaphoreTake(mutex_, portMAX_DELAY);
+    StateVector3 vel = velocity_;
+    xSemaphoreGive(mutex_);
+    return vel;
+}
+
+StateVector3 StampFlyState::getAttitude() const
+{
+    xSemaphoreTake(mutex_, portMAX_DELAY);
+    StateVector3 att(roll_, pitch_, yaw_);
+    xSemaphoreGive(mutex_);
+    return att;
+}
+
 // Sensor data setters
-void StampFlyState::updateIMU(const Vec3& accel, const Vec3& gyro)
+void StampFlyState::updateIMU(const StateVector3& accel, const StateVector3& gyro)
 {
     xSemaphoreTake(mutex_, portMAX_DELAY);
     accel_ = accel;
@@ -165,34 +204,43 @@ void StampFlyState::updateIMU(const Vec3& accel, const Vec3& gyro)
     xSemaphoreGive(mutex_);
 }
 
-void StampFlyState::updateMag(const Vec3& mag)
+void StampFlyState::updateMag(float x, float y, float z)
 {
     xSemaphoreTake(mutex_, portMAX_DELAY);
-    mag_ = mag;
+    mag_.x = x;
+    mag_.y = y;
+    mag_.z = z;
     xSemaphoreGive(mutex_);
 }
 
-void StampFlyState::updateBaro(float altitude, float pressure)
+void StampFlyState::updateBaro(float pressure, float temperature, float altitude)
 {
     xSemaphoreTake(mutex_, portMAX_DELAY);
-    baro_altitude_ = altitude;
     baro_pressure_ = pressure;
+    baro_temperature_ = temperature;
+    baro_altitude_ = altitude;
     xSemaphoreGive(mutex_);
 }
 
-void StampFlyState::updateToF(float bottom, float front)
+void StampFlyState::updateToF(ToFPosition position, float distance, uint8_t status)
 {
     xSemaphoreTake(mutex_, portMAX_DELAY);
-    tof_bottom_ = bottom;
-    tof_front_ = front;
+    if (position == ToFPosition::BOTTOM) {
+        tof_bottom_ = distance;
+        tof_bottom_status_ = status;
+    } else {
+        tof_front_ = distance;
+        tof_front_status_ = status;
+    }
     xSemaphoreGive(mutex_);
 }
 
-void StampFlyState::updateFlow(float vx, float vy)
+void StampFlyState::updateOpticalFlow(int16_t delta_x, int16_t delta_y, uint8_t squal)
 {
     xSemaphoreTake(mutex_, portMAX_DELAY);
-    flow_vx_ = vx;
-    flow_vy_ = vy;
+    flow_delta_x_ = delta_x;
+    flow_delta_y_ = delta_y;
+    flow_squal_ = squal;
     xSemaphoreGive(mutex_);
 }
 
@@ -204,7 +252,7 @@ void StampFlyState::updatePower(float voltage, float current)
     xSemaphoreGive(mutex_);
 }
 
-void StampFlyState::getAttitude(float& roll, float& pitch, float& yaw) const
+void StampFlyState::getAttitudeEuler(float& roll, float& pitch, float& yaw) const
 {
     xSemaphoreTake(mutex_, portMAX_DELAY);
     roll = roll_;
@@ -225,14 +273,15 @@ void StampFlyState::updateAttitude(float roll, float pitch, float yaw)
 void StampFlyState::getControlInput(float& throttle, float& roll, float& pitch, float& yaw) const
 {
     xSemaphoreTake(mutex_, portMAX_DELAY);
-    throttle = ctrl_throttle_;
-    roll = ctrl_roll_;
-    pitch = ctrl_pitch_;
-    yaw = ctrl_yaw_;
+    // Convert from 0-1000 to normalized values
+    throttle = ctrl_throttle_ / 1000.0f;
+    roll = (ctrl_roll_ - 500) / 500.0f;      // -1 to +1
+    pitch = (ctrl_pitch_ - 500) / 500.0f;    // -1 to +1
+    yaw = (ctrl_yaw_ - 500) / 500.0f;        // -1 to +1
     xSemaphoreGive(mutex_);
 }
 
-void StampFlyState::updateControlInput(float throttle, float roll, float pitch, float yaw)
+void StampFlyState::updateControlInput(uint16_t throttle, uint16_t roll, uint16_t pitch, uint16_t yaw)
 {
     xSemaphoreTake(mutex_, portMAX_DELAY);
     ctrl_throttle_ = throttle;

@@ -3,6 +3,7 @@
  * @brief ESP-NOW Controller Communication
  *
  * Control packet reception, telemetry transmission, pairing
+ * for_tdmaブランチ互換
  */
 
 #pragma once
@@ -10,6 +11,8 @@
 #include <cstdint>
 #include <functional>
 #include "esp_err.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 namespace stampfly {
 
@@ -64,10 +67,12 @@ using ControlCallback = std::function<void(const ControlPacket&)>;
 
 class ControllerComm {
 public:
-    static constexpr int WIFI_CHANNEL = 1;
+    static constexpr int DEFAULT_WIFI_CHANNEL = 1;
+    static constexpr uint32_t DEFAULT_TIMEOUT_MS = 500;
 
     struct Config {
-        int wifi_channel;
+        int wifi_channel = DEFAULT_WIFI_CHANNEL;
+        uint32_t timeout_ms = DEFAULT_TIMEOUT_MS;
     };
 
     ControllerComm() = default;
@@ -112,6 +117,12 @@ public:
     bool isConnected() const { return connected_; }
 
     /**
+     * @brief Check if paired to controller
+     * @return true if paired
+     */
+    bool isPaired() const { return paired_; }
+
+    /**
      * @brief Enter pairing mode
      */
     void enterPairingMode();
@@ -127,6 +138,18 @@ public:
     bool isPairingMode() const { return pairing_mode_; }
 
     /**
+     * @brief Save pairing information to NVS
+     * @return ESP_OK on success
+     */
+    esp_err_t savePairingToNVS();
+
+    /**
+     * @brief Load pairing information from NVS
+     * @return ESP_OK on success
+     */
+    esp_err_t loadPairingFromNVS();
+
+    /**
      * @brief Clear pairing information from NVS
      * @return ESP_OK on success
      */
@@ -140,16 +163,35 @@ public:
      */
     static bool validateChecksum(const uint8_t* data, size_t len);
 
+    /**
+     * @brief Periodic tick for timeout checking
+     */
+    void tick();
+
+    /**
+     * @brief Get last receive timestamp
+     * @return Tick count when last packet was received
+     */
+    uint32_t getLastReceiveTime() const { return last_recv_time_; }
+
     bool isInitialized() const { return initialized_; }
 
+    // Internal callbacks (called from static ESP-NOW callback)
+    void onControlPacketReceived(const ControlPacket& packet, const uint8_t* mac);
+    void onPairingComplete(const uint8_t* mac);
+
 private:
+    void addControllerPeer();
+
     bool initialized_ = false;
     bool connected_ = false;
+    bool paired_ = false;
     bool pairing_mode_ = false;
     Config config_;
     ControlCallback control_callback_;
     uint8_t controller_mac_[6] = {0};
     uint8_t telemetry_sequence_ = 0;
+    uint32_t last_recv_time_ = 0;
 };
 
 }  // namespace stampfly
