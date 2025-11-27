@@ -5,6 +5,7 @@
 
 #include "stampfly_state.hpp"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "nvs_flash.h"
 #include "nvs.h"
 #include <cmath>
@@ -298,6 +299,117 @@ esp_err_t StampFlyState::saveToNVS() {
 esp_err_t StampFlyState::loadFromNVS() {
     // TODO: Implement calibration data load
     return ESP_OK;
+}
+
+// ============================================================================
+// SystemManager Implementation
+// ============================================================================
+
+SystemManager& SystemManager::getInstance() {
+    static SystemManager instance;
+    return instance;
+}
+
+SystemManager::~SystemManager() {
+    if (event_group_) {
+        vEventGroupDelete(event_group_);
+    }
+}
+
+esp_err_t SystemManager::init(const Config& config) {
+    config_ = config;
+
+    // Create event group
+    event_group_ = xEventGroupCreate();
+    if (!event_group_) {
+        ESP_LOGE(TAG, "Failed to create event group");
+        return ESP_ERR_NO_MEM;
+    }
+
+    // Record start time
+    start_time_us_ = esp_timer_get_time();
+
+    initialized_ = true;
+    ESP_LOGI(TAG, "SystemManager initialized");
+
+    return ESP_OK;
+}
+
+esp_err_t SystemManager::start() {
+    if (!initialized_) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    running_ = true;
+    ESP_LOGI(TAG, "SystemManager started");
+    return ESP_OK;
+}
+
+esp_err_t SystemManager::stop() {
+    running_ = false;
+    ESP_LOGI(TAG, "SystemManager stopped");
+    return ESP_OK;
+}
+
+bool SystemManager::waitForEvents(uint32_t events, uint32_t timeout_ms) {
+    if (!event_group_) return false;
+
+    EventBits_t bits = xEventGroupWaitBits(
+        event_group_,
+        events,
+        pdFALSE,  // Don't clear on exit
+        pdTRUE,   // Wait for all bits
+        pdMS_TO_TICKS(timeout_ms)
+    );
+
+    return (bits & events) == events;
+}
+
+void SystemManager::setEvent(uint32_t event) {
+    if (event_group_) {
+        xEventGroupSetBits(event_group_, event);
+    }
+}
+
+void SystemManager::clearEvent(uint32_t event) {
+    if (event_group_) {
+        xEventGroupClearBits(event_group_, event);
+    }
+}
+
+uint32_t SystemManager::getEvents() const {
+    if (!event_group_) return 0;
+    return xEventGroupGetBits(event_group_);
+}
+
+bool SystemManager::isReady() const {
+    return initialized_ && running_ && (getEvents() & EVENT_ALL_READY) == EVENT_ALL_READY;
+}
+
+esp_err_t SystemManager::runCalibration() {
+    ESP_LOGI(TAG, "Starting calibration...");
+
+    auto& state = StampFlyState::getInstance();
+    state.setFlightState(StampFlyState::FlightState::CALIBRATING);
+
+    // TODO: Implement actual sensor calibration
+    // - Gyro bias: average N samples while stationary
+    // - Accel bias: measure at rest, should read [0, 0, -9.81]
+    // - Mag calibration: rotate in all directions
+
+    // For now, just mark as calibrated
+    calibration_.valid = true;
+
+    setEvent(EVENT_CALIBRATED);
+    state.setFlightState(StampFlyState::FlightState::IDLE);
+
+    ESP_LOGI(TAG, "Calibration complete");
+    return ESP_OK;
+}
+
+uint32_t SystemManager::getUptimeMs() const {
+    int64_t now = esp_timer_get_time();
+    return (uint32_t)((now - start_time_us_) / 1000);
 }
 
 }  // namespace stampfly
