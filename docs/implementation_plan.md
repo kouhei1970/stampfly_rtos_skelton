@@ -146,7 +146,8 @@ components/
 ├── stampfly_buzzer/        # ブザー (LEDC PWM)
 ├── stampfly_button/        # ボタン制御
 ├── stampfly_filter/        # フィルタライブラリ
-├── stampfly_eskf/          # 姿勢・高度・速度推定
+├── stampfly_math/          # ベクトル・クォータニオン・行列演算ライブラリ
+├── stampfly_eskf/          # ESKF統合推定器 (位置・姿勢・速度・バイアス)
 ├── stampfly_state/         # 状態管理・SystemManager
 ├── stampfly_comm/          # ESP-NOW コントローラ通信
 └── stampfly_cli/           # CLI コンソール
@@ -183,7 +184,8 @@ components/
 | stampfly_buzzer | LEDC PWM、プリセット音 |
 | stampfly_button | GPIO0デバウンス、長押し検出 |
 | stampfly_filter | LowPassFilter、MedianFilter、OutlierDetector |
-| stampfly_eskf | 姿勢・高度・速度推定器 |
+| stampfly_math | Vec3、Quaternion、Matrix テンプレート演算ライブラリ |
+| stampfly_eskf | ESKF統合推定器 (15状態: 位置、速度、姿勢、ジャイロバイアス、加速度バイアス) |
 | stampfly_state | 状態管理、SystemManager |
 | stampfly_comm | ESP-NOW通信、ペアリング機能 |
 | stampfly_cli | USB CDCコンソール、コマンド処理 |
@@ -486,37 +488,263 @@ public:
 };
 ```
 
-### 6.4 推定器
+### 6.4 推定器 (ESKF)
 
-#### AttitudeEstimator (相補フィルタ)
-```cpp
-class AttitudeEstimator {
-    esp_err_t init(const Config& config);
-    void update(const Vec3& accel, const Vec3& gyro, float dt);
-    void updateMag(const Vec3& mag);
-    State getState() const;
-    // クォータニオン姿勢、ジャイロバイアス推定
-};
-```
+Error-State Kalman Filter (ESKF) による統合推定器。
+参照: https://github.com/kouhei1970/stampfly-eskf-estimator
 
-#### AltitudeEstimator (カルマンフィルタ)
+#### 状態変数 (15次元)
+
+| 状態 | 次元 | 内容 |
+|------|------|------|
+| 位置 (p) | 3 | NED座標系 [m] |
+| 速度 (v) | 3 | ワールド座標系 [m/s] |
+| 姿勢 (q) | 4 | クォータニオン |
+| ジャイロバイアス (b_g) | 3 | [rad/s] |
+| 加速度バイアス (b_a) | 3 | [m/s^2] |
+
+**エラー状態:** 姿勢はクォータニオンではなく3次元回転ベクトル（小角度近似）で表現し、数値安定性を確保。
+
+#### ESKF クラス
 ```cpp
-class AltitudeEstimator {
+class ESKF {
+public:
+    struct Config {
+        // プロセスノイズ
+        float gyro_noise;           // ジャイロノイズ [rad/s/√Hz]
+        float accel_noise;          // 加速度ノイズ [m/s²/√Hz]
+        float gyro_bias_noise;      // ジャイロバイアスランダムウォーク
+        float accel_bias_noise;     // 加速度バイアスランダムウォーク
+
+        // 観測ノイズ
+        float baro_noise;           // 気圧高度ノイズ [m]
+        float tof_noise;            // ToFノイズ [m]
+        float mag_noise;            // 地磁気ノイズ [uT]
+        float flow_noise;           // オプティカルフローノイズ
+
+        // 初期共分散
+        float init_pos_std;
+        float init_vel_std;
+        float init_att_std;
+        float init_gyro_bias_std;
+        float init_accel_bias_std;
+
+        // 地磁気参照ベクトル (NED)
+        Vec3 mag_ref;
+    };
+
+    struct State {
+        Vec3 position;          // 位置 [m] (NED)
+        Vec3 velocity;          // 速度 [m/s]
+        Quaternion orientation; // 姿勢
+        Vec3 gyro_bias;         // ジャイロバイアス [rad/s]
+        Vec3 accel_bias;        // 加速度バイアス [m/s²]
+
+        // オイラー角 (便利用)
+        float roll;             // [rad]
+        float pitch;            // [rad]
+        float yaw;              // [rad]
+    };
+
+    ESKF() = default;
+
+    /**
+     * @brief 初期化
+     */
     esp_err_t init(const Config& config);
-    void predict(float accel_z, float dt);
+
+    /**
+     * @brief 予測ステップ (IMU入力)
+     * @param accel 加速度 [m/s²] (ボディ座標系)
+     * @param gyro 角速度 [rad/s] (ボディ座標系)
+     * @param dt 時間刻み [s]
+     */
+    void predict(const Vec3& accel, const Vec3& gyro, float dt);
+
+    /**
+     * @brief 気圧高度更新
+     * @param altitude 高度 [m]
+     */
     void updateBaro(float altitude);
-    void updateToF(float distance, float pitch, float roll);
-    // 2状態KF [高度, 速度]
+
+    /**
+     * @brief ToF更新 (姿勢補正込み)
+     * @param distance 距離 [m]
+     */
+    void updateToF(float distance);
+
+    /**
+     * @brief 地磁気更新 (ヨー補正)
+     * @param mag 地磁気 [uT] (ボディ座標系)
+     */
+    void updateMag(const Vec3& mag);
+
+    /**
+     * @brief オプティカルフロー更新 (水平速度)
+     * @param flow_x X方向フロー [rad/s]
+     * @param flow_y Y方向フロー [rad/s]
+     * @param height 高度 [m]
+     */
+    void updateFlow(float flow_x, float flow_y, float height);
+
+    /**
+     * @brief 現在の状態取得
+     */
+    State getState() const;
+
+    /**
+     * @brief 状態リセット
+     */
+    void reset();
+
+    /**
+     * @brief 共分散行列取得 (デバッグ用)
+     */
+    const Matrix<15, 15>& getCovariance() const;
+
+    bool isInitialized() const { return initialized_; }
+
+private:
+    bool initialized_ = false;
+    Config config_;
+
+    // 名目状態
+    State state_;
+
+    // エラー状態共分散行列 (15x15)
+    Matrix<15, 15> P_;
+
+    // プロセスノイズ共分散
+    Matrix<15, 15> Q_;
+
+    /**
+     * @brief エラー状態を名目状態に注入
+     * @param error_state 15次元エラー状態
+     */
+    void injectErrorState(const Matrix<15, 1>& error_state);
+
+    /**
+     * @brief Joseph形式共分散更新 (数値安定性)
+     */
+    template<int M>
+    void updateCovarianceJoseph(const Matrix<M, 15>& H,
+                                 const Matrix<15, M>& K,
+                                 const Matrix<M, M>& R);
+
+    /**
+     * @brief マハラノビス距離による外れ値検出
+     */
+    template<int M>
+    bool isOutlier(const Matrix<M, 1>& innovation,
+                   const Matrix<M, M>& S,
+                   float threshold);
 };
 ```
 
-#### VelocityEstimator (光流)
+#### 数学ライブラリ (stampfly_math)
+
+ESKF用の独自数学ライブラリ（外部依存なし）：
+
 ```cpp
-class VelocityEstimator {
-    esp_err_t init(const Config& config);
-    void updateFlow(float flow_x, float flow_y, float height, float gyro_x, float gyro_y);
-    // ジャイロ補償付き速度推定
+// 3次元ベクトル
+class Vec3 {
+    float x, y, z;
+    float norm() const;
+    Vec3 normalized() const;
+    float dot(const Vec3& other) const;
+    Vec3 cross(const Vec3& other) const;
+    static Vec3 skew(const Vec3& v);  // スキュー対称行列用
 };
+
+// クォータニオン
+class Quaternion {
+    float w, x, y, z;
+    void normalize();
+    Quaternion conjugate() const;
+    Vec3 rotate(const Vec3& v) const;
+    void toEuler(float& roll, float& pitch, float& yaw) const;
+    static Quaternion fromAxisAngle(const Vec3& axis, float angle);
+    static Quaternion fromEuler(float roll, float pitch, float yaw);
+    Quaternion operator*(const Quaternion& other) const;
+};
+
+// 汎用行列 (テンプレート)
+template<int Rows, int Cols>
+class Matrix {
+    float data[Rows][Cols];
+    Matrix<Cols, Rows> transpose() const;
+    Matrix<Rows, Rows> inverse() const;  // 正方行列のみ
+    // 行列演算...
+};
+```
+
+#### 予測ステップの流れ
+
+```cpp
+void ESKF::predict(const Vec3& accel, const Vec3& gyro, float dt) {
+    // 1. バイアス補正
+    Vec3 gyro_corrected = gyro - state_.gyro_bias;
+    Vec3 accel_corrected = accel - state_.accel_bias;
+
+    // 2. 名目状態の伝播 (非線形)
+    // 姿勢更新: q = q ⊗ exp(ω*dt/2)
+    Quaternion dq = Quaternion::fromAxisAngle(gyro_corrected, dt);
+    state_.orientation = state_.orientation * dq;
+    state_.orientation.normalize();
+
+    // 加速度をワールド座標に変換
+    Vec3 accel_world = state_.orientation.rotate(accel_corrected);
+    accel_world.z += 9.81f;  // 重力補正
+
+    // 速度・位置更新
+    state_.velocity = state_.velocity + accel_world * dt;
+    state_.position = state_.position + state_.velocity * dt;
+
+    // 3. エラー状態共分散の伝播
+    // P = F * P * F^T + Q
+    Matrix<15, 15> F = computeStateTransition(gyro_corrected, accel_corrected, dt);
+    P_ = F * P_ * F.transpose() + Q_ * dt;
+
+    // 4. オイラー角更新
+    state_.orientation.toEuler(state_.roll, state_.pitch, state_.yaw);
+}
+```
+
+#### 観測更新の流れ
+
+```cpp
+void ESKF::updateBaro(float altitude) {
+    // 1. 観測行列 H (1x15)
+    Matrix<1, 15> H;
+    H.setZero();
+    H(0, 2) = 1.0f;  // 高度(z)のみ観測
+
+    // 2. イノベーション
+    float innovation = altitude - state_.position.z;
+
+    // 3. イノベーション共分散
+    float S = H * P_ * H.transpose() + config_.baro_noise * config_.baro_noise;
+
+    // 4. 外れ値検出
+    if (isOutlier(innovation, S, 5.0f)) {
+        return;  // 棄却
+    }
+
+    // 5. カルマンゲイン
+    Matrix<15, 1> K = P_ * H.transpose() / S;
+
+    // 6. エラー状態更新
+    Matrix<15, 1> error_state = K * innovation;
+
+    // 7. エラー状態を名目状態に注入
+    injectErrorState(error_state);
+
+    // 8. 共分散更新 (Joseph形式)
+    updateCovarianceJoseph(H, K, S);
+
+    // 9. エラー状態リセット
+    // (自動的に0にリセットされる)
+}
 ```
 
 ### 6.5 通信
