@@ -135,23 +135,29 @@
 
 ```
 components/
-├── stampfly_imu/           # BMI270 IMU ドライバ (C++ラッパ)
-├── stampfly_tof/           # VL53L3CX ToF ドライバ (C++ラッパ)
-├── stampfly_opticalflow/   # PMW3901 オプティカルフローセンサ (C++ラッパ)
-├── stampfly_mag/           # BMM150 地磁気センサ (新規実装)
-├── stampfly_baro/          # BMP280 気圧センサ (新規実装)
-├── stampfly_power/         # INA3221 電源監視
-├── stampfly_motor/         # モータードライバ (LEDC PWM)
-├── stampfly_led/           # WS2812 RGB LED (RMT)
-├── stampfly_buzzer/        # ブザー (LEDC PWM)
-├── stampfly_button/        # ボタン制御
-├── stampfly_filter/        # フィルタライブラリ
-├── stampfly_math/          # ベクトル・クォータニオン・行列演算ライブラリ
-├── stampfly_eskf/          # ESKF統合推定器 (位置・姿勢・速度・バイアス)
-├── stampfly_state/         # 状態管理・SystemManager
-├── stampfly_comm/          # ESP-NOW コントローラ通信
-└── stampfly_cli/           # CLI コンソール
+├── stampfly_imu/           # BMI270 IMU [既存リポジトリ]
+├── stampfly_tof/           # VL53L3CX ToF [既存リポジトリ]
+├── stampfly_opticalflow/   # PMW3901 Optical Flow [既存リポジトリ]
+├── stampfly_mag/           # BMM150 地磁気センサ [新規実装]
+├── stampfly_baro/          # BMP280 気圧センサ [新規実装]
+├── stampfly_power/         # INA3221 電源監視 [新規実装]
+├── stampfly_motor/         # モータードライバ (LEDC PWM) [新規実装]
+├── stampfly_led/           # WS2812 RGB LED (RMT) [新規実装]
+├── stampfly_buzzer/        # ブザー (LEDC PWM) [新規実装]
+├── stampfly_button/        # ボタン制御 [新規実装]
+├── stampfly_filter/        # フィルタライブラリ [新規実装]
+├── stampfly_math/          # ベクトル・クォータニオン・行列演算 [既存リポジトリ/ESKF内]
+├── stampfly_eskf/          # ESKF統合推定器 [既存リポジトリ]
+├── stampfly_state/         # 状態管理・SystemManager [新規実装]
+├── stampfly_comm/          # ESP-NOW コントローラ通信 [新規実装]
+└── stampfly_cli/           # CLI コンソール [新規実装]
 ```
+
+**既存リポジトリ:**
+- stampfly_imu: https://github.com/kouhei1970/stampfly_imu
+- stampfly_tof: https://github.com/kouhei1970/stampfly_tof
+- stampfly_opticalflow: https://github.com/kouhei1970/stampfly_opticalflow
+- stampfly_eskf (stampfly_math含む): https://github.com/kouhei1970/stampfly-eskf-estimator
 
 ---
 
@@ -166,29 +172,31 @@ components/
 
 ### Phase 2: ドライバ層実装
 
-| コンポーネント | 内容 |
-|---------------|------|
-| stampfly_imu | BMI270 C++ラッパ、FIFO対応、1600Hz内部サンプリング |
-| stampfly_tof | VL53L3CX C++ラッパ、デュアルセンサ対応 |
-| stampfly_opticalflow | PMW3901 C++ラッパ、バーストリード対応 |
-| stampfly_mag | BMM150 新規実装、I2C通信 |
-| stampfly_baro | BMP280 新規実装、温度補正、高度計算 |
-| stampfly_power | INA3221 電源監視、低電圧検出 (3.4V閾値) |
+| コンポーネント | 内容 | ソース |
+|---------------|------|--------|
+| stampfly_imu | BMI270 C++ラッパ、FIFO対応、1600Hz内部サンプリング | **既存リポジトリ利用** https://github.com/kouhei1970/stampfly_imu |
+| stampfly_tof | VL53L3CX C++ラッパ、デュアルセンサ対応 | **既存リポジトリ利用** https://github.com/kouhei1970/stampfly_tof |
+| stampfly_opticalflow | PMW3901 C++ラッパ、バーストリード対応 | **既存リポジトリ利用** https://github.com/kouhei1970/stampfly_opticalflow |
+| stampfly_mag | BMM150、I2C通信 | **新規実装** |
+| stampfly_baro | BMP280、温度補正、高度計算 | **新規実装** |
+| stampfly_power | INA3221 電源監視、低電圧検出 (3.4V閾値) | **新規実装** |
+
+**注意:** stampfly_imu、stampfly_tof、stampfly_opticalflowは既存GitHubリポジトリからクローンまたはサブモジュールとして取り込み、必要に応じてC++ラッパを追加する。新規にドライバを書かないこと。
 
 ### Phase 3: サービス層実装
 
-| コンポーネント | 内容 |
-|---------------|------|
-| stampfly_motor | LEDC PWM、X-quad構成ミキサー |
-| stampfly_led | WS2812 RMT制御、状態表示パターン |
-| stampfly_buzzer | LEDC PWM、プリセット音 |
-| stampfly_button | GPIO0デバウンス、長押し検出 |
-| stampfly_filter | LowPassFilter、MedianFilter、OutlierDetector |
-| stampfly_math | Vec3、Quaternion、Matrix テンプレート演算ライブラリ |
-| stampfly_eskf | ESKF統合推定器 (15状態: 位置、速度、姿勢、ジャイロバイアス、加速度バイアス) |
-| stampfly_state | 状態管理、SystemManager |
-| stampfly_comm | ESP-NOW通信、ペアリング機能 |
-| stampfly_cli | USB CDCコンソール、コマンド処理 |
+| コンポーネント | 内容 | ソース |
+|---------------|------|--------|
+| stampfly_motor | LEDC PWM、X-quad構成ミキサー | 新規実装 |
+| stampfly_led | WS2812 RMT制御、状態表示パターン | 新規実装 |
+| stampfly_buzzer | LEDC PWM、プリセット音 | 新規実装 |
+| stampfly_button | GPIO0デバウンス、長押し検出 | 新規実装 |
+| stampfly_filter | LowPassFilter、MedianFilter、OutlierDetector | 新規実装 |
+| stampfly_math | Vec3、Quaternion、Matrix テンプレート演算ライブラリ | **既存リポジトリ利用** (ESKF内) |
+| stampfly_eskf | ESKF統合推定器 (15状態: 位置、速度、姿勢、ジャイロバイアス、加速度バイアス) | **既存リポジトリ利用** https://github.com/kouhei1970/stampfly-eskf-estimator |
+| stampfly_state | 状態管理、SystemManager | 新規実装 |
+| stampfly_comm | ESP-NOW通信、ペアリング機能 | 新規実装 |
+| stampfly_cli | USB CDCコンソール、コマンド処理 | 新規実装 |
 
 ### Phase 4: タスク統合・テスト
 
@@ -257,7 +265,10 @@ components/
 
 ### 6.1 センサドライバ
 
-#### BMI270Wrapper (IMU)
+#### BMI270Wrapper (IMU) - 既存リポジトリ利用
+**ソース:** https://github.com/kouhei1970/stampfly_imu
+
+既存ドライバをそのまま利用する。新規実装は行わない。
 ```cpp
 class BMI270Wrapper {
     esp_err_t init(const Config& config);
@@ -267,7 +278,10 @@ class BMI270Wrapper {
 };
 ```
 
-#### VL53L3CXWrapper (ToF)
+#### VL53L3CXWrapper (ToF) - 既存リポジトリ利用
+**ソース:** https://github.com/kouhei1970/stampfly_tof
+
+既存ドライバをそのまま利用する。新規実装は行わない。
 ```cpp
 class VL53L3CXWrapper {
     esp_err_t init(const Config& config);
@@ -277,7 +291,10 @@ class VL53L3CXWrapper {
 };
 ```
 
-#### PMW3901Wrapper (Optical Flow)
+#### PMW3901Wrapper (Optical Flow) - 既存リポジトリ利用
+**ソース:** https://github.com/kouhei1970/stampfly_opticalflow
+
+既存ドライバをそのまま利用する。新規実装は行わない。
 ```cpp
 class PMW3901Wrapper {
     esp_err_t init(const Config& config);
@@ -488,10 +505,14 @@ public:
 };
 ```
 
-### 6.4 推定器 (ESKF)
+### 6.4 推定器 (ESKF) - 既存リポジトリ利用
+
+**ソース:** https://github.com/kouhei1970/stampfly-eskf-estimator
+
+既存ESKF実装をそのまま利用する。新規実装は行わない。
+stampfly_mathライブラリも同リポジトリに含まれる。
 
 Error-State Kalman Filter (ESKF) による統合推定器。
-参照: https://github.com/kouhei1970/stampfly-eskf-estimator
 
 #### 状態変数 (15次元)
 
