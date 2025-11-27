@@ -184,7 +184,7 @@ private:
     bool initialized_ = false;
     Config config_;
     i2c_master_dev_handle_t dev_handle_ = nullptr;
-    float last_voltage_v_ = 0.0f;
+    float last_voltage_v_ = 4.2f;  // Initialize to full battery to avoid false low-battery warning
 };
 
 }  // namespace stampfly

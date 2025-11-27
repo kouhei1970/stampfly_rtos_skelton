@@ -20,6 +20,7 @@ PMW3901::PMW3901(const Config& config)
     c_config.pin_mosi = config.pin_mosi;
     c_config.pin_sclk = config.pin_sclk;
     c_config.pin_cs = config.pin_cs;
+    c_config.skip_bus_init = config.skip_bus_init;
 
     // Initialize the sensor
     esp_err_t ret = pmw3901_init(&device_, &c_config);

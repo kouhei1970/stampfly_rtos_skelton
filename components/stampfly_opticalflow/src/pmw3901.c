@@ -360,14 +360,20 @@ esp_err_t pmw3901_init(pmw3901_t *dev, const pmw3901_config_t *config)
         .max_transfer_sz = 4096,
     };
 
+    // SPI bus initialization
     ESP_LOGI(TAG, "Step 2: SPI bus initialization");
-    esp_err_t ret = spi_bus_initialize(config->spi_host, &bus_cfg, SPI_DMA_CH_AUTO);
-    if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
-        // ESP_ERR_INVALID_STATE means bus is already initialized, which is OK
-        ESP_LOGE(TAG, "SPI bus initialization failed: %s", esp_err_to_name(ret));
-        return ret;
+    esp_err_t ret;
+    if (config->skip_bus_init) {
+        // Skip bus init - bus already initialized by another device (e.g., BMI270)
+        ESP_LOGI(TAG, "  SPI bus: Skipped (shared with another device)");
+    } else {
+        ret = spi_bus_initialize(config->spi_host, &bus_cfg, SPI_DMA_CH_AUTO);
+        if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
+            ESP_LOGE(TAG, "SPI bus initialization failed: %s", esp_err_to_name(ret));
+            return ret;
+        }
+        ESP_LOGI(TAG, "  SPI bus: OK");
     }
-    ESP_LOGI(TAG, "  SPI bus: OK");
 
     // Configure SPI device (this will take over CS pin control)
     spi_device_interface_config_t dev_cfg = {
@@ -576,16 +582,6 @@ esp_err_t pmw3901_read_motion_burst(pmw3901_t *dev, pmw3901_motion_burst_t *burs
     }
 
     delay_us(PMW3901_SPI_READ_DELAY_US);
-
-    // Debug: Log raw burst data (first 20 reads only)
-    static int burst_count = 0;
-    if (burst_count < 20) {
-        ESP_LOGI(TAG, "Burst[%d]: %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X",
-                 burst_count++,
-                 rx_data[0], rx_data[1], rx_data[2], rx_data[3],
-                 rx_data[4], rx_data[5], rx_data[6], rx_data[7],
-                 rx_data[8], rx_data[9], rx_data[10], rx_data[11], rx_data[12]);
-    }
 
     // Parse burst data according to datasheet
     // Byte 0: command echo (should be 0x16, but may vary)

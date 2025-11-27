@@ -12,6 +12,8 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "nvs_flash.h"
+#include "esp_netif.h"
+#include "esp_event.h"
 
 // Sensor drivers
 #include "bmi270_wrapper.hpp"
@@ -90,14 +92,14 @@ static constexpr UBaseType_t PRIORITY_CLI_TASK = 5;
 // Task Stack Sizes
 // =============================================================================
 
-static constexpr uint32_t STACK_SIZE_IMU = 4096;
-static constexpr uint32_t STACK_SIZE_OPTFLOW = 4096;
-static constexpr uint32_t STACK_SIZE_MAG = 2048;
-static constexpr uint32_t STACK_SIZE_BARO = 2048;
+static constexpr uint32_t STACK_SIZE_IMU = 8192;
+static constexpr uint32_t STACK_SIZE_OPTFLOW = 8192;
+static constexpr uint32_t STACK_SIZE_MAG = 4096;
+static constexpr uint32_t STACK_SIZE_BARO = 4096;
 static constexpr uint32_t STACK_SIZE_TOF = 4096;
-static constexpr uint32_t STACK_SIZE_POWER = 2048;
-static constexpr uint32_t STACK_SIZE_LED = 2048;
-static constexpr uint32_t STACK_SIZE_BUTTON = 2048;
+static constexpr uint32_t STACK_SIZE_POWER = 4096;
+static constexpr uint32_t STACK_SIZE_LED = 4096;
+static constexpr uint32_t STACK_SIZE_BUTTON = 4096;
 static constexpr uint32_t STACK_SIZE_COMM = 4096;
 static constexpr uint32_t STACK_SIZE_CLI = 4096;
 
@@ -334,12 +336,20 @@ static void ToFTask(void* pvParameters)
 
     auto& state = stampfly::StampFlyState::getInstance();
 
+    // Error counters for sensor disable on repeated failures
+    static const int MAX_ERRORS = 10;
+    static int bottom_errors = 0;
+    static int front_errors = 0;
+    static bool bottom_disabled = false;
+    static bool front_disabled = false;
+
     while (true) {
         // Bottom ToF
-        if (g_tof_bottom.isInitialized()) {
+        if (g_tof_bottom.isInitialized() && !bottom_disabled) {
             uint16_t distance_mm;
             uint8_t status;
             if (g_tof_bottom.getDistance(distance_mm, status) == ESP_OK) {
+                bottom_errors = 0;  // Reset on success
                 if (stampfly::OutlierDetector::isToFValid(status, 1.0f)) {
                     float distance_m = distance_mm * 0.001f;
                     state.updateToF(stampfly::ToFPosition::BOTTOM, distance_m, status);
@@ -356,17 +366,28 @@ static void ToFTask(void* pvParameters)
                         g_altitude_est.updateToF(distance_m, pitch, roll);
                     }
                 }
+            } else {
+                if (++bottom_errors >= MAX_ERRORS) {
+                    ESP_LOGW(TAG, "Bottom ToF disabled due to repeated errors");
+                    bottom_disabled = true;
+                }
             }
         }
 
         // Front ToF
-        if (g_tof_front.isInitialized()) {
+        if (g_tof_front.isInitialized() && !front_disabled) {
             uint16_t distance_mm;
             uint8_t status;
             if (g_tof_front.getDistance(distance_mm, status) == ESP_OK) {
+                front_errors = 0;  // Reset on success
                 if (stampfly::OutlierDetector::isToFValid(status, 1.0f)) {
                     float distance_m = distance_mm * 0.001f;
                     state.updateToF(stampfly::ToFPosition::FRONT, distance_m, status);
+                }
+            } else {
+                if (++front_errors >= MAX_ERRORS) {
+                    ESP_LOGW(TAG, "Front ToF disabled due to repeated errors");
+                    front_disabled = true;
                 }
             }
         }
@@ -386,6 +407,9 @@ static void PowerTask(void* pvParameters)
     const TickType_t period = pdMS_TO_TICKS(100);  // 10Hz
 
     auto& state = stampfly::StampFlyState::getInstance();
+    static uint32_t log_counter = 0;
+    static bool first_read = true;
+    static bool low_battery_warned = false;
 
     while (true) {
         if (g_power.isInitialized()) {
@@ -393,13 +417,25 @@ static void PowerTask(void* pvParameters)
             if (g_power.read(power) == ESP_OK) {
                 state.updatePower(power.voltage_v, power.current_ma / 1000.0f);
 
-                // Low battery warning
-                if (g_power.isLowBattery()) {
-                    state.setError(stampfly::ErrorCode::LOW_BATTERY);
+                // Log first reading immediately, then every 5 seconds
+                if (first_read || ++log_counter >= 50) {
+                    ESP_LOGI(TAG, "Battery: %.2fV, %.1fmA, LowBat=%d",
+                             power.voltage_v, power.current_ma, g_power.isLowBattery());
+                    log_counter = 0;
+                    first_read = false;
+                }
 
-                    // Visual and audio warning
-                    g_led.setPattern(stampfly::LED::Pattern::BLINK_FAST, 0xFF0000);  // Red fast blink
+                // Low battery warning (only warn once to avoid continuous buzzing)
+                if (g_power.isLowBattery() && !low_battery_warned) {
+                    ESP_LOGW(TAG, "LOW BATTERY WARNING: %.2fV", power.voltage_v);
+                    state.setError(stampfly::ErrorCode::LOW_BATTERY);
+                    g_led.setPattern(stampfly::LED::Pattern::BLINK_FAST, 0xFF0000);
                     g_buzzer.lowBatteryWarning();
+                    low_battery_warned = true;
+                }
+                // Reset warning flag when battery is charged again
+                if (!g_power.isLowBattery()) {
+                    low_battery_warned = false;
                 }
             }
         }
@@ -556,7 +592,7 @@ static void CLITask(void* pvParameters)
         if (g_cli.isInitialized()) {
             g_cli.processInput();
         }
-        vTaskDelay(pdMS_TO_TICKS(10));
+        vTaskDelay(pdMS_TO_TICKS(10));  // 10ms polling
     }
 }
 
@@ -728,7 +764,8 @@ static esp_err_t initSensors()
         }
     }
 
-    // Dual ToF sensors (VL53L3CX) - I2C with XSHUT control
+    // ToF sensors (VL53L3CX) - I2C with XSHUT control
+    // Dual sensor initialization: bottom (altitude) and front (obstacle detection)
     {
         ret = stampfly::VL53L3CXWrapper::initDualSensors(
             g_tof_bottom,
@@ -738,11 +775,18 @@ static esp_err_t initSensors()
             static_cast<gpio_num_t>(GPIO_TOF_XSHUT_FRONT)
         );
         if (ret != ESP_OK) {
-            ESP_LOGW(TAG, "ToF init failed: %s", esp_err_to_name(ret));
+            ESP_LOGW(TAG, "Dual ToF init failed: %s", esp_err_to_name(ret));
+            // Try bottom sensor only as fallback
+            auto bottom_cfg = stampfly::VL53L3CXWrapper::Config::defaultBottom(g_i2c_bus);
+            ret = g_tof_bottom.init(bottom_cfg);
+            if (ret == ESP_OK) {
+                g_tof_bottom.startRanging();
+                ESP_LOGI(TAG, "Bottom ToF initialized (front not available)");
+            }
         } else {
             g_tof_bottom.startRanging();
             g_tof_front.startRanging();
-            ESP_LOGI(TAG, "ToF sensors initialized");
+            ESP_LOGI(TAG, "Both ToF sensors initialized");
         }
     }
 
@@ -762,7 +806,7 @@ static esp_err_t initSensors()
         stampfly::PowerMonitor::Config cfg;
         cfg.i2c_bus = g_i2c_bus;
         cfg.i2c_addr = stampfly::INA3221_I2C_ADDR_GND;
-        cfg.battery_channel = 0;
+        cfg.battery_channel = 1;  // Battery is connected to CH1
         cfg.shunt_resistor_ohm = 0.1f;
 
         ret = g_power.init(cfg);
@@ -939,9 +983,7 @@ static esp_err_t initCLI()
         return ret;
     }
 
-    // Register default commands
     g_cli.registerDefaultCommands();
-
     ESP_LOGI(TAG, "CLI initialized");
     return ESP_OK;
 }
@@ -950,12 +992,19 @@ static void startTasks()
 {
     ESP_LOGI(TAG, "Starting FreeRTOS tasks...");
 
-    // Create sensor tasks
+    // Peripheral tasks (Core 0)
+    xTaskCreatePinnedToCore(LEDTask, "LEDTask", STACK_SIZE_LED, nullptr,
+                            PRIORITY_LED_TASK, &g_led_task_handle, 0);
+
+    xTaskCreatePinnedToCore(ButtonTask, "ButtonTask", STACK_SIZE_BUTTON, nullptr,
+                            PRIORITY_BUTTON_TASK, &g_button_task_handle, 0);
+
+    xTaskCreatePinnedToCore(PowerTask, "PowerTask", STACK_SIZE_POWER, nullptr,
+                            PRIORITY_POWER_TASK, &g_power_task_handle, 0);
+
+    // Sensor tasks (Core 1)
     xTaskCreatePinnedToCore(IMUTask, "IMUTask", STACK_SIZE_IMU, nullptr,
                             PRIORITY_IMU_TASK, &g_imu_task_handle, 1);
-
-    xTaskCreatePinnedToCore(OptFlowTask, "OptFlowTask", STACK_SIZE_OPTFLOW, nullptr,
-                            PRIORITY_OPTFLOW_TASK, &g_optflow_task_handle, 1);
 
     xTaskCreatePinnedToCore(MagTask, "MagTask", STACK_SIZE_MAG, nullptr,
                             PRIORITY_MAG_TASK, &g_mag_task_handle, 1);
@@ -966,21 +1015,14 @@ static void startTasks()
     xTaskCreatePinnedToCore(ToFTask, "ToFTask", STACK_SIZE_TOF, nullptr,
                             PRIORITY_TOF_TASK, &g_tof_task_handle, 1);
 
-    xTaskCreatePinnedToCore(PowerTask, "PowerTask", STACK_SIZE_POWER, nullptr,
-                            PRIORITY_POWER_TASK, &g_power_task_handle, 0);
+    xTaskCreatePinnedToCore(OptFlowTask, "OptFlowTask", STACK_SIZE_OPTFLOW, nullptr,
+                            PRIORITY_OPTFLOW_TASK, &g_optflow_task_handle, 1);
 
-    // Create peripheral tasks
-    xTaskCreatePinnedToCore(LEDTask, "LEDTask", STACK_SIZE_LED, nullptr,
-                            PRIORITY_LED_TASK, &g_led_task_handle, 0);
-
-    xTaskCreatePinnedToCore(ButtonTask, "ButtonTask", STACK_SIZE_BUTTON, nullptr,
-                            PRIORITY_BUTTON_TASK, &g_button_task_handle, 0);
-
-    // Create communication task
+    // Communication task (Core 0)
     xTaskCreatePinnedToCore(CommTask, "CommTask", STACK_SIZE_COMM, nullptr,
                             PRIORITY_COMM_TASK, &g_comm_task_handle, 0);
 
-    // Create CLI task
+    // CLI task (Core 0)
     xTaskCreatePinnedToCore(CLITask, "CLITask", STACK_SIZE_CLI, nullptr,
                             PRIORITY_CLI_TASK, &g_cli_task_handle, 0);
 
@@ -993,12 +1035,20 @@ static void startTasks()
 
 extern "C" void app_main(void)
 {
+    // Delay to allow USB to connect for debug output
+    vTaskDelay(pdMS_TO_TICKS(3000));
+
+    // Direct printf for early debug (before ESP_LOG may be configured)
+    printf("\n\n*** StampFly Boot Start ***\n\n");
+    fflush(stdout);
+
     ESP_LOGI(TAG, "========================================");
     ESP_LOGI(TAG, "  StampFly RTOS Skeleton");
     ESP_LOGI(TAG, "  ESP-IDF version: %s", esp_get_idf_version());
     ESP_LOGI(TAG, "========================================");
 
     // Initialize NVS
+    ESP_LOGI(TAG, "Initializing NVS...");
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());
@@ -1007,11 +1057,19 @@ extern "C" void app_main(void)
     ESP_ERROR_CHECK(ret);
     ESP_LOGI(TAG, "NVS initialized");
 
+    // Initialize network interface and event loop (required for WiFi/ESP-NOW)
+    ESP_LOGI(TAG, "Initializing network interface...");
+    ESP_ERROR_CHECK(esp_netif_init());
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
+    ESP_LOGI(TAG, "Network interface initialized");
+
     // Initialize state manager
+    ESP_LOGI(TAG, "Initializing state manager...");
     auto& state = stampfly::StampFlyState::getInstance();
     ESP_ERROR_CHECK(state.init());
 
     // Initialize system manager
+    ESP_LOGI(TAG, "Initializing system manager...");
     auto& sys_mgr = stampfly::SystemManager::getInstance();
     stampfly::SystemManager::Config sys_cfg;
     sys_cfg.init_timeout_ms = 5000;
@@ -1019,28 +1077,46 @@ extern "C" void app_main(void)
     ESP_ERROR_CHECK(sys_mgr.init(sys_cfg));
 
     // Initialize I2C bus first (required for I2C sensors)
+    ESP_LOGI(TAG, "Initializing I2C...");
     initI2C();
 
-    // Initialize all subsystems
-    initSensors();
+    // Initialize actuators first (for buzzer feedback)
+    ESP_LOGI(TAG, "Initializing actuators...");
     initActuators();
-    initEstimators();
-    initCommunication();
-    initCLI();
 
-    // Startup sound and LED
+    // Play startup tone early to indicate boot progress
+    ESP_LOGI(TAG, "Playing startup tone...");
     g_buzzer.startTone();
     g_led.showInit();
 
+    // Initialize sensors (may fail partially, that's OK)
+    ESP_LOGI(TAG, "Initializing sensors...");
+    initSensors();
+
+    // Initialize estimators
+    ESP_LOGI(TAG, "Initializing estimators...");
+    initEstimators();
+
+    // Initialize communication (ESP-NOW)
+    ESP_LOGI(TAG, "Initializing communication...");
+    initCommunication();
+
+    // Initialize CLI
+    ESP_LOGI(TAG, "Initializing CLI...");
+    initCLI();
+
     // Start all tasks
+    ESP_LOGI(TAG, "Starting tasks...");
     startTasks();
 
     // Transition to IDLE state after initialization
     vTaskDelay(pdMS_TO_TICKS(1000));
     state.setFlightState(stampfly::FlightState::IDLE);
 
-    ESP_LOGI(TAG, "StampFly RTOS Skeleton initialized successfully");
+    ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "StampFly initialized successfully!");
     ESP_LOGI(TAG, "Free heap: %lu bytes", esp_get_free_heap_size());
+    ESP_LOGI(TAG, "========================================");
 
     // Main loop - just monitor system health
     while (true) {

@@ -7,41 +7,54 @@
  * - キャリブレーション
  * - モーターテスト
  * - ペアリング制御
+ *
+ * Note: Uses static arrays and function pointers instead of
+ * std::map/std::function to avoid dynamic memory allocation.
  */
 
 #include "cli.hpp"
 #include "esp_log.h"
 #include "esp_system.h"
-#include "driver/usb_serial_jtag.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include <cstdio>
 #include <cstring>
 #include <cstdarg>
+#include <fcntl.h>
+#include <unistd.h>
 
 static const char* TAG = "CLI";
 
 namespace stampfly {
 
-// USB Serial input buffer
-static constexpr size_t USB_BUF_SIZE = 256;
+// Forward declarations for command handlers
+static void cmd_help(int argc, char** argv, void* context);
+static void cmd_status(int argc, char** argv, void* context);
+static void cmd_sensor(int argc, char** argv, void* context);
+static void cmd_calib(int argc, char** argv, void* context);
+static void cmd_motor(int argc, char** argv, void* context);
+static void cmd_pair(int argc, char** argv, void* context);
+static void cmd_unpair(int argc, char** argv, void* context);
+static void cmd_reset(int argc, char** argv, void* context);
+static void cmd_gain(int argc, char** argv, void* context);
+static void cmd_attitude(int argc, char** argv, void* context);
+static void cmd_version(int argc, char** argv, void* context);
 
 esp_err_t CLI::init()
 {
     ESP_LOGI(TAG, "Initializing CLI");
 
-    // USB Serial JTAG設定
-    usb_serial_jtag_driver_config_t usb_cfg = {
-        .tx_buffer_size = USB_BUF_SIZE,
-        .rx_buffer_size = USB_BUF_SIZE,
-    };
+    // Disable buffering on stdin and stdout for immediate I/O
+    setvbuf(stdin, NULL, _IONBF, 0);
+    setvbuf(stdout, NULL, _IONBF, 0);
 
-    esp_err_t ret = usb_serial_jtag_driver_install(&usb_cfg);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to install USB Serial driver: %s", esp_err_to_name(ret));
-        // USB未接続でも動作可能にするためエラーを返さない
-    }
+    // Set stdin to non-blocking mode
+    int flags = fcntl(fileno(stdin), F_GETFL, 0);
+    fcntl(fileno(stdin), F_SETFL, flags | O_NONBLOCK);
 
     input_pos_ = 0;
     memset(input_buffer_, 0, sizeof(input_buffer_));
+    command_count_ = 0;
 
     initialized_ = true;
     ESP_LOGI(TAG, "CLI initialized");
@@ -49,69 +62,74 @@ esp_err_t CLI::init()
     return ESP_OK;
 }
 
-void CLI::registerCommand(const char* name, CommandHandler handler, const char* help)
+void CLI::registerCommand(const char* name, CommandHandlerFn handler,
+                          const char* help, void* context)
 {
-    commands_[name] = {handler, help ? help : ""};
+    if (command_count_ >= MAX_COMMANDS) {
+        ESP_LOGW(TAG, "Max commands reached, cannot register: %s", name);
+        return;
+    }
+
+    CommandEntry& entry = commands_[command_count_];
+    strncpy(entry.name, name, MAX_CMD_NAME_LEN - 1);
+    entry.name[MAX_CMD_NAME_LEN - 1] = '\0';
+    strncpy(entry.help, help ? help : "", MAX_HELP_LEN - 1);
+    entry.help[MAX_HELP_LEN - 1] = '\0';
+    entry.handler = handler;
+    entry.context = context;
+    command_count_++;
 }
 
 void CLI::processInput()
 {
     if (!initialized_) return;
 
-    // USB Serialからデータ読み込み
-    uint8_t data[64];
-    int len = usb_serial_jtag_read_bytes(data, sizeof(data), 0);
+    // Non-blocking read from stdin
+    int c = getchar();
+    if (c == EOF) return;
 
-    if (len <= 0) return;
+    // エコーバック - use write() to bypass stdio buffering
+    char ch = static_cast<char>(c);
+    write(fileno(stdout), &ch, 1);
+    fsync(fileno(stdout));
 
-    for (int i = 0; i < len; i++) {
-        char c = (char)data[i];
+    if (c == '\r' || c == '\n') {
+        if (input_pos_ > 0) {
+            // 改行を出力
+            const char* newline = "\r\n";
+            write(fileno(stdout), newline, 2);
 
-        // エコーバック
-        usb_serial_jtag_write_bytes(&c, 1, 0);
+            input_buffer_[input_pos_] = '\0';
+            parseAndExecute(input_buffer_);
+            input_pos_ = 0;
+            memset(input_buffer_, 0, sizeof(input_buffer_));
 
-        if (c == '\r' || c == '\n') {
-            if (input_pos_ > 0) {
-                // 改行を出力
-                const char* newline = "\r\n";
-                usb_serial_jtag_write_bytes((const uint8_t*)newline, 2, 0);
-
-                input_buffer_[input_pos_] = '\0';
-                parseAndExecute(input_buffer_);
-                input_pos_ = 0;
-                memset(input_buffer_, 0, sizeof(input_buffer_));
-
-                // プロンプト表示
-                print("> ");
-            }
+            // プロンプト表示
+            print("> ");
         }
-        else if (c == '\b' || c == 0x7F) {  // Backspace or Delete
-            if (input_pos_ > 0) {
-                input_pos_--;
-                // 画面上のバックスペース処理
-                const char* bs = "\b \b";
-                usb_serial_jtag_write_bytes((const uint8_t*)bs, 3, 0);
-            }
+    }
+    else if (c == '\b' || c == 0x7F) {  // Backspace or Delete
+        if (input_pos_ > 0) {
+            input_pos_--;
+            // 画面上のバックスペース処理
+            const char* bs = "\b \b";
+            write(fileno(stdout), bs, 3);
         }
-        else if (c >= 0x20 && c < 0x7F) {  // Printable ASCII
-            if (input_pos_ < MAX_CMD_LEN - 1) {
-                input_buffer_[input_pos_++] = c;
-            }
+    }
+    else if (c >= 0x20 && c < 0x7F) {  // Printable ASCII
+        if (input_pos_ < MAX_CMD_LEN - 1) {
+            input_buffer_[input_pos_++] = ch;
         }
     }
 }
 
 void CLI::print(const char* format, ...)
 {
-    char buffer[256];
     va_list args;
     va_start(args, format);
-    int len = vsnprintf(buffer, sizeof(buffer), format, args);
+    vprintf(format, args);
     va_end(args);
-
-    if (len > 0) {
-        usb_serial_jtag_write_bytes((const uint8_t*)buffer, len, portMAX_DELAY);
-    }
+    fflush(stdout);
 }
 
 void CLI::parseAndExecute(const char* line)
@@ -131,195 +149,238 @@ void CLI::parseAndExecute(const char* line)
 
     if (argc == 0) return;
 
-    auto it = commands_.find(argv[0]);
-    if (it != commands_.end()) {
-        it->second.handler(argc, argv);
-    } else {
-        print("Unknown command: %s\r\n", argv[0]);
-        print("Type 'help' for available commands\r\n");
+    // Search for command in array
+    for (size_t i = 0; i < command_count_; i++) {
+        if (strcmp(commands_[i].name, argv[0]) == 0) {
+            commands_[i].handler(argc, argv, commands_[i].context);
+            return;
+        }
     }
+
+    print("Unknown command: %s\r\n", argv[0]);
+    print("Type 'help' for available commands\r\n");
 }
 
 void CLI::printHelp()
 {
     print("\r\n=== StampFly CLI ===\r\n");
     print("Available commands:\r\n");
-    for (const auto& cmd : commands_) {
-        print("  %-12s %s\r\n", cmd.first.c_str(), cmd.second.help.c_str());
+    for (size_t i = 0; i < command_count_; i++) {
+        print("  %-12s %s\r\n", commands_[i].name, commands_[i].help);
     }
     print("\r\n");
 }
 
 void CLI::registerDefaultCommands()
 {
-    registerCommand("help", [this](int, char**) {
-        printHelp();
-    }, "Show available commands");
+    registerCommand("help", cmd_help, "Show available commands", this);
+    registerCommand("status", cmd_status, "Show system status", this);
+    registerCommand("sensor", cmd_sensor, "Show sensor data", this);
+    registerCommand("calib", cmd_calib, "Run calibration", this);
+    registerCommand("motor", cmd_motor, "Motor control", this);
+    registerCommand("pair", cmd_pair, "Enter pairing mode", this);
+    registerCommand("unpair", cmd_unpair, "Clear pairing", this);
+    registerCommand("reset", cmd_reset, "Reset system", this);
+    registerCommand("gain", cmd_gain, "Set control gain", this);
+    registerCommand("attitude", cmd_attitude, "Show attitude", this);
+    registerCommand("version", cmd_version, "Show version info", this);
+}
 
-    registerCommand("status", [this](int, char**) {
-        print("=== System Status ===\r\n");
-        print("Flight State: INIT (stub)\r\n");
-        print("Pairing: NOT_PAIRED (stub)\r\n");
-        print("Battery: 4.2V (stub)\r\n");
-        print("Connected: No (stub)\r\n");
-    }, "Show system status");
+// ========== Command Handlers ==========
 
-    registerCommand("sensor", [this](int argc, char** argv) {
-        if (argc < 2) {
-            print("Usage: sensor [imu|mag|baro|tof|flow|power]\r\n");
+static void cmd_help(int, char**, void* context)
+{
+    CLI* cli = static_cast<CLI*>(context);
+    cli->printHelp();
+}
+
+static void cmd_status(int, char**, void* context)
+{
+    CLI* cli = static_cast<CLI*>(context);
+    cli->print("=== System Status ===\r\n");
+    cli->print("Flight State: INIT (stub)\r\n");
+    cli->print("Pairing: NOT_PAIRED (stub)\r\n");
+    cli->print("Battery: 4.2V (stub)\r\n");
+    cli->print("Connected: No (stub)\r\n");
+}
+
+static void cmd_sensor(int argc, char** argv, void* context)
+{
+    CLI* cli = static_cast<CLI*>(context);
+
+    if (argc < 2) {
+        cli->print("Usage: sensor [imu|mag|baro|tof|flow|power]\r\n");
+        return;
+    }
+
+    const char* sensor = argv[1];
+    if (strcmp(sensor, "imu") == 0) {
+        cli->print("IMU Data (stub):\r\n");
+        cli->print("  Accel: X=0.00, Y=0.00, Z=9.81 [m/s^2]\r\n");
+        cli->print("  Gyro:  X=0.00, Y=0.00, Z=0.00 [rad/s]\r\n");
+    }
+    else if (strcmp(sensor, "mag") == 0) {
+        cli->print("Magnetometer Data (stub):\r\n");
+        cli->print("  Mag: X=20.0, Y=0.0, Z=40.0 [uT]\r\n");
+    }
+    else if (strcmp(sensor, "baro") == 0) {
+        cli->print("Barometer Data (stub):\r\n");
+        cli->print("  Pressure: 101325 [Pa]\r\n");
+        cli->print("  Altitude: 0.00 [m]\r\n");
+    }
+    else if (strcmp(sensor, "tof") == 0) {
+        cli->print("ToF Data (stub):\r\n");
+        cli->print("  Bottom: 0.50 [m]\r\n");
+        cli->print("  Front:  2.00 [m]\r\n");
+    }
+    else if (strcmp(sensor, "flow") == 0) {
+        cli->print("Optical Flow Data (stub):\r\n");
+        cli->print("  Vx: 0.00, Vy: 0.00 [m/s]\r\n");
+        cli->print("  Quality: 80\r\n");
+    }
+    else if (strcmp(sensor, "power") == 0) {
+        cli->print("Power Data (stub):\r\n");
+        cli->print("  Voltage: 4.20 [V]\r\n");
+        cli->print("  Current: 0.50 [A]\r\n");
+    }
+    else {
+        cli->print("Unknown sensor: %s\r\n", sensor);
+        cli->print("Available: imu, mag, baro, tof, flow, power\r\n");
+    }
+}
+
+static void cmd_calib(int argc, char** argv, void* context)
+{
+    CLI* cli = static_cast<CLI*>(context);
+
+    if (argc < 2) {
+        cli->print("Usage: calib [gyro|accel|mag]\r\n");
+        return;
+    }
+
+    const char* type = argv[1];
+    if (strcmp(type, "gyro") == 0) {
+        cli->print("Starting gyro calibration...\r\n");
+        cli->print("Keep device still for 3 seconds.\r\n");
+        // TODO: SystemManager::runGyroCalibration()
+        cli->print("Gyro calibration complete (stub)\r\n");
+    }
+    else if (strcmp(type, "accel") == 0) {
+        cli->print("Starting accelerometer calibration...\r\n");
+        cli->print("Place device on flat surface.\r\n");
+        // TODO: SystemManager::runAccelCalibration()
+        cli->print("Accel calibration complete (stub)\r\n");
+    }
+    else if (strcmp(type, "mag") == 0) {
+        cli->print("Starting magnetometer calibration...\r\n");
+        cli->print("Rotate device in all directions.\r\n");
+        // TODO: SystemManager::runMagCalibration()
+        cli->print("Mag calibration complete (stub)\r\n");
+    }
+    else {
+        cli->print("Unknown calibration type: %s\r\n", type);
+    }
+}
+
+static void cmd_motor(int argc, char** argv, void* context)
+{
+    CLI* cli = static_cast<CLI*>(context);
+
+    if (argc < 2) {
+        cli->print("Usage: motor test <id> <throttle> | arm | disarm\r\n");
+        cli->print("  test <id> <throttle> - Test motor (id:1-4, throttle:0-100)\r\n");
+        cli->print("  arm                  - Arm motors\r\n");
+        cli->print("  disarm               - Disarm motors\r\n");
+        return;
+    }
+
+    const char* cmd = argv[1];
+    if (strcmp(cmd, "arm") == 0) {
+        cli->print("Motors armed (stub)\r\n");
+        // TODO: StampFlyState::requestArm()
+    }
+    else if (strcmp(cmd, "disarm") == 0) {
+        cli->print("Motors disarmed (stub)\r\n");
+        // TODO: StampFlyState::requestDisarm()
+    }
+    else if (strcmp(cmd, "test") == 0) {
+        if (argc < 4) {
+            cli->print("Usage: motor test <id> <throttle>\r\n");
             return;
         }
-
-        const char* sensor = argv[1];
-        if (strcmp(sensor, "imu") == 0) {
-            print("IMU Data (stub):\r\n");
-            print("  Accel: X=0.00, Y=0.00, Z=9.81 [m/s^2]\r\n");
-            print("  Gyro:  X=0.00, Y=0.00, Z=0.00 [rad/s]\r\n");
-        }
-        else if (strcmp(sensor, "mag") == 0) {
-            print("Magnetometer Data (stub):\r\n");
-            print("  Mag: X=20.0, Y=0.0, Z=40.0 [uT]\r\n");
-        }
-        else if (strcmp(sensor, "baro") == 0) {
-            print("Barometer Data (stub):\r\n");
-            print("  Pressure: 101325 [Pa]\r\n");
-            print("  Altitude: 0.00 [m]\r\n");
-        }
-        else if (strcmp(sensor, "tof") == 0) {
-            print("ToF Data (stub):\r\n");
-            print("  Bottom: 0.50 [m]\r\n");
-            print("  Front:  2.00 [m]\r\n");
-        }
-        else if (strcmp(sensor, "flow") == 0) {
-            print("Optical Flow Data (stub):\r\n");
-            print("  Vx: 0.00, Vy: 0.00 [m/s]\r\n");
-            print("  Quality: 80\r\n");
-        }
-        else if (strcmp(sensor, "power") == 0) {
-            print("Power Data (stub):\r\n");
-            print("  Voltage: 4.20 [V]\r\n");
-            print("  Current: 0.50 [A]\r\n");
-        }
-        else {
-            print("Unknown sensor: %s\r\n", sensor);
-            print("Available: imu, mag, baro, tof, flow, power\r\n");
-        }
-    }, "Show sensor data");
-
-    registerCommand("calib", [this](int argc, char** argv) {
-        if (argc < 2) {
-            print("Usage: calib [gyro|accel|mag]\r\n");
+        int id = atoi(argv[2]);
+        int throttle = atoi(argv[3]);
+        if (id < 1 || id > 4) {
+            cli->print("Invalid motor ID. Use 1-4.\r\n");
             return;
         }
-
-        const char* type = argv[1];
-        if (strcmp(type, "gyro") == 0) {
-            print("Starting gyro calibration...\r\n");
-            print("Keep device still for 3 seconds.\r\n");
-            // TODO: SystemManager::runGyroCalibration()
-            print("Gyro calibration complete (stub)\r\n");
-        }
-        else if (strcmp(type, "accel") == 0) {
-            print("Starting accelerometer calibration...\r\n");
-            print("Place device on flat surface.\r\n");
-            // TODO: SystemManager::runAccelCalibration()
-            print("Accel calibration complete (stub)\r\n");
-        }
-        else if (strcmp(type, "mag") == 0) {
-            print("Starting magnetometer calibration...\r\n");
-            print("Rotate device in all directions.\r\n");
-            // TODO: SystemManager::runMagCalibration()
-            print("Mag calibration complete (stub)\r\n");
-        }
-        else {
-            print("Unknown calibration type: %s\r\n", type);
-        }
-    }, "Run calibration");
-
-    registerCommand("motor", [this](int argc, char** argv) {
-        if (argc < 2) {
-            print("Usage: motor test <id> <throttle> | arm | disarm\r\n");
-            print("  test <id> <throttle> - Test motor (id:1-4, throttle:0-100)\r\n");
-            print("  arm                  - Arm motors\r\n");
-            print("  disarm               - Disarm motors\r\n");
+        if (throttle < 0 || throttle > 100) {
+            cli->print("Invalid throttle. Use 0-100.\r\n");
             return;
         }
+        cli->print("Testing motor %d at %d%% (stub)\r\n", id, throttle);
+        // TODO: MotorDriver::testMotor(id-1, throttle)
+    }
+    else {
+        cli->print("Unknown motor command: %s\r\n", cmd);
+    }
+}
 
-        const char* cmd = argv[1];
-        if (strcmp(cmd, "arm") == 0) {
-            print("Motors armed (stub)\r\n");
-            // TODO: StampFlyState::requestArm()
-        }
-        else if (strcmp(cmd, "disarm") == 0) {
-            print("Motors disarmed (stub)\r\n");
-            // TODO: StampFlyState::requestDisarm()
-        }
-        else if (strcmp(cmd, "test") == 0) {
-            if (argc < 4) {
-                print("Usage: motor test <id> <throttle>\r\n");
-                return;
-            }
-            int id = atoi(argv[2]);
-            int throttle = atoi(argv[3]);
-            if (id < 1 || id > 4) {
-                print("Invalid motor ID. Use 1-4.\r\n");
-                return;
-            }
-            if (throttle < 0 || throttle > 100) {
-                print("Invalid throttle. Use 0-100.\r\n");
-                return;
-            }
-            print("Testing motor %d at %d%% (stub)\r\n", id, throttle);
-            // TODO: MotorDriver::testMotor(id-1, throttle)
-        }
-        else {
-            print("Unknown motor command: %s\r\n", cmd);
-        }
-    }, "Motor control");
+static void cmd_pair(int, char**, void* context)
+{
+    CLI* cli = static_cast<CLI*>(context);
+    cli->print("Entering pairing mode...\r\n");
+    cli->print("Press the pairing button on the controller.\r\n");
+    // TODO: ControllerComm::enterPairingMode()
+}
 
-    registerCommand("pair", [this](int, char**) {
-        print("Entering pairing mode...\r\n");
-        print("Press the pairing button on the controller.\r\n");
-        // TODO: ControllerComm::enterPairingMode()
-    }, "Enter pairing mode");
+static void cmd_unpair(int, char**, void* context)
+{
+    CLI* cli = static_cast<CLI*>(context);
+    cli->print("Clearing pairing information...\r\n");
+    // TODO: ControllerComm::clearPairingFromNVS()
+    cli->print("Pairing cleared. Restart to apply.\r\n");
+}
 
-    registerCommand("unpair", [this](int, char**) {
-        print("Clearing pairing information...\r\n");
-        // TODO: ControllerComm::clearPairingFromNVS()
-        print("Pairing cleared. Restart to apply.\r\n");
-    }, "Clear pairing");
+static void cmd_reset(int, char**, void* context)
+{
+    CLI* cli = static_cast<CLI*>(context);
+    cli->print("Resetting system...\r\n");
+    vTaskDelay(pdMS_TO_TICKS(100));
+    esp_restart();
+}
 
-    registerCommand("reset", [this](int, char**) {
-        print("Resetting system...\r\n");
-        vTaskDelay(pdMS_TO_TICKS(100));
-        esp_restart();
-    }, "Reset system");
+static void cmd_gain(int argc, char** argv, void* context)
+{
+    CLI* cli = static_cast<CLI*>(context);
 
-    registerCommand("gain", [this](int argc, char** argv) {
-        if (argc < 3) {
-            print("Usage: gain <name> <value>\r\n");
-            print("Gains: kp_roll, kd_roll, kp_pitch, kd_pitch, kp_yaw, kd_yaw\r\n");
-            return;
-        }
-        const char* name = argv[1];
-        float value = atof(argv[2]);
-        print("Setting gain %s = %.4f (stub)\r\n", name, value);
-        // TODO: Save gain to control task
-    }, "Set control gain");
+    if (argc < 3) {
+        cli->print("Usage: gain <name> <value>\r\n");
+        cli->print("Gains: kp_roll, kd_roll, kp_pitch, kd_pitch, kp_yaw, kd_yaw\r\n");
+        return;
+    }
+    const char* name = argv[1];
+    float value = atof(argv[2]);
+    cli->print("Setting gain %s = %.4f (stub)\r\n", name, value);
+    // TODO: Save gain to control task
+}
 
-    registerCommand("attitude", [this](int, char**) {
-        print("Attitude (stub):\r\n");
-        print("  Roll:  0.00 [deg]\r\n");
-        print("  Pitch: 0.00 [deg]\r\n");
-        print("  Yaw:   0.00 [deg]\r\n");
-        // TODO: Get from StampFlyState
-    }, "Show attitude");
+static void cmd_attitude(int, char**, void* context)
+{
+    CLI* cli = static_cast<CLI*>(context);
+    cli->print("Attitude (stub):\r\n");
+    cli->print("  Roll:  0.00 [deg]\r\n");
+    cli->print("  Pitch: 0.00 [deg]\r\n");
+    cli->print("  Yaw:   0.00 [deg]\r\n");
+    // TODO: Get from StampFlyState
+}
 
-    registerCommand("version", [this](int, char**) {
-        print("StampFly RTOS Skeleton\r\n");
-        print("  ESP-IDF: %s\r\n", esp_get_idf_version());
-        print("  Chip: ESP32-S3\r\n");
-    }, "Show version info");
+static void cmd_version(int, char**, void* context)
+{
+    CLI* cli = static_cast<CLI*>(context);
+    cli->print("StampFly RTOS Skeleton\r\n");
+    cli->print("  ESP-IDF: %s\r\n", esp_get_idf_version());
+    cli->print("  Chip: ESP32-S3\r\n");
 }
 
 }  // namespace stampfly

@@ -43,6 +43,7 @@ public:
         gpio_num_t pin_sclk;          ///< SCLK pin
         gpio_num_t pin_cs;            ///< Chip select pin
         spi_host_device_t spi_host;   ///< SPI host (SPI2_HOST or SPI3_HOST)
+        bool skip_bus_init;           ///< Skip SPI bus init (if shared with another device)
 
         /**
          * @brief Get default configuration for StampFly
@@ -56,6 +57,7 @@ public:
             config.pin_sclk = GPIO_NUM_44;
             config.pin_cs = GPIO_NUM_12;
             config.spi_host = SPI2_HOST;
+            config.skip_bus_init = true;  // BMI270 already initialized SPI bus
             return config;
         }
     };

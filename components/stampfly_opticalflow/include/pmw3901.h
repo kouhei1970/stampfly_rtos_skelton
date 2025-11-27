@@ -97,6 +97,7 @@ typedef struct {
     gpio_num_t pin_mosi;         // MOSI pin
     gpio_num_t pin_sclk;         // SCLK pin
     gpio_num_t pin_cs;           // Chip select pin
+    bool skip_bus_init;          // Skip SPI bus init (if shared with another device)
 } pmw3901_config_t;
 
 /**

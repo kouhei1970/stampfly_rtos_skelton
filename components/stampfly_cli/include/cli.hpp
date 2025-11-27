@@ -3,24 +3,31 @@
  * @brief CLI Console (USB CDC)
  *
  * Command processing, sensor display, calibration
+ *
+ * Note: Uses static arrays instead of std::map/std::function
+ * to avoid dynamic memory allocation issues on embedded systems.
  */
 
 #pragma once
 
 #include <cstdint>
-#include <functional>
-#include <map>
-#include <string>
+#include <cstring>
 #include "esp_err.h"
 
 namespace stampfly {
 
-using CommandHandler = std::function<void(int argc, char** argv)>;
+/**
+ * @brief Command handler function pointer type
+ */
+using CommandHandlerFn = void (*)(int argc, char** argv, void* context);
 
 class CLI {
 public:
     static constexpr size_t MAX_CMD_LEN = 128;
     static constexpr size_t MAX_ARGS = 8;
+    static constexpr size_t MAX_COMMANDS = 16;
+    static constexpr size_t MAX_CMD_NAME_LEN = 16;
+    static constexpr size_t MAX_HELP_LEN = 48;
 
     CLI() = default;
     ~CLI() = default;
@@ -34,10 +41,12 @@ public:
     /**
      * @brief Register command handler
      * @param name Command name
-     * @param handler Command handler function
+     * @param handler Command handler function pointer
      * @param help Help text
+     * @param context Optional context pointer passed to handler
      */
-    void registerCommand(const char* name, CommandHandler handler, const char* help = "");
+    void registerCommand(const char* name, CommandHandlerFn handler,
+                         const char* help = "", void* context = nullptr);
 
     /**
      * @brief Process input (call periodically)
@@ -57,17 +66,27 @@ public:
 
     bool isInitialized() const { return initialized_; }
 
+    /**
+     * @brief Print help (available commands)
+     */
+    void printHelp();
+
 private:
-    struct Command {
-        CommandHandler handler;
-        std::string help;
+    /**
+     * @brief Static command entry (no dynamic allocation)
+     */
+    struct CommandEntry {
+        char name[MAX_CMD_NAME_LEN];
+        char help[MAX_HELP_LEN];
+        CommandHandlerFn handler;
+        void* context;
     };
 
     void parseAndExecute(const char* line);
-    void printHelp();
 
     bool initialized_ = false;
-    std::map<std::string, Command> commands_;
+    CommandEntry commands_[MAX_COMMANDS] = {};
+    size_t command_count_ = 0;
     char input_buffer_[MAX_CMD_LEN] = {0};
     size_t input_pos_ = 0;
 };
