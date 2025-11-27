@@ -1,0 +1,81 @@
+/**
+ * @file led.hpp
+ * @brief WS2812 RGB LED Driver (RMT)
+ *
+ * Pattern support, state display
+ */
+
+#pragma once
+
+#include <cstdint>
+#include "esp_err.h"
+
+namespace stampfly {
+
+class LED {
+public:
+    enum class Pattern {
+        OFF,
+        SOLID,
+        BLINK_SLOW,
+        BLINK_FAST,
+        BREATHE,
+        RAINBOW
+    };
+
+    struct Config {
+        int gpio;
+        int num_leds;
+    };
+
+    LED() = default;
+    ~LED() = default;
+
+    /**
+     * @brief Initialize LED driver
+     * @param config GPIO configuration
+     * @return ESP_OK on success
+     */
+    esp_err_t init(const Config& config);
+
+    /**
+     * @brief Set LED color
+     * @param index LED index
+     * @param color RGB color (0xRRGGBB)
+     */
+    void setColor(uint8_t index, uint32_t color);
+
+    /**
+     * @brief Set LED pattern
+     * @param pattern Pattern type
+     * @param color RGB color for pattern
+     */
+    void setPattern(Pattern pattern, uint32_t color);
+
+    /**
+     * @brief Update LED (call periodically for patterns)
+     */
+    void update();
+
+    // State display helpers
+    void showInit();
+    void showCalibrating();
+    void showIdle();
+    void showArmed();
+    void showFlying();
+    void showLanding();
+    void showError();
+    void showLowBattery();
+    void showPairing();
+
+    bool isInitialized() const { return initialized_; }
+
+private:
+    bool initialized_ = false;
+    Config config_;
+    Pattern current_pattern_ = Pattern::OFF;
+    uint32_t current_color_ = 0;
+    uint32_t last_update_ms_ = 0;
+};
+
+}  // namespace stampfly
