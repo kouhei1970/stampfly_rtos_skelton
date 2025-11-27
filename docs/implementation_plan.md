@@ -362,17 +362,29 @@ class ControllerComm {
 };
 ```
 
-#### ControlPacket (12バイト)
+#### ControlPacket (14バイト)
+
+コントローラ（for_tdmaブランチ）と同一の構造。WiFiチャンネルは1固定。
+
 ```cpp
 struct ControlPacket {
-    uint8_t drone_mac[3];   // 宛先MAC下位3バイト
-    uint16_t throttle;      // 0-1000
-    uint16_t roll;          // 0-1000 (500=中央)
-    uint16_t pitch;         // 0-1000 (500=中央)
-    uint16_t yaw;           // 0-1000 (500=中央)
-    uint8_t flags;          // bit0:Arm, bit1:Flip, bit2:Mode, bit3:AltMode
-    uint8_t checksum;
-};
+    uint8_t drone_mac[3];   // byte 0-2: 宛先MAC下位3バイト
+    uint16_t throttle;      // byte 3-4: 0-1000
+    uint16_t roll;          // byte 5-6: 0-1000 (500=中央)
+    uint16_t pitch;         // byte 7-8: 0-1000 (500=中央)
+    uint16_t yaw;           // byte 9-10: 0-1000 (500=中央)
+    uint8_t flags;          // byte 11: bit0:Arm, bit1:Flip, bit2:Mode, bit3:AltMode
+    uint8_t reserved;       // byte 12: 予約（proactive_flag、無視）
+    uint8_t checksum;       // byte 13: byte 0-12の単純合計
+} __attribute__((packed));
+```
+
+**チェックサム計算:**
+```cpp
+uint8_t checksum = 0;
+for (int i = 0; i < 13; i++) {
+    checksum += data[i];
+}
 ```
 
 ### 6.5 状態管理
