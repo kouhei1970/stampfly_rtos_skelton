@@ -768,19 +768,54 @@ void ESKF::updateBaro(float altitude) {
 }
 ```
 
-### 6.5 通信
+### 6.5 通信 - コントローラとの整合
+
+**参照:** https://github.com/M5Fly-kanazawa/Simple_StampFly_Joy (for_tdmaブランチ)
+
+コントローラの実装と完全に整合させる必要がある。
+
+#### 通信パラメータ（コントローラと同一）
+
+| パラメータ | 値 | 説明 |
+|-----------|-----|------|
+| WiFiチャンネル | 1 | `CHANNEL = 1` 固定 |
+| フレーム周期 | 20ms | TDMA_FRAME_US |
+| スロット幅 | 2ms | TDMA_SLOT_US |
+| 最大デバイス数 | 10 | スロット0-9 |
+| ペアリングアドレス | FF:FF:FF:FF:FF:FF | ブロードキャスト |
+| 制御パケットサイズ | 14バイト | senddata[0-13] |
+| ビーコンパケット | 0xBE, 0xAC | 2バイト |
 
 #### ControllerComm (ESP-NOW)
 ```cpp
 class ControllerComm {
+public:
+    struct Config {
+        uint8_t channel = 1;              // WiFiチャンネル (コントローラと同一)
+        uint8_t tdma_device_id = 0;       // TDMAスロットID (0-9)
+        uint32_t timeout_ms = 500;        // 通信途絶タイムアウト
+    };
+
     esp_err_t init(const Config& config);
     esp_err_t start();
     void setControlCallback(ControlCallback callback);
     esp_err_t sendTelemetry(const TelemetryPacket& packet);
     bool isConnected() const;
+    uint32_t getLastReceiveTime() const;
+
+    // ペアリング
     void enterPairingMode();
+    void exitPairingMode();
+    bool isPairing() const;
+    esp_err_t savePairingToNVS();
+    esp_err_t loadPairingFromNVS();
     esp_err_t clearPairingFromNVS();
-    // 制御パケット受信、テレメトリ送信、ペアリング機能
+
+private:
+    uint8_t controller_mac_[6];           // ペアリング済みコントローラMAC
+    esp_now_peer_info_t peer_info_;
+    bool paired_ = false;
+    bool pairing_mode_ = false;
 };
 ```
 
@@ -847,6 +882,96 @@ enum TelemetryFlags : uint8_t {
 ```
 
 **テレメトリ送信タイミング:** CommTask内で20ms (50Hz) 周期で送信
+
+#### ペアリング処理フロー
+
+コントローラ（for_tdmaブランチ）のペアリング実装と整合させる。
+
+**StampFly側（本実装）:**
+1. ペアリングモード開始（ボタン長押し or CLIコマンド）
+2. ブロードキャストアドレス（FF:FF:FF:FF:FF:FF）でMACアドレスをブロードキャスト
+3. コントローラからの制御パケット受信を待機
+4. 制御パケット受信時、送信元MACアドレスを保存
+5. NVSに保存してペアリング完了
+
+**コントローラ側（参照）:**
+1. ペアリングモード開始
+2. ブロードキャスト受信を待機
+3. 受信したMACアドレスをNVS (peer_info.txt) に保存
+4. 形式: `"チャンネル,MAC1,MAC2,MAC3,MAC4,MAC5,MAC6"`
+
+```cpp
+// StampFly側ペアリング実装
+void ControllerComm::enterPairingMode() {
+    pairing_mode_ = true;
+    paired_ = false;
+
+    // ブロードキャストピア追加
+    uint8_t broadcast_mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+    esp_now_peer_info_t peer = {};
+    memcpy(peer.peer_addr, broadcast_mac, 6);
+    peer.channel = config_.channel;
+    peer.encrypt = false;
+    peer.ifidx = WIFI_IF_STA;
+    esp_now_add_peer(&peer);
+
+    // 自MACアドレスをブロードキャスト（コントローラが受信）
+    uint8_t my_mac[6];
+    esp_wifi_get_mac(WIFI_IF_STA, my_mac);
+    esp_now_send(broadcast_mac, my_mac, 6);
+}
+
+// 受信コールバック内でのペアリング処理
+void onDataRecv(const uint8_t* mac, const uint8_t* data, int len) {
+    if (comm.isPairing() && len == 14) {
+        // コントローラからの制御パケット受信
+        memcpy(comm.controller_mac_, mac, 6);
+        comm.savePairingToNVS();
+        comm.exitPairingMode();
+    }
+}
+```
+
+#### NVS保存形式
+
+```cpp
+// NVS名前空間: "stampfly"
+// キー: "controller_mac"
+// 値: 6バイトのMACアドレス
+
+esp_err_t ControllerComm::savePairingToNVS() {
+    nvs_handle_t handle;
+    esp_err_t ret = nvs_open("stampfly", NVS_READWRITE, &handle);
+    if (ret != ESP_OK) return ret;
+
+    ret = nvs_set_blob(handle, "controller_mac", controller_mac_, 6);
+    if (ret == ESP_OK) {
+        ret = nvs_commit(handle);
+    }
+    nvs_close(handle);
+    return ret;
+}
+
+esp_err_t ControllerComm::loadPairingFromNVS() {
+    nvs_handle_t handle;
+    esp_err_t ret = nvs_open("stampfly", NVS_READONLY, &handle);
+    if (ret != ESP_OK) return ret;
+
+    size_t size = 6;
+    ret = nvs_get_blob(handle, "controller_mac", controller_mac_, &size);
+    if (ret == ESP_OK) {
+        paired_ = true;
+        // ピア登録
+        memcpy(peer_info_.peer_addr, controller_mac_, 6);
+        peer_info_.channel = config_.channel;
+        peer_info_.encrypt = false;
+        peer_info_.ifidx = WIFI_IF_STA;
+        esp_now_add_peer(&peer_info_);
+    }
+    nvs_close(handle);
+    return ret;
+}
+```
 
 ### 6.6 状態管理
 
