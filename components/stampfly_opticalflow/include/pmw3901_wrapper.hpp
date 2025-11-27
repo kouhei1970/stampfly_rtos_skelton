@@ -1,65 +1,261 @@
 /**
  * @file pmw3901_wrapper.hpp
- * @brief PMW3901 Optical Flow Sensor C++ Wrapper
+ * @brief C++ wrapper for PMW3901 Optical Flow Sensor
  *
- * Burst read support, SQUAL quality check
+ * This header provides a modern C++ interface for the PMW3901 sensor
+ * with RAII support, exception-based error handling, and type safety.
  */
 
-#pragma once
+#ifndef PMW3901_WRAPPER_HPP
+#define PMW3901_WRAPPER_HPP
 
+#include <array>
 #include <cstdint>
-#include "esp_err.h"
+#include "pmw3901.h"
+#include "pmw3901_exception.hpp"
 
 namespace stampfly {
 
-struct MotionData {
-    int16_t delta_x;
-    int16_t delta_y;
-    uint8_t squal;      // Surface quality (0-255)
-    uint8_t shutter_upper;
-    uint8_t shutter_lower;
-    uint32_t timestamp_us;
-};
-
-class PMW3901Wrapper {
+/**
+ * @brief C++ wrapper class for PMW3901 optical flow sensor
+ *
+ * This class provides a modern C++ interface with:
+ * - RAII (Resource Acquisition Is Initialization)
+ * - Exception-based error handling
+ * - Move semantics (no copy)
+ * - Type-safe structs for return values
+ *
+ * @example
+ * @code
+ * stampfly::PMW3901 sensor;  // Auto-initialization
+ * auto motion = sensor.readMotion();
+ * // Auto cleanup on scope exit
+ * @endcode
+ */
+class PMW3901 {
 public:
+    /**
+     * @brief Configuration structure for PMW3901
+     */
     struct Config {
-        int spi_host;
-        int cs_gpio;
-        int spi_freq_hz;
+        gpio_num_t pin_miso;          ///< MISO pin
+        gpio_num_t pin_mosi;          ///< MOSI pin
+        gpio_num_t pin_sclk;          ///< SCLK pin
+        gpio_num_t pin_cs;            ///< Chip select pin
+        spi_host_device_t spi_host;   ///< SPI host (SPI2_HOST or SPI3_HOST)
+
+        /**
+         * @brief Get default configuration for StampFly
+         *
+         * @return Config Default configuration with StampFly pins
+         */
+        static Config defaultStampFly() {
+            Config config;
+            config.pin_miso = GPIO_NUM_43;
+            config.pin_mosi = GPIO_NUM_14;
+            config.pin_sclk = GPIO_NUM_44;
+            config.pin_cs = GPIO_NUM_12;
+            config.spi_host = SPI2_HOST;
+            return config;
+        }
     };
 
-    PMW3901Wrapper() = default;
-    ~PMW3901Wrapper() = default;
+    /**
+     * @brief Motion data structure (delta X and Y)
+     */
+    struct MotionData {
+        int16_t delta_x;  ///< X displacement (pixels)
+        int16_t delta_y;  ///< Y displacement (pixels)
+    };
 
     /**
-     * @brief Initialize PMW3901
-     * @param config SPI configuration
-     * @return ESP_OK on success
+     * @brief Motion burst data structure (all sensor data)
      */
-    esp_err_t init(const Config& config);
+    struct MotionBurst {
+        int16_t delta_x;        ///< X displacement (pixels)
+        int16_t delta_y;        ///< Y displacement (pixels)
+        uint8_t squal;          ///< Surface quality (0-255)
+        uint16_t shutter;       ///< Shutter value
+        uint8_t raw_data_sum;   ///< Raw data sum
+        uint8_t motion;         ///< Motion register value
+        uint8_t observation;    ///< Observation register value
+        uint8_t max_raw_data;   ///< Maximum raw data
+        uint8_t min_raw_data;   ///< Minimum raw data
+    };
 
     /**
-     * @brief Read motion data
-     * @param data Motion data output
-     * @return ESP_OK on success
+     * @brief Velocity data structure (m/s)
      */
-    esp_err_t readMotion(MotionData& data);
+    struct Velocity {
+        float x;  ///< X velocity (m/s)
+        float y;  ///< Y velocity (m/s)
+    };
 
     /**
-     * @brief Check if motion data is valid (SQUAL >= 30)
-     * @param data Motion data to check
-     * @return true if valid
+     * @brief Construct and initialize PMW3901 sensor
+     *
+     * @param config Configuration (defaults to StampFly pins)
+     * @throws PMW3901Exception if initialization fails
      */
-    static bool isMotionValid(const MotionData& data) {
-        return data.squal >= 30;
-    }
+    explicit PMW3901(const Config& config = Config::defaultStampFly());
 
-    bool isInitialized() const { return initialized_; }
+    /**
+     * @brief Destructor - automatically cleanup sensor resources
+     */
+    ~PMW3901();
+
+    /**
+     * @brief Copy constructor (deleted - SPI handle cannot be copied)
+     */
+    PMW3901(const PMW3901&) = delete;
+
+    /**
+     * @brief Copy assignment (deleted - SPI handle cannot be copied)
+     */
+    PMW3901& operator=(const PMW3901&) = delete;
+
+    /**
+     * @brief Move constructor
+     *
+     * @param other Object to move from
+     */
+    PMW3901(PMW3901&& other) noexcept;
+
+    /**
+     * @brief Move assignment operator
+     *
+     * @param other Object to move from
+     * @return Reference to this object
+     */
+    PMW3901& operator=(PMW3901&& other) noexcept;
+
+    /**
+     * @brief Get product ID
+     *
+     * @return uint8_t Product ID (should be 0x49)
+     * @throws PMW3901Exception if read fails
+     */
+    uint8_t getProductId() const;
+
+    /**
+     * @brief Get revision ID
+     *
+     * @return uint8_t Revision ID
+     * @throws PMW3901Exception if read fails
+     */
+    uint8_t getRevisionId() const;
+
+    /**
+     * @brief Read motion data (delta X and Y)
+     *
+     * @return MotionData X and Y displacement
+     * @throws PMW3901Exception if read fails
+     */
+    MotionData readMotion();
+
+    /**
+     * @brief Read motion burst data (all sensor data in one SPI transaction)
+     *
+     * This is more efficient than reading individual registers.
+     *
+     * @return MotionBurst Complete motion data with quality metrics
+     * @throws PMW3901Exception if read fails
+     */
+    MotionBurst readMotionBurst();
+
+    /**
+     * @brief Check if motion is detected
+     *
+     * @return true if motion detected, false otherwise
+     * @throws PMW3901Exception if read fails
+     */
+    bool isMotionDetected();
+
+    /**
+     * @brief Calculate velocity using direct method (StampFly式)
+     *
+     * Formula: velocity = -(0.0254 * delta * altitude / 11.914) / interval
+     * Best for simple position control systems.
+     *
+     * @param delta_x X displacement from sensor (pixels)
+     * @param delta_y Y displacement from sensor (pixels)
+     * @param altitude Altitude above ground (meters)
+     * @param interval Sampling interval (seconds)
+     * @return Velocity X and Y velocity (m/s)
+     */
+    Velocity calculateVelocityDirect(int16_t delta_x, int16_t delta_y,
+                                     float altitude, float interval) const;
+
+    /**
+     * @brief Calculate optical flow rate (PX4式)
+     *
+     * Formula: flow_rate = delta / 385.0 (rad/s)
+     * Best for advanced navigation systems with sensor fusion.
+     *
+     * @param delta_x X displacement from sensor (pixels)
+     * @param delta_y Y displacement from sensor (pixels)
+     * @param interval Sampling interval (seconds)
+     * @return Velocity Flow rate in X and Y (rad/s)
+     */
+    Velocity calculateFlowRate(int16_t delta_x, int16_t delta_y,
+                               float interval) const;
+
+    /**
+     * @brief Convert flow rate to velocity
+     *
+     * Formula: velocity = flow_rate * altitude
+     *
+     * @param flow_rate Flow rate in X and Y (rad/s)
+     * @param altitude Altitude above ground (meters)
+     * @return Velocity X and Y velocity (m/s)
+     */
+    Velocity flowRateToVelocity(const Velocity& flow_rate, float altitude) const;
+
+    /**
+     * @brief Enable frame capture mode
+     *
+     * @throws PMW3901Exception if operation fails
+     */
+    void enableFrameCapture();
+
+    /**
+     * @brief Read image frame (35x35 pixels, 8-bit grayscale)
+     *
+     * @return std::array<uint8_t, 1225> Frame data (35*35 = 1225 pixels)
+     * @throws PMW3901Exception if read fails
+     */
+    std::array<uint8_t, PMW3901_FRAME_SIZE> readFrame();
+
+    /**
+     * @brief Read a register value (for debugging)
+     *
+     * @param reg Register address
+     * @return uint8_t Register value
+     * @throws PMW3901Exception if read fails
+     */
+    uint8_t readRegister(uint8_t reg) const;
+
+    /**
+     * @brief Write a register value (for debugging)
+     *
+     * @param reg Register address
+     * @param value Value to write
+     * @throws PMW3901Exception if write fails
+     */
+    void writeRegister(uint8_t reg, uint8_t value);
 
 private:
-    bool initialized_ = false;
-    Config config_;
+    pmw3901_t device_;     ///< C device handle
+    bool initialized_;     ///< Initialization status
+
+    /**
+     * @brief Check if device is initialized
+     *
+     * @throws PMW3901Exception if not initialized
+     */
+    void checkInitialized() const;
 };
 
-}  // namespace stampfly
+} // namespace stampfly
+
+#endif // PMW3901_WRAPPER_HPP

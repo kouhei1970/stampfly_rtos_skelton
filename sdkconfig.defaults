@@ -53,3 +53,6 @@ CONFIG_LEDC_CTRL_FUNC_IN_IRAM=y
 
 # RMT (for WS2812)
 CONFIG_RMT_ISR_IRAM_SAFE=y
+
+# C++ exceptions (required by stampfly_opticalflow)
+CONFIG_COMPILER_CXX_EXCEPTIONS=y
