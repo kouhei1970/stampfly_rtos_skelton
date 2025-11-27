@@ -5,6 +5,7 @@ idf_component_register(
         "src/bmi270_init.c"
         "src/bmi270_data.c"
         "src/bmi270_interrupt.c"
+        "src/bmi270_wrapper.cpp"
     INCLUDE_DIRS
         "include"
     REQUIRES
