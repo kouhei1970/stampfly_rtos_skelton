@@ -588,9 +588,19 @@ static void CLITask(void* pvParameters)
     g_cli.print("Type 'help' for available commands\r\n");
     g_cli.print("> ");
 
+    TickType_t last_teleplot = xTaskGetTickCount();
+    const TickType_t teleplot_period = pdMS_TO_TICKS(50);  // 20Hz teleplot output
+
     while (true) {
         if (g_cli.isInitialized()) {
             g_cli.processInput();
+
+            // Output teleplot data at fixed interval
+            TickType_t now = xTaskGetTickCount();
+            if (g_cli.isTeleplotEnabled() && (now - last_teleplot) >= teleplot_period) {
+                g_cli.outputTeleplot();
+                last_teleplot = now;
+            }
         }
         vTaskDelay(pdMS_TO_TICKS(10));  // 10ms polling
     }

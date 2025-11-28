@@ -13,6 +13,7 @@
  */
 
 #include "cli.hpp"
+#include "stampfly_state.hpp"
 #include "esp_log.h"
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
@@ -31,6 +32,7 @@ namespace stampfly {
 static void cmd_help(int argc, char** argv, void* context);
 static void cmd_status(int argc, char** argv, void* context);
 static void cmd_sensor(int argc, char** argv, void* context);
+static void cmd_teleplot(int argc, char** argv, void* context);
 static void cmd_calib(int argc, char** argv, void* context);
 static void cmd_motor(int argc, char** argv, void* context);
 static void cmd_pair(int argc, char** argv, void* context);
@@ -176,6 +178,7 @@ void CLI::registerDefaultCommands()
     registerCommand("help", cmd_help, "Show available commands", this);
     registerCommand("status", cmd_status, "Show system status", this);
     registerCommand("sensor", cmd_sensor, "Show sensor data", this);
+    registerCommand("teleplot", cmd_teleplot, "Teleplot stream [on|off]", this);
     registerCommand("calib", cmd_calib, "Run calibration", this);
     registerCommand("motor", cmd_motor, "Motor control", this);
     registerCommand("pair", cmd_pair, "Enter pairing mode", this);
@@ -207,45 +210,73 @@ static void cmd_status(int, char**, void* context)
 static void cmd_sensor(int argc, char** argv, void* context)
 {
     CLI* cli = static_cast<CLI*>(context);
+    auto& state = StampFlyState::getInstance();
 
     if (argc < 2) {
-        cli->print("Usage: sensor [imu|mag|baro|tof|flow|power]\r\n");
+        cli->print("Usage: sensor [imu|mag|baro|tof|flow|power|all]\r\n");
         return;
     }
 
     const char* sensor = argv[1];
-    if (strcmp(sensor, "imu") == 0) {
-        cli->print("IMU Data (stub):\r\n");
-        cli->print("  Accel: X=0.00, Y=0.00, Z=9.81 [m/s^2]\r\n");
-        cli->print("  Gyro:  X=0.00, Y=0.00, Z=0.00 [rad/s]\r\n");
+    if (strcmp(sensor, "imu") == 0 || strcmp(sensor, "all") == 0) {
+        Vec3 accel, gyro;
+        state.getIMUData(accel, gyro);
+        cli->print("IMU:\r\n");
+        cli->print("  Accel: X=%.2f, Y=%.2f, Z=%.2f [m/s^2]\r\n", accel.x, accel.y, accel.z);
+        cli->print("  Gyro:  X=%.3f, Y=%.3f, Z=%.3f [rad/s]\r\n", gyro.x, gyro.y, gyro.z);
     }
-    else if (strcmp(sensor, "mag") == 0) {
-        cli->print("Magnetometer Data (stub):\r\n");
-        cli->print("  Mag: X=20.0, Y=0.0, Z=40.0 [uT]\r\n");
+    if (strcmp(sensor, "mag") == 0 || strcmp(sensor, "all") == 0) {
+        Vec3 mag;
+        state.getMagData(mag);
+        cli->print("Mag: X=%.1f, Y=%.1f, Z=%.1f [uT]\r\n", mag.x, mag.y, mag.z);
     }
-    else if (strcmp(sensor, "baro") == 0) {
-        cli->print("Barometer Data (stub):\r\n");
-        cli->print("  Pressure: 101325 [Pa]\r\n");
-        cli->print("  Altitude: 0.00 [m]\r\n");
+    if (strcmp(sensor, "baro") == 0 || strcmp(sensor, "all") == 0) {
+        float altitude, pressure;
+        state.getBaroData(altitude, pressure);
+        cli->print("Baro: Pressure=%.0f [Pa], Alt=%.2f [m]\r\n", pressure, altitude);
     }
-    else if (strcmp(sensor, "tof") == 0) {
-        cli->print("ToF Data (stub):\r\n");
-        cli->print("  Bottom: 0.50 [m]\r\n");
-        cli->print("  Front:  2.00 [m]\r\n");
+    if (strcmp(sensor, "tof") == 0 || strcmp(sensor, "all") == 0) {
+        float bottom, front;
+        state.getToFData(bottom, front);
+        cli->print("ToF: Bottom=%.3f [m], Front=%.3f [m]\r\n", bottom, front);
     }
-    else if (strcmp(sensor, "flow") == 0) {
-        cli->print("Optical Flow Data (stub):\r\n");
-        cli->print("  Vx: 0.00, Vy: 0.00 [m/s]\r\n");
-        cli->print("  Quality: 80\r\n");
+    if (strcmp(sensor, "flow") == 0 || strcmp(sensor, "all") == 0) {
+        float vx, vy;
+        state.getFlowData(vx, vy);
+        cli->print("OptFlow: Vx=%.3f, Vy=%.3f [m/s]\r\n", vx, vy);
     }
-    else if (strcmp(sensor, "power") == 0) {
-        cli->print("Power Data (stub):\r\n");
-        cli->print("  Voltage: 4.20 [V]\r\n");
-        cli->print("  Current: 0.50 [A]\r\n");
+    if (strcmp(sensor, "power") == 0 || strcmp(sensor, "all") == 0) {
+        float voltage, current;
+        state.getPowerData(voltage, current);
+        cli->print("Power: %.2f [V], %.1f [mA]\r\n", voltage, current * 1000.0f);
     }
-    else {
+    if (strcmp(sensor, "imu") != 0 && strcmp(sensor, "mag") != 0 &&
+        strcmp(sensor, "baro") != 0 && strcmp(sensor, "tof") != 0 &&
+        strcmp(sensor, "flow") != 0 && strcmp(sensor, "power") != 0 &&
+        strcmp(sensor, "all") != 0) {
         cli->print("Unknown sensor: %s\r\n", sensor);
-        cli->print("Available: imu, mag, baro, tof, flow, power\r\n");
+        cli->print("Available: imu, mag, baro, tof, flow, power, all\r\n");
+    }
+}
+
+static void cmd_teleplot(int argc, char** argv, void* context)
+{
+    CLI* cli = static_cast<CLI*>(context);
+
+    if (argc < 2) {
+        cli->print("Usage: teleplot [on|off]\r\n");
+        cli->print("Current: %s\r\n", cli->isTeleplotEnabled() ? "on" : "off");
+        return;
+    }
+
+    if (strcmp(argv[1], "on") == 0) {
+        cli->setTeleplotEnabled(true);
+        cli->print("Teleplot streaming ON\r\n");
+    } else if (strcmp(argv[1], "off") == 0) {
+        cli->setTeleplotEnabled(false);
+        cli->print("Teleplot streaming OFF\r\n");
+    } else {
+        cli->print("Usage: teleplot [on|off]\r\n");
     }
 }
 
@@ -381,6 +412,54 @@ static void cmd_version(int, char**, void* context)
     cli->print("StampFly RTOS Skeleton\r\n");
     cli->print("  ESP-IDF: %s\r\n", esp_get_idf_version());
     cli->print("  Chip: ESP32-S3\r\n");
+}
+
+void CLI::outputTeleplot()
+{
+    if (!teleplot_enabled_) return;
+
+    auto& state = StampFlyState::getInstance();
+
+    // IMU data
+    Vec3 accel, gyro;
+    state.getIMUData(accel, gyro);
+    print(">accel_x:%.3f\r\n", accel.x);
+    print(">accel_y:%.3f\r\n", accel.y);
+    print(">accel_z:%.3f\r\n", accel.z);
+    print(">gyro_x:%.4f\r\n", gyro.x);
+    print(">gyro_y:%.4f\r\n", gyro.y);
+    print(">gyro_z:%.4f\r\n", gyro.z);
+
+    // Mag data
+    Vec3 mag;
+    state.getMagData(mag);
+    print(">mag_x:%.1f\r\n", mag.x);
+    print(">mag_y:%.1f\r\n", mag.y);
+    print(">mag_z:%.1f\r\n", mag.z);
+
+    // Baro data
+    float altitude, pressure;
+    state.getBaroData(altitude, pressure);
+    print(">pressure:%.0f\r\n", pressure);
+    print(">altitude:%.3f\r\n", altitude);
+
+    // ToF data
+    float tof_bottom, tof_front;
+    state.getToFData(tof_bottom, tof_front);
+    print(">tof_bottom:%.3f\r\n", tof_bottom);
+    print(">tof_front:%.3f\r\n", tof_front);
+
+    // OptFlow data
+    float flow_vx, flow_vy;
+    state.getFlowData(flow_vx, flow_vy);
+    print(">flow_vx:%.4f\r\n", flow_vx);
+    print(">flow_vy:%.4f\r\n", flow_vy);
+
+    // Power data
+    float voltage, current;
+    state.getPowerData(voltage, current);
+    print(">voltage:%.3f\r\n", voltage);
+    print(">current:%.1f\r\n", current * 1000.0f);
 }
 
 }  // namespace stampfly

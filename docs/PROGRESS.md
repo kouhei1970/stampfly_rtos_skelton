@@ -82,6 +82,23 @@ main.cppに以下を統合:
 | Button | ✅ | ✅ | イベント検出動作確認 |
 | ESP-NOW | ✅ | 未確認 | 初期化成功、通信は未テスト |
 | CLI | ✅ | ✅ | helpコマンド動作確認、エコーバック正常 |
+| CLI teleplot | ✅ | - | Teleplotストリーミング機能追加 |
+
+### CLI コマンド一覧
+| コマンド | 説明 |
+|---------|------|
+| `help` | 利用可能コマンド表示 |
+| `status` | システム状態表示 |
+| `sensor [imu\|mag\|baro\|tof\|flow\|power\|all]` | センサ値表示（実データ） |
+| `teleplot [on\|off]` | Teleplotストリーミング開始/停止 |
+| `calib [gyro\|accel\|mag]` | キャリブレーション（stub） |
+| `motor [arm\|disarm\|test <id> <throttle>]` | モーター制御（stub） |
+| `pair` | ペアリングモード開始 |
+| `unpair` | ペアリング解除 |
+| `gain <name> <value>` | 制御ゲイン設定（stub） |
+| `attitude` | 姿勢表示（stub） |
+| `version` | バージョン情報表示 |
+| `reset` | システムリセット |
 
 ### 次回確認事項: センサ値の妥当性検証
 - IMU: 静止時にZ軸加速度≈9.8m/s²、ジャイロ≈0
@@ -253,5 +270,6 @@ idf.py -p /dev/tty.usbmodem* flash monitor
 
 | 日付 | 内容 |
 |------|------|
+| 2025-11-28 | CLI teleplotコマンド追加、sensorコマンドを実データ対応 |
 | 2025-11-28 | 実機テスト完了、各種バグ修正、CLI動作確認 |
 | 2025-11-27 | Phase 4 タスク統合完了、ビルド成功 |

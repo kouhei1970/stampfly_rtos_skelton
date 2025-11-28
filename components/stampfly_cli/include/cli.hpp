@@ -71,6 +71,21 @@ public:
      */
     void printHelp();
 
+    /**
+     * @brief Check if teleplot streaming is enabled
+     */
+    bool isTeleplotEnabled() const { return teleplot_enabled_; }
+
+    /**
+     * @brief Set teleplot streaming state
+     */
+    void setTeleplotEnabled(bool enabled) { teleplot_enabled_ = enabled; }
+
+    /**
+     * @brief Output teleplot data (call periodically from task)
+     */
+    void outputTeleplot();
+
 private:
     /**
      * @brief Static command entry (no dynamic allocation)
@@ -85,6 +100,7 @@ private:
     void parseAndExecute(const char* line);
 
     bool initialized_ = false;
+    bool teleplot_enabled_ = false;
     CommandEntry commands_[MAX_COMMANDS] = {};
     size_t command_count_ = 0;
     char input_buffer_[MAX_CMD_LEN] = {0};
