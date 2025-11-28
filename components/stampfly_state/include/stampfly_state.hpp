@@ -95,6 +95,10 @@ public:
     void getFlowData(float& vx, float& vy) const;
     void getPowerData(float& voltage, float& current) const;
 
+    // Sensor availability
+    bool isFrontToFAvailable() const;
+    void setFrontToFAvailable(bool available);
+
     // Simple getters
     float getAltitude() const;
     float getVoltage() const;
@@ -137,6 +141,7 @@ private:
     float tof_front_ = 0;
     uint8_t tof_bottom_status_ = 0;
     uint8_t tof_front_status_ = 0;
+    bool front_tof_available_ = false;
     int16_t flow_delta_x_ = 0;
     int16_t flow_delta_y_ = 0;
     uint8_t flow_squal_ = 0;

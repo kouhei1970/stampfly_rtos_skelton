@@ -39,9 +39,9 @@ main.cppに以下を統合:
 |----------|--------|--------|------|---------|
 | IMUTask | 400Hz | 24 | 1 | 8192 |
 | OptFlowTask | 100Hz | 20 | 1 | 8192 |
-| MagTask | 100Hz | 18 | 1 | 4096 |
-| BaroTask | 50Hz | 16 | 1 | 4096 |
-| ToFTask | 30Hz | 14 | 1 | 4096 |
+| MagTask | 100Hz | 18 | 1 | 8192 |
+| BaroTask | 50Hz | 16 | 1 | 8192 |
+| ToFTask | 30Hz | 14 | 1 | 8192 |
 | PowerTask | 10Hz | 12 | 0 | 4096 |
 | LEDTask | 30Hz | 8 | 0 | 4096 |
 | ButtonTask | 100Hz | 10 | 0 | 4096 |
@@ -70,19 +70,19 @@ main.cppに以下を統合:
 | 項目 | 通信 | 値検証 | 備考 |
 |------|------|--------|------|
 | ブート・起動音 | ✅ | - | 正常に起動 |
-| IMU (BMI270) | ✅ | 未確認 | SPI通信成功、値の妥当性は未検証 |
-| Mag (BMM150) | ✅ | 未確認 | I2C通信成功、値の妥当性は未検証 |
-| Baro (BMP280) | ✅ | 未確認 | I2C通信成功、値の妥当性は未検証 |
-| ToF Bottom (VL53L3CX) | ✅ | 未確認 | 通信成功、距離値の妥当性は未検証 |
-| ToF Front (VL53L3CX) | ✅ | 未確認 | 通信成功、距離値の妥当性は未検証 |
-| OptFlow (PMW3901) | ✅ | 未確認 | SPI通信成功、burst read動作、値の妥当性は未検証 |
+| IMU (BMI270) | ✅ | ✅ | SPI通信成功、Teleplotで値確認 |
+| Mag (BMM150) | ✅ | ✅ | I2C通信成功、Teleplotで値確認 |
+| Baro (BMP280) | ✅ | ✅ | I2C通信成功、気圧・高度取得確認 |
+| ToF Bottom (VL53L3CX) | ✅ | ✅ | 距離値取得確認 |
+| ToF Front (VL53L3CX) | ✅ | - | オプション（バッテリアダプタ兼用）|
+| OptFlow (PMW3901) | ✅ | ✅ | SPI通信成功、burst read動作確認 |
 | Power (INA3221) | ✅ | 未確認 | 電圧・電流取得、値の妥当性は未検証 |
 | LED (WS2812) | ✅ | ✅ | 状態表示パターン動作確認 |
 | Buzzer | ✅ | ✅ | 起動音・警告音動作確認 |
 | Button | ✅ | ✅ | イベント検出動作確認 |
 | ESP-NOW | ✅ | 未確認 | 初期化成功、通信は未テスト |
 | CLI | ✅ | ✅ | helpコマンド動作確認、エコーバック正常 |
-| CLI teleplot | ✅ | - | Teleplotストリーミング機能追加 |
+| CLI teleplot | ✅ | ✅ | Teleplotストリーミング動作確認 |
 
 ### CLI コマンド一覧
 | コマンド | 説明 |
@@ -145,6 +145,22 @@ main.cppに以下を統合:
 9. **ToFセンサーI2Cエラー連発**
    - 原因: センサー切断時にエラーログが大量出力
    - 修正: エラー10回連続で該当センサーを自動無効化
+
+10. **正面ToF未接続時のI2Cエラー**
+    - 原因: 正面ToF(バッテリアダプタ兼用)が未接続でもアクセス試行
+    - 修正: initDualSensorsで正面ToF未検出時はXSHUTをLOWに保持、StampFlyStateにフラグ追加
+
+11. **センサ値がOutlierDetectorでフィルタされる問題**
+    - 原因: Mag/Baro/ToFのOutlierDetectorが厳しすぎて初期値を弾いていた
+    - 修正: Outlierフィルタを一時的に無効化（キャリブレーション後に再有効化予定）
+
+12. **ToFが0mm/status=255を返す問題**
+    - 原因: VL53L3CXの読み取り後にclearInterruptAndStartMeasurement()未呼び出し
+    - 修正: ToFTaskでisDataReady()確認後、getDistance()→clearInterruptAndStartMeasurement()の正しいシーケンスに修正
+
+13. **ESKF/Estimator使用時のクラッシュ**
+    - 原因: 調査中（一時的に無効化して回避）
+    - 修正: ESKF/AttitudeEstimator/AltitudeEstimatorの更新を一時的にコメントアウト
 
 ---
 
@@ -270,6 +286,7 @@ idf.py -p /dev/tty.usbmodem* flash monitor
 
 | 日付 | 内容 |
 |------|------|
+| 2025-11-28 | 正面ToF未接続対応、OutlierDetector緩和、ToF読み取りシーケンス修正、全センサ値取得確認 |
 | 2025-11-28 | CLI teleplotコマンド追加、sensorコマンドを実データ対応 |
 | 2025-11-28 | 実機テスト完了、各種バグ修正、CLI動作確認 |
 | 2025-11-27 | Phase 4 タスク統合完了、ビルド成功 |

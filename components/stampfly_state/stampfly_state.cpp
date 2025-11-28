@@ -162,6 +162,21 @@ void StampFlyState::getPowerData(float& voltage, float& current) const
     xSemaphoreGive(mutex_);
 }
 
+bool StampFlyState::isFrontToFAvailable() const
+{
+    xSemaphoreTake(mutex_, portMAX_DELAY);
+    bool available = front_tof_available_;
+    xSemaphoreGive(mutex_);
+    return available;
+}
+
+void StampFlyState::setFrontToFAvailable(bool available)
+{
+    xSemaphoreTake(mutex_, portMAX_DELAY);
+    front_tof_available_ = available;
+    xSemaphoreGive(mutex_);
+}
+
 // Simple getters
 float StampFlyState::getAltitude() const
 {

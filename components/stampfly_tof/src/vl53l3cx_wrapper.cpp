@@ -382,7 +382,7 @@ esp_err_t VL53L3CXWrapper::initDualSensors(
         return ret;
     }
 
-    // Now initialize front sensor
+    // Now try to initialize front sensor (optional - may not be connected)
     gpio_set_level(front_xshut, 1);
     vTaskDelay(pdMS_TO_TICKS(10));
 
@@ -391,8 +391,12 @@ esp_err_t VL53L3CXWrapper::initDualSensors(
 
     ret = front_sensor.init(front_config);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to initialize front sensor");
-        return ret;
+        // Front sensor not connected - this is OK, keep XSHUT low to avoid I2C errors
+        gpio_set_level(front_xshut, 0);
+        ESP_LOGW(TAG, "Front ToF not detected (optional sensor) - disabled");
+        // Return OK since bottom sensor is working
+        ESP_LOGI(TAG, "Bottom ToF sensor initialized successfully (front not available)");
+        return ESP_OK;
     }
 
     ESP_LOGI(TAG, "Dual ToF sensors initialized successfully");

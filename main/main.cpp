@@ -94,9 +94,9 @@ static constexpr UBaseType_t PRIORITY_CLI_TASK = 5;
 
 static constexpr uint32_t STACK_SIZE_IMU = 8192;
 static constexpr uint32_t STACK_SIZE_OPTFLOW = 8192;
-static constexpr uint32_t STACK_SIZE_MAG = 4096;
-static constexpr uint32_t STACK_SIZE_BARO = 4096;
-static constexpr uint32_t STACK_SIZE_TOF = 4096;
+static constexpr uint32_t STACK_SIZE_MAG = 8192;
+static constexpr uint32_t STACK_SIZE_BARO = 8192;
+static constexpr uint32_t STACK_SIZE_TOF = 8192;
 static constexpr uint32_t STACK_SIZE_POWER = 4096;
 static constexpr uint32_t STACK_SIZE_LED = 4096;
 static constexpr uint32_t STACK_SIZE_BUTTON = 4096;
@@ -191,19 +191,20 @@ static void IMUTask(void* pvParameters)
                 stampfly::StateVector3 gyro_vec(filtered_gyro[0], filtered_gyro[1], filtered_gyro[2]);
                 state.updateIMU(accel_vec, gyro_vec);
 
+                // TODO: Re-enable after debugging
                 // Update ESKF predict step
-                if (g_eskf.isInitialized()) {
-                    stampfly::math::Vector3 a(filtered_accel[0], filtered_accel[1], filtered_accel[2]);
-                    stampfly::math::Vector3 g(filtered_gyro[0], filtered_gyro[1], filtered_gyro[2]);
-                    g_eskf.predict(a, g, 0.0025f);  // 2.5ms
-                }
+                // if (g_eskf.isInitialized()) {
+                //     stampfly::math::Vector3 a(filtered_accel[0], filtered_accel[1], filtered_accel[2]);
+                //     stampfly::math::Vector3 g(filtered_gyro[0], filtered_gyro[1], filtered_gyro[2]);
+                //     g_eskf.predict(a, g, 0.0025f);  // 2.5ms
+                // }
 
                 // Update simple attitude estimator
-                if (g_attitude_est.isInitialized()) {
-                    stampfly::math::Vector3 a(filtered_accel[0], filtered_accel[1], filtered_accel[2]);
-                    stampfly::math::Vector3 g(filtered_gyro[0], filtered_gyro[1], filtered_gyro[2]);
-                    g_attitude_est.update(a, g, 0.0025f);
-                }
+                // if (g_attitude_est.isInitialized()) {
+                //     stampfly::math::Vector3 a(filtered_accel[0], filtered_accel[1], filtered_accel[2]);
+                //     stampfly::math::Vector3 g(filtered_gyro[0], filtered_gyro[1], filtered_gyro[2]);
+                //     g_attitude_est.update(a, g, 0.0025f);
+                // }
             }
         }
 
@@ -264,17 +265,15 @@ static void MagTask(void* pvParameters)
         if (g_mag.isInitialized()) {
             stampfly::MagData mag;
             if (g_mag.read(mag) == ESP_OK) {
-                // Outlier check (expected ~45 uT in Japan)
-                stampfly::Vec3 mag_vec = {mag.x, mag.y, mag.z};
-                if (stampfly::OutlierDetector::isMagValid(mag_vec, 45.0f)) {
-                    state.updateMag(mag.x, mag.y, mag.z);
+                // Update state (no outlier filter for now - needs calibration first)
+                state.updateMag(mag.x, mag.y, mag.z);
 
-                    // Update ESKF magnetometer
-                    if (g_eskf.isInitialized()) {
-                        stampfly::math::Vector3 m(mag.x, mag.y, mag.z);
-                        g_eskf.updateMag(m);
-                    }
-                }
+                // TODO: Re-enable after debugging
+                // Update ESKF magnetometer
+                // if (g_eskf.isInitialized()) {
+                //     stampfly::math::Vector3 m(mag.x, mag.y, mag.z);
+                //     g_eskf.updateMag(m);
+                // }
             }
         }
 
@@ -293,30 +292,13 @@ static void BaroTask(void* pvParameters)
     const TickType_t period = pdMS_TO_TICKS(20);  // 50Hz
 
     auto& state = stampfly::StampFlyState::getInstance();
-    static float prev_altitude = 0.0f;
 
     while (true) {
         if (g_baro.isInitialized()) {
             stampfly::BaroData baro;
             if (g_baro.read(baro) == ESP_OK) {
-                float altitude = g_baro.calculateAltitude(baro.pressure_pa);
-
-                // Outlier check
-                if (stampfly::OutlierDetector::isBaroValid(altitude, prev_altitude, 0.02f)) {
-                    state.updateBaro(baro.pressure_pa, baro.temperature_c, altitude);
-
-                    // Update ESKF barometer
-                    if (g_eskf.isInitialized()) {
-                        g_eskf.updateBaro(altitude);
-                    }
-
-                    // Update simple altitude estimator
-                    if (g_altitude_est.isInitialized()) {
-                        g_altitude_est.updateBaro(altitude);
-                    }
-
-                    prev_altitude = altitude;
-                }
+                // Use altitude from read() directly (already calculated)
+                state.updateBaro(baro.pressure_pa, baro.temperature_c, baro.altitude_m);
             }
         }
 
@@ -329,7 +311,8 @@ static void BaroTask(void* pvParameters)
  */
 static void ToFTask(void* pvParameters)
 {
-    ESP_LOGI(TAG, "ToFTask started");
+    ESP_LOGI(TAG, "ToFTask started, bottom_init=%d, front_init=%d",
+             g_tof_bottom.isInitialized(), g_tof_front.isInitialized());
 
     TickType_t last_wake_time = xTaskGetTickCount();
     const TickType_t period = pdMS_TO_TICKS(33);  // ~30Hz
@@ -337,57 +320,71 @@ static void ToFTask(void* pvParameters)
     auto& state = stampfly::StampFlyState::getInstance();
 
     // Error counters for sensor disable on repeated failures
-    static const int MAX_ERRORS = 10;
-    static int bottom_errors = 0;
-    static int front_errors = 0;
-    static bool bottom_disabled = false;
-    static bool front_disabled = false;
+    const int MAX_ERRORS = 10;
+    int bottom_errors = 0;
+    int front_errors = 0;
+    bool bottom_disabled = false;
+    bool front_disabled = false;
+
+    static int log_count = 0;
 
     while (true) {
         // Bottom ToF
         if (g_tof_bottom.isInitialized() && !bottom_disabled) {
-            uint16_t distance_mm;
-            uint8_t status;
-            if (g_tof_bottom.getDistance(distance_mm, status) == ESP_OK) {
-                bottom_errors = 0;  // Reset on success
-                if (stampfly::OutlierDetector::isToFValid(status, 1.0f)) {
-                    float distance_m = distance_mm * 0.001f;
-                    state.updateToF(stampfly::ToFPosition::BOTTOM, distance_m, status);
+            // Check if data is ready
+            bool data_ready = false;
+            g_tof_bottom.isDataReady(data_ready);
 
-                    // Update ESKF with ToF
-                    if (g_eskf.isInitialized()) {
-                        g_eskf.updateToF(distance_m);
+            if (data_ready) {
+                uint16_t distance_mm;
+                uint8_t status;
+                esp_err_t ret = g_tof_bottom.getDistance(distance_mm, status);
+                if (ret == ESP_OK) {
+                    bottom_errors = 0;  // Reset on success
+
+                    // Only update if valid measurement (status 0-4)
+                    if (status <= 4) {
+                        float distance_m = distance_mm * 0.001f;
+                        state.updateToF(stampfly::ToFPosition::BOTTOM, distance_m, status);
                     }
 
-                    // Update simple altitude estimator
-                    if (g_altitude_est.isInitialized()) {
-                        float roll, pitch, yaw;
-                        state.getAttitudeEuler(roll, pitch, yaw);
-                        g_altitude_est.updateToF(distance_m, pitch, roll);
+                    // Debug log every 30 readings (~1 second)
+                    if (++log_count >= 30) {
+                        ESP_LOGI(TAG, "ToF Bottom: %d mm, status=%d", distance_mm, status);
+                        log_count = 0;
                     }
-                }
-            } else {
-                if (++bottom_errors >= MAX_ERRORS) {
-                    ESP_LOGW(TAG, "Bottom ToF disabled due to repeated errors");
-                    bottom_disabled = true;
+
+                    // Clear interrupt and start next measurement
+                    g_tof_bottom.clearInterruptAndStartMeasurement();
+                } else {
+                    if (++bottom_errors >= MAX_ERRORS) {
+                        ESP_LOGW(TAG, "Bottom ToF disabled: err=%s", esp_err_to_name(ret));
+                        bottom_disabled = true;
+                    }
                 }
             }
         }
 
         // Front ToF
         if (g_tof_front.isInitialized() && !front_disabled) {
-            uint16_t distance_mm;
-            uint8_t status;
-            if (g_tof_front.getDistance(distance_mm, status) == ESP_OK) {
-                front_errors = 0;  // Reset on success
-                if (stampfly::OutlierDetector::isToFValid(status, 1.0f)) {
-                    float distance_m = distance_mm * 0.001f;
-                    state.updateToF(stampfly::ToFPosition::FRONT, distance_m, status);
-                }
-            } else {
-                if (++front_errors >= MAX_ERRORS) {
-                    ESP_LOGW(TAG, "Front ToF disabled due to repeated errors");
-                    front_disabled = true;
+            bool data_ready = false;
+            g_tof_front.isDataReady(data_ready);
+
+            if (data_ready) {
+                uint16_t distance_mm;
+                uint8_t status;
+                if (g_tof_front.getDistance(distance_mm, status) == ESP_OK) {
+                    front_errors = 0;  // Reset on success
+                    if (status <= 4) {
+                        float distance_m = distance_mm * 0.001f;
+                        state.updateToF(stampfly::ToFPosition::FRONT, distance_m, status);
+                    }
+                    g_tof_front.clearInterruptAndStartMeasurement();
+                } else {
+                    if (++front_errors >= MAX_ERRORS) {
+                        ESP_LOGW(TAG, "Front ToF disabled due to repeated errors");
+                        front_disabled = true;
+                    }
                 }
             }
         }
@@ -776,6 +773,7 @@ static esp_err_t initSensors()
 
     // ToF sensors (VL53L3CX) - I2C with XSHUT control
     // Dual sensor initialization: bottom (altitude) and front (obstacle detection)
+    // Note: Front ToF is optional (removable for battery adapter)
     {
         ret = stampfly::VL53L3CXWrapper::initDualSensors(
             g_tof_bottom,
@@ -785,18 +783,21 @@ static esp_err_t initSensors()
             static_cast<gpio_num_t>(GPIO_TOF_XSHUT_FRONT)
         );
         if (ret != ESP_OK) {
-            ESP_LOGW(TAG, "Dual ToF init failed: %s", esp_err_to_name(ret));
-            // Try bottom sensor only as fallback
-            auto bottom_cfg = stampfly::VL53L3CXWrapper::Config::defaultBottom(g_i2c_bus);
-            ret = g_tof_bottom.init(bottom_cfg);
-            if (ret == ESP_OK) {
-                g_tof_bottom.startRanging();
-                ESP_LOGI(TAG, "Bottom ToF initialized (front not available)");
-            }
+            ESP_LOGW(TAG, "ToF init failed: %s", esp_err_to_name(ret));
         } else {
-            g_tof_bottom.startRanging();
-            g_tof_front.startRanging();
-            ESP_LOGI(TAG, "Both ToF sensors initialized");
+            // Start ranging for initialized sensors
+            if (g_tof_bottom.isInitialized()) {
+                g_tof_bottom.startRanging();
+                ESP_LOGI(TAG, "Bottom ToF initialized and ranging");
+            }
+            if (g_tof_front.isInitialized()) {
+                g_tof_front.startRanging();
+                stampfly::StampFlyState::getInstance().setFrontToFAvailable(true);
+                ESP_LOGI(TAG, "Front ToF initialized and ranging");
+            } else {
+                stampfly::StampFlyState::getInstance().setFrontToFAvailable(false);
+                ESP_LOGI(TAG, "Front ToF not available (optional sensor)");
+            }
         }
     }
 
