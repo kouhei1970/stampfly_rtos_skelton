@@ -37,6 +37,7 @@ public:
         float tof_noise;            // ToFノイズ [m]
         float mag_noise;            // 地磁気ノイズ [uT]
         float flow_noise;           // オプティカルフローノイズ
+        float accel_att_noise;      // 加速度計姿勢補正ノイズ [m/s²]
 
         // 初期共分散
         float init_pos_std;
@@ -51,17 +52,31 @@ public:
         // 重力加速度
         float gravity;
 
+        // アウトライア棄却閾値 (Mahalanobis距離の二乗)
+        float mahalanobis_threshold;
+
+        // ToF傾き閾値 [rad] (これ以上傾いていると更新スキップ)
+        float tof_tilt_threshold;
+
+        // 加速度計姿勢補正のモーション閾値 [m/s²]
+        float accel_motion_threshold;
+
+        // オプティカルフロー高度閾値 [m]
+        float flow_min_height;
+        float flow_max_height;
+
         // デフォルト設定
         static Config defaultConfig() {
             Config cfg;
-            cfg.gyro_noise = 0.01f;
-            cfg.accel_noise = 0.1f;
-            cfg.gyro_bias_noise = 0.0001f;
-            cfg.accel_bias_noise = 0.001f;
+            cfg.gyro_noise = 0.001f;           // GitHub版: 0.001 rad/s
+            cfg.accel_noise = 0.1f;            // GitHub版: 0.1 m/s²
+            cfg.gyro_bias_noise = 0.00005f;    // GitHub版: 0.00005 rad/s/√s
+            cfg.accel_bias_noise = 0.001f;     // GitHub版: 0.001 m/s²/√s
             cfg.baro_noise = 1.0f;
             cfg.tof_noise = 0.05f;
-            cfg.mag_noise = 5.0f;
-            cfg.flow_noise = 0.5f;
+            cfg.mag_noise = 0.3f;              // GitHub版: 0.3
+            cfg.flow_noise = 1.0f;             // GitHub版: 1.0 rad/s
+            cfg.accel_att_noise = 0.1f;        // GitHub版: 0.1 m/s²
             cfg.init_pos_std = 1.0f;
             cfg.init_vel_std = 0.5f;
             cfg.init_att_std = 0.1f;
@@ -69,6 +84,11 @@ public:
             cfg.init_accel_bias_std = 0.1f;
             cfg.mag_ref = Vector3(20.0f, 0.0f, 40.0f);  // 日本近辺の概算
             cfg.gravity = 9.81f;
+            cfg.mahalanobis_threshold = 7.81f; // χ²(2) 95%信頼区間
+            cfg.tof_tilt_threshold = 0.5f;     // ~28度
+            cfg.accel_motion_threshold = 0.5f; // GitHub版: 0.5 m/s²
+            cfg.flow_min_height = 0.1f;
+            cfg.flow_max_height = 4.0f;        // ToFの最大レンジ
             return cfg;
         }
     };
@@ -128,6 +148,15 @@ public:
     void updateFlow(float flow_x, float flow_y, float height);
 
     /**
+     * @brief 加速度計による姿勢補正 (Roll/Pitch)
+     * @param accel 加速度 [m/s²] (ボディ座標系)
+     *
+     * 静止または低速移動時に加速度計から重力方向を推定し、
+     * Roll/Pitchを補正する
+     */
+    void updateAccelAttitude(const Vector3& accel);
+
+    /**
      * @brief 現在の状態取得
      */
     State getState() const { return state_; }
@@ -155,6 +184,12 @@ private:
     // 状態順序: [δp(3), δv(3), δθ(3), δb_g(3), δb_a(3)]
     Matrix<15, 15> P_;
 
+    // 一時行列（スタック使用量削減のためメンバ変数化）
+    Matrix<15, 15> F_;      // 状態遷移行列
+    Matrix<15, 15> Q_;      // プロセスノイズ共分散
+    Matrix<15, 15> temp1_;  // 一時計算用
+    Matrix<15, 15> temp2_;  // 一時計算用
+
     /**
      * @brief エラー状態を名目状態に注入
      * @param dx 15次元エラー状態
@@ -163,12 +198,18 @@ private:
 
     /**
      * @brief EKF更新（汎用）
+     * @return true: 更新成功, false: アウトライア棄却または失敗
      */
     template<int M>
-    void measurementUpdate(const Matrix<M, 1>& z,
+    bool measurementUpdate(const Matrix<M, 1>& z,
                            const Matrix<M, 1>& h,
                            const Matrix<M, 15>& H,
                            const Matrix<M, M>& R);
+
+    /**
+     * @brief 共分散行列の対称性・正定値性を強制
+     */
+    void enforceCovarianceSymmetry();
 };
 
 /**

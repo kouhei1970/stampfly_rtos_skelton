@@ -174,16 +174,35 @@ static void IMUTask(void* pvParameters)
             stampfly::GyroData gyro;
 
             if (g_imu.readSensorData(accel, gyro) == ESP_OK) {
-                // Apply low-pass filters
+                // ============================================================
+                // BMI270座標系 → 機体座標系(NED) 変換
+                // 図より:
+                //   BMI270のX → 機体Y (右方向)
+                //   BMI270のY → 機体X (前方)
+                //   BMI270のZ → 機体-Z (上向き、NEDでは下が正なので符号反転)
+                // 変換式:
+                //   機体X = センサY
+                //   機体Y = センサX
+                //   機体Z = -センサZ
+                // ============================================================
+                float accel_body_x = accel.y;   // 前方正
+                float accel_body_y = accel.x;   // 右正
+                float accel_body_z = -accel.z;  // 下正 (NED)
+
+                float gyro_body_x = gyro.y;     // Roll rate
+                float gyro_body_y = gyro.x;     // Pitch rate
+                float gyro_body_z = -gyro.z;    // Yaw rate
+
+                // Apply low-pass filters (機体座標系で)
                 float filtered_accel[3] = {
-                    g_accel_lpf[0].apply(accel.x),
-                    g_accel_lpf[1].apply(accel.y),
-                    g_accel_lpf[2].apply(accel.z)
+                    g_accel_lpf[0].apply(accel_body_x),
+                    g_accel_lpf[1].apply(accel_body_y),
+                    g_accel_lpf[2].apply(accel_body_z)
                 };
                 float filtered_gyro[3] = {
-                    g_gyro_lpf[0].apply(gyro.x),
-                    g_gyro_lpf[1].apply(gyro.y),
-                    g_gyro_lpf[2].apply(gyro.z)
+                    g_gyro_lpf[0].apply(gyro_body_x),
+                    g_gyro_lpf[1].apply(gyro_body_y),
+                    g_gyro_lpf[2].apply(gyro_body_z)
                 };
 
                 // Update state
@@ -191,20 +210,35 @@ static void IMUTask(void* pvParameters)
                 stampfly::StateVector3 gyro_vec(filtered_gyro[0], filtered_gyro[1], filtered_gyro[2]);
                 state.updateIMU(accel_vec, gyro_vec);
 
-                // TODO: Re-enable after debugging
-                // Update ESKF predict step
-                // if (g_eskf.isInitialized()) {
-                //     stampfly::math::Vector3 a(filtered_accel[0], filtered_accel[1], filtered_accel[2]);
-                //     stampfly::math::Vector3 g(filtered_gyro[0], filtered_gyro[1], filtered_gyro[2]);
-                //     g_eskf.predict(a, g, 0.0025f);  // 2.5ms
-                // }
+                // Prepare vectors for estimators
+                stampfly::math::Vector3 a(filtered_accel[0], filtered_accel[1], filtered_accel[2]);
+                stampfly::math::Vector3 g(filtered_gyro[0], filtered_gyro[1], filtered_gyro[2]);
 
-                // Update simple attitude estimator
-                // if (g_attitude_est.isInitialized()) {
-                //     stampfly::math::Vector3 a(filtered_accel[0], filtered_accel[1], filtered_accel[2]);
-                //     stampfly::math::Vector3 g(filtered_gyro[0], filtered_gyro[1], filtered_gyro[2]);
-                //     g_attitude_est.update(a, g, 0.0025f);
-                // }
+                // Update ESKF predict step
+                if (g_eskf.isInitialized()) {
+                    static uint32_t accel_att_counter = 0;
+
+                    g_eskf.predict(a, g, 0.0025f);  // 2.5ms (400Hz)
+
+                    // 加速度計による姿勢補正 (50Hz = 400Hz / 8)
+                    accel_att_counter++;
+                    if (accel_att_counter >= 8) {
+                        accel_att_counter = 0;
+                        g_eskf.updateAccelAttitude(a);
+                    }
+
+                    // Update StampFlyState with ESKF estimated state
+                    auto eskf_state = g_eskf.getState();
+                    state.updateAttitude(eskf_state.roll, eskf_state.pitch, eskf_state.yaw);
+                    state.updateEstimatedPosition(eskf_state.position.x, eskf_state.position.y, eskf_state.position.z);
+                    state.updateEstimatedVelocity(eskf_state.velocity.x, eskf_state.velocity.y, eskf_state.velocity.z);
+                }
+                // Fallback to simple attitude estimator if ESKF not available
+                else if (g_attitude_est.isInitialized()) {
+                    g_attitude_est.update(a, g, 0.0025f);
+                    auto att_state = g_attitude_est.getState();
+                    state.updateAttitude(att_state.roll, att_state.pitch, att_state.yaw);
+                }
             }
         }
 
@@ -230,13 +264,24 @@ static void OptFlowTask(void* pvParameters)
                 auto burst = g_optflow->readMotionBurst();
                 // Check quality
                 if (stampfly::OutlierDetector::isFlowValid(burst.squal)) {
-                    state.updateOpticalFlow(burst.delta_x, burst.delta_y, burst.squal);
+                    // ============================================================
+                    // PMW3901座標系 → 機体座標系 変換
+                    // センサX → 機体Y (右方向)
+                    // センサY → 機体-X (後方)
+                    // 変換式:
+                    //   機体X = -センサY
+                    //   機体Y = センサX
+                    // ============================================================
+                    int16_t flow_body_x = -burst.delta_y;   // 前方
+                    int16_t flow_body_y =  burst.delta_x;  // 右方向
 
-                    // Update ESKF with flow data (need height for velocity calculation)
+                    state.updateOpticalFlow(flow_body_x, flow_body_y, burst.squal);
+
+                    // Update ESKF with optical flow (need height for velocity calculation)
                     if (g_eskf.isInitialized()) {
                         float height = state.getAltitude();
                         if (height > 0.05f) {  // Only update if height is valid
-                            g_eskf.updateFlow(burst.delta_x * 0.001f, burst.delta_y * 0.001f, height);
+                            g_eskf.updateFlow(flow_body_x * 0.001f, flow_body_y * 0.001f, height);
                         }
                     }
                 }
@@ -265,15 +310,30 @@ static void MagTask(void* pvParameters)
         if (g_mag.isInitialized()) {
             stampfly::MagData mag;
             if (g_mag.read(mag) == ESP_OK) {
-                // Update state (no outlier filter for now - needs calibration first)
-                state.updateMag(mag.x, mag.y, mag.z);
+                // ============================================================
+                // BMM150座標系 → 機体座標系(NED) 変換
+                // 実測により確認:
+                //   機体X = -センサY
+                //   機体Y = センサX
+                //   機体Z = センサZ
+                // ============================================================
+                float mag_body_x = -mag.y;  // 前方正
+                float mag_body_y = mag.x;   // 右正
+                float mag_body_z = mag.z;   // 下正 (NED)
 
-                // TODO: Re-enable after debugging
-                // Update ESKF magnetometer
-                // if (g_eskf.isInitialized()) {
-                //     stampfly::math::Vector3 m(mag.x, mag.y, mag.z);
-                //     g_eskf.updateMag(m);
-                // }
+                // Update state (no outlier filter for now - needs calibration first)
+                state.updateMag(mag_body_x, mag_body_y, mag_body_z);
+
+                stampfly::math::Vector3 m(mag_body_x, mag_body_y, mag_body_z);
+
+                // Update ESKF with magnetometer (yaw correction)
+                if (g_eskf.isInitialized()) {
+                    g_eskf.updateMag(m);
+                }
+                // Fallback to simple attitude estimator
+                else if (g_attitude_est.isInitialized()) {
+                    g_attitude_est.updateMag(m);
+                }
             }
         }
 
@@ -299,6 +359,15 @@ static void BaroTask(void* pvParameters)
             if (g_baro.read(baro) == ESP_OK) {
                 // Use altitude from read() directly (already calculated)
                 state.updateBaro(baro.pressure_pa, baro.temperature_c, baro.altitude_m);
+
+                // Update ESKF with barometer
+                if (g_eskf.isInitialized()) {
+                    g_eskf.updateBaro(baro.altitude_m);
+                }
+                // Fallback to simple altitude estimator
+                else if (g_altitude_est.isInitialized()) {
+                    g_altitude_est.updateBaro(baro.altitude_m);
+                }
             }
         }
 
@@ -346,6 +415,16 @@ static void ToFTask(void* pvParameters)
                     if (status <= 4) {
                         float distance_m = distance_mm * 0.001f;
                         state.updateToF(stampfly::ToFPosition::BOTTOM, distance_m, status);
+
+                        // Update ESKF with ToF
+                        if (g_eskf.isInitialized()) {
+                            g_eskf.updateToF(distance_m);
+                        }
+                        // Fallback to simple altitude estimator
+                        else if (g_altitude_est.isInitialized() && g_attitude_est.isInitialized()) {
+                            auto att = g_attitude_est.getState();
+                            g_altitude_est.updateToF(distance_m, att.pitch, att.roll);
+                        }
                     }
 
                     // Debug log every 30 readings (~1 second)
@@ -911,7 +990,9 @@ static esp_err_t initEstimators()
         g_gyro_lpf[i].init(400.0f, 100.0f);   // 400Hz sampling, 100Hz cutoff
     }
 
-    // ESKF
+    // ESKF (15-state Error-State Kalman Filter)
+    // 一時的に無効化してセンサ値を確認
+#if 0
     {
         auto cfg = stampfly::ESKF::Config::defaultConfig();
         esp_err_t ret = g_eskf.init(cfg);
@@ -921,8 +1002,10 @@ static esp_err_t initEstimators()
             ESP_LOGI(TAG, "ESKF initialized");
         }
     }
+#endif
+    ESP_LOGW(TAG, "ESKF disabled for sensor debugging");
 
-    // Simple Attitude Estimator
+    // Simple Attitude Estimator (backup/complementary)
     {
         stampfly::AttitudeEstimator::Config cfg;
         cfg.gyro_weight = 0.98f;

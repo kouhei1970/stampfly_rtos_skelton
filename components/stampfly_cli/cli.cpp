@@ -460,6 +460,23 @@ void CLI::outputTeleplot()
     state.getPowerData(voltage, current);
     print(">voltage:%.3f\r\n", voltage);
     print(">current:%.1f\r\n", current * 1000.0f);
+
+    // ESKF estimated state
+    float roll, pitch, yaw;
+    state.getAttitudeEuler(roll, pitch, yaw);
+    print(">roll:%.4f\r\n", roll);
+    print(">pitch:%.4f\r\n", pitch);
+    print(">yaw:%.4f\r\n", yaw);
+
+    StateVector3 pos = state.getPosition();
+    print(">pos_x:%.4f\r\n", pos.x);
+    print(">pos_y:%.4f\r\n", pos.y);
+    print(">pos_z:%.4f\r\n", pos.z);
+
+    StateVector3 vel = state.getVelocity();
+    print(">vel_x:%.4f\r\n", vel.x);
+    print(">vel_y:%.4f\r\n", vel.y);
+    print(">vel_z:%.4f\r\n", vel.z);
 }
 
 }  // namespace stampfly

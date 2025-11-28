@@ -104,6 +104,7 @@ public:
     float getVoltage() const;
     StateVector3 getVelocity() const;
     StateVector3 getAttitude() const;
+    StateVector3 getPosition() const;
 
     // Sensor data update (thread-safe)
     void updateIMU(const StateVector3& accel, const StateVector3& gyro);
@@ -116,6 +117,10 @@ public:
     // Attitude data
     void getAttitudeEuler(float& roll, float& pitch, float& yaw) const;
     void updateAttitude(float roll, float pitch, float yaw);
+
+    // ESKF estimated state
+    void updateEstimatedPosition(float x, float y, float z);
+    void updateEstimatedVelocity(float vx, float vy, float vz);
 
     // Control input
     void getControlInput(float& throttle, float& roll, float& pitch, float& yaw) const;
@@ -148,8 +153,9 @@ private:
     float power_voltage_ = 0;
     float power_current_ = 0;
 
-    // Velocity (estimated)
-    StateVector3 velocity_ = {};
+    // Estimated state (from ESKF)
+    StateVector3 position_ = {};  // [m] NED
+    StateVector3 velocity_ = {};  // [m/s]
 
     // Attitude
     float roll_ = 0;

@@ -210,6 +210,14 @@ StateVector3 StampFlyState::getAttitude() const
     return att;
 }
 
+StateVector3 StampFlyState::getPosition() const
+{
+    xSemaphoreTake(mutex_, portMAX_DELAY);
+    StateVector3 pos = position_;
+    xSemaphoreGive(mutex_);
+    return pos;
+}
+
 // Sensor data setters
 void StampFlyState::updateIMU(const StateVector3& accel, const StateVector3& gyro)
 {
@@ -282,6 +290,24 @@ void StampFlyState::updateAttitude(float roll, float pitch, float yaw)
     roll_ = roll;
     pitch_ = pitch;
     yaw_ = yaw;
+    xSemaphoreGive(mutex_);
+}
+
+void StampFlyState::updateEstimatedPosition(float x, float y, float z)
+{
+    xSemaphoreTake(mutex_, portMAX_DELAY);
+    position_.x = x;
+    position_.y = y;
+    position_.z = z;
+    xSemaphoreGive(mutex_);
+}
+
+void StampFlyState::updateEstimatedVelocity(float vx, float vy, float vz)
+{
+    xSemaphoreTake(mutex_, portMAX_DELAY);
+    velocity_.x = vx;
+    velocity_.y = vy;
+    velocity_.z = vz;
     xSemaphoreGive(mutex_);
 }
 

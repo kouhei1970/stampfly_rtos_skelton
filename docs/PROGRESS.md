@@ -100,13 +100,28 @@ main.cppに以下を統合:
 | `version` | バージョン情報表示 |
 | `reset` | システムリセット |
 
-### 次回確認事項: センサ値の妥当性検証
-- IMU: 静止時にZ軸加速度≈9.8m/s²、ジャイロ≈0
-- Mag: 日本での地磁気≈45μT程度
-- Baro: 気圧≈101325Pa、温度≈室温
-- ToF: 実測距離との比較
-- OptFlow: 移動時のdelta値変化
-- Power: テスターでの電圧比較
+### センサ軸変換 (NED座標系) ✅ 完了
+
+| センサ | 変換式 | 備考 |
+|--------|--------|------|
+| BMI270 (IMU) | X=sensor_y, Y=sensor_x, Z=-sensor_z | 実測確認済 |
+| BMM150 (Mag) | X=-sensor_y, Y=sensor_x, Z=sensor_z | 実測確認済 |
+| PMW3901 (Flow) | X=-sensor_y, Y=sensor_x | 実測確認済 |
+
+### 重力補償・姿勢計算 ✅ 修正完了
+
+- **ESKF predict()**: `accel_world.z += gravity` (比力 + 重力 = 実加速度)
+- **ESKF updateAccelAttitude()**: 期待重力ベクトル `(0, 0, -g)` に修正
+- **AttitudeEstimator**: `atan2(-ay, -az)` / `atan2(ax, sqrt(...))` に修正
+- **NED座標系での静止時加速度**: accel_z ≈ **-9.8 m/s²** が正しい
+
+### センサ値の妥当性 ✅ 確認済
+- IMU: 静止時にZ軸加速度≈-9.8m/s²、ジャイロ≈0
+- Mag: 地磁気取得確認
+- Baro: 気圧・高度取得確認
+- ToF: 距離値取得確認
+- OptFlow: delta値変化確認
+- Power: 電圧取得確認
 
 ### 実機テスト中に修正した問題
 
@@ -159,12 +174,30 @@ main.cppに以下を統合:
     - 修正: ToFTaskでisDataReady()確認後、getDistance()→clearInterruptAndStartMeasurement()の正しいシーケンスに修正
 
 13. **ESKF/Estimator使用時のクラッシュ**
-    - 原因: 調査中（一時的に無効化して回避）
-    - 修正: ESKF/AttitudeEstimator/AltitudeEstimatorの更新を一時的にコメントアウト
+    - 原因: 15x15行列のローカル変数がスタックを消費しすぎ（4個×900バイト≒3.6KB）
+    - 修正: 一時行列をクラスメンバ変数に移動（F_, Q_, temp1_, temp2_）してスタック使用量を削減
+
+14. **センサ軸変換不一致**
+    - 原因: 各センサの座標系がNED機体座標系と一致していなかった
+    - 修正: BMI270/BMM150/PMW3901それぞれに座標変換を追加
+
+15. **重力補償の符号誤り**
+    - 原因: 静止時の加速度計測定値(比力)の物理的意味を誤解
+    - 修正: `accel_world.z -= gravity` → `accel_world.z += gravity`
+
+16. **姿勢推定の符号誤り**
+    - 原因: AttitudeEstimatorのatan2計算で比力の符号を考慮していなかった
+    - 修正: `atan2(ay, az)` → `atan2(-ay, -az)` に修正
 
 ---
 
-## 次のステップ: Phase 5
+## 次のステップ
+
+### 直近の作業予定
+1. **ESKFを再有効化してテスト** - 現在`#if 0`で無効化中
+2. **モータードライバ実機テスト** - PWM出力確認
+3. **ESP-NOW通信テスト** - コントローラとの双方向通信
+4. **状態遷移統合テスト** - INIT→IDLE→ARMED
 
 ### 残りの Phase 4 作業 (テスト)
 
@@ -286,6 +319,9 @@ idf.py -p /dev/tty.usbmodem* flash monitor
 
 | 日付 | 内容 |
 |------|------|
+| 2025-11-28 | センサ軸変換・重力補償修正完了：BMI270/BMM150/PMW3901→NED座標系変換、ESKF重力補償符号修正、AttitudeEstimator姿勢計算修正 |
+| 2025-11-28 | GitHub stampfly-eskf-estimatorと比較・改善：Mahalanobis距離棄却、共分散対称性強制、加速度姿勢補正追加 |
+| 2025-11-28 | ESKFスタックメモリ問題解決：一時行列をメンバ変数化、全センサからのESKF更新を有効化 |
 | 2025-11-28 | 正面ToF未接続対応、OutlierDetector緩和、ToF読み取りシーケンス修正、全センサ値取得確認 |
 | 2025-11-28 | CLI teleplotコマンド追加、sensorコマンドを実データ対応 |
 | 2025-11-28 | 実機テスト完了、各種バグ修正、CLI動作確認 |
