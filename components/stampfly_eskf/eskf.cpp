@@ -168,15 +168,24 @@ void ESKF::predict(const Vector3& accel, const Vector3& gyro, float dt)
     float bg_var = config_.gyro_bias_noise * config_.gyro_bias_noise * dt;
     float ba_var = config_.accel_bias_noise * config_.accel_bias_noise * dt;
 
-    // 姿勢ノイズ
-    Q_(ATT_X, ATT_X) = gyro_var;
-    Q_(ATT_Y, ATT_Y) = gyro_var;
-    Q_(ATT_Z, ATT_Z) = gyro_var;
+    // 位置ノイズ (速度積分による位置変化の不確かさ)
+    // 離散時間での位置変化: Δp = v*dt + 0.5*a*dt²
+    // 位置分散 ≈ accel_var * (0.5*dt²)² = accel_var * 0.25 * dt⁴
+    // より保守的に: accel_var * dt² を使用
+    float pos_var = accel_var * dt * dt;
+    Q_(POS_X, POS_X) = pos_var;
+    Q_(POS_Y, POS_Y) = pos_var;
+    Q_(POS_Z, POS_Z) = pos_var;
 
     // 速度ノイズ (回転行列経由、対角成分のみ簡略化)
     for (int i = 0; i < 3; i++) {
         Q_(VEL_X + i, VEL_X + i) = accel_var;
     }
+
+    // 姿勢ノイズ
+    Q_(ATT_X, ATT_X) = gyro_var;
+    Q_(ATT_Y, ATT_Y) = gyro_var;
+    Q_(ATT_Z, ATT_Z) = gyro_var;
 
     // バイアスノイズ
     Q_(BG_X, BG_X) = bg_var;
@@ -208,8 +217,10 @@ void ESKF::updateBaro(float altitude)
     if (!isValidFloat(altitude)) return;
 
     // 観測モデル: z = p_z
+    // 気圧高度は「上が正」で入力されるが、NEDでは「下が正」
+    // よって符号反転: z = -altitude
     Matrix<1, 1> z;
-    z(0, 0) = altitude;
+    z(0, 0) = -altitude;
 
     Matrix<1, 1> h;
     h(0, 0) = state_.position.z;

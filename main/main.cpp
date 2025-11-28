@@ -92,7 +92,7 @@ static constexpr UBaseType_t PRIORITY_CLI_TASK = 5;
 // Task Stack Sizes
 // =============================================================================
 
-static constexpr uint32_t STACK_SIZE_IMU = 8192;
+static constexpr uint32_t STACK_SIZE_IMU = 16384;  // Increased for ESKF matrix operations
 static constexpr uint32_t STACK_SIZE_OPTFLOW = 8192;
 static constexpr uint32_t STACK_SIZE_MAG = 8192;
 static constexpr uint32_t STACK_SIZE_BARO = 8192;
@@ -168,7 +168,19 @@ static void IMUTask(void* pvParameters)
 
     auto& state = stampfly::StampFlyState::getInstance();
 
+    static uint32_t imu_loop_counter = 0;
+    static uint32_t imu_read_fail_counter = 0;
+
     while (true) {
+        imu_loop_counter++;
+
+        // 10秒ごとにIMUタスク生存確認
+        if (imu_loop_counter % 4000 == 0) {
+            ESP_LOGI(TAG, "IMUTask alive: loop=%lu, read_fails=%lu, stack_free=%u",
+                     imu_loop_counter, imu_read_fail_counter,
+                     (unsigned)uxTaskGetStackHighWaterMark(nullptr));
+        }
+
         if (g_imu.isInitialized()) {
             stampfly::AccelData accel;
             stampfly::GyroData gyro;
@@ -184,14 +196,19 @@ static void IMUTask(void* pvParameters)
                 //   機体X = センサY
                 //   機体Y = センサX
                 //   機体Z = -センサZ
+                //
+                // 単位変換:
+                //   加速度: g → m/s² (×9.81)
+                //   ジャイロ: rad/s (変換不要)
                 // ============================================================
-                float accel_body_x = accel.y;   // 前方正
-                float accel_body_y = accel.x;   // 右正
-                float accel_body_z = -accel.z;  // 下正 (NED)
+                constexpr float GRAVITY = 9.81f;
+                float accel_body_x = accel.y * GRAVITY;   // 前方正 [m/s²]
+                float accel_body_y = accel.x * GRAVITY;   // 右正 [m/s²]
+                float accel_body_z = -accel.z * GRAVITY;  // 下正 (NED) [m/s²]
 
-                float gyro_body_x = gyro.y;     // Roll rate
-                float gyro_body_y = gyro.x;     // Pitch rate
-                float gyro_body_z = -gyro.z;    // Yaw rate
+                float gyro_body_x = gyro.y;     // Roll rate [rad/s]
+                float gyro_body_y = gyro.x;     // Pitch rate [rad/s]
+                float gyro_body_z = -gyro.z;    // Yaw rate [rad/s]
 
                 // Apply low-pass filters (機体座標系で)
                 float filtered_accel[3] = {
@@ -214,30 +231,75 @@ static void IMUTask(void* pvParameters)
                 stampfly::math::Vector3 a(filtered_accel[0], filtered_accel[1], filtered_accel[2]);
                 stampfly::math::Vector3 g(filtered_gyro[0], filtered_gyro[1], filtered_gyro[2]);
 
-                // Update ESKF predict step
+                // Update ESKF predict step (100Hz = 400Hz / 4)
                 if (g_eskf.isInitialized()) {
+                    static uint32_t eskf_predict_counter = 0;
                     static uint32_t accel_att_counter = 0;
+                    static uint32_t eskf_error_counter = 0;
 
-                    g_eskf.predict(a, g, 0.0025f);  // 2.5ms (400Hz)
+                    // IMUデータを蓄積（平均化用）
+                    static stampfly::math::Vector3 accel_sum(0, 0, 0);
+                    static stampfly::math::Vector3 gyro_sum(0, 0, 0);
 
-                    // 加速度計による姿勢補正 (50Hz = 400Hz / 8)
-                    accel_att_counter++;
-                    if (accel_att_counter >= 8) {
-                        accel_att_counter = 0;
-                        g_eskf.updateAccelAttitude(a);
+                    accel_sum += a;
+                    gyro_sum += g;
+                    eskf_predict_counter++;
+
+                    // 4サンプルごとにESKF predict実行 (100Hz)
+                    if (eskf_predict_counter >= 4) {
+                        // 平均値を計算
+                        stampfly::math::Vector3 a_avg = accel_sum * 0.25f;
+                        stampfly::math::Vector3 g_avg = gyro_sum * 0.25f;
+
+                        // リセット
+                        accel_sum = stampfly::math::Vector3(0, 0, 0);
+                        gyro_sum = stampfly::math::Vector3(0, 0, 0);
+                        eskf_predict_counter = 0;
+
+                        // 入力値の事前チェック
+                        bool eskf_ok = std::isfinite(a_avg.x) && std::isfinite(a_avg.y) && std::isfinite(a_avg.z) &&
+                                       std::isfinite(g_avg.x) && std::isfinite(g_avg.y) && std::isfinite(g_avg.z);
+
+                        if (eskf_ok) {
+                            g_eskf.predict(a_avg, g_avg, 0.01f);  // 10ms (100Hz)
+
+                            // 加速度計による姿勢補正 (50Hz = 100Hz / 2)
+                            accel_att_counter++;
+                            if (accel_att_counter >= 2) {
+                                accel_att_counter = 0;
+                                g_eskf.updateAccelAttitude(a_avg);
+                            }
+
+                            // Update StampFlyState with ESKF estimated state
+                            auto eskf_state = g_eskf.getState();
+
+                            // 出力値の検証
+                            if (std::isfinite(eskf_state.roll) && std::isfinite(eskf_state.pitch)) {
+                                state.updateAttitude(eskf_state.roll, eskf_state.pitch, eskf_state.yaw);
+                                state.updateEstimatedPosition(eskf_state.position.x, eskf_state.position.y, eskf_state.position.z);
+                                state.updateEstimatedVelocity(eskf_state.velocity.x, eskf_state.velocity.y, eskf_state.velocity.z);
+                            } else {
+                                eskf_error_counter++;
+                                if (eskf_error_counter % 100 == 1) {
+                                    ESP_LOGW(TAG, "ESKF output NaN, errors=%lu", eskf_error_counter);
+                                }
+                            }
+                        } else {
+                            eskf_error_counter++;
+                        }
                     }
-
-                    // Update StampFlyState with ESKF estimated state
-                    auto eskf_state = g_eskf.getState();
-                    state.updateAttitude(eskf_state.roll, eskf_state.pitch, eskf_state.yaw);
-                    state.updateEstimatedPosition(eskf_state.position.x, eskf_state.position.y, eskf_state.position.z);
-                    state.updateEstimatedVelocity(eskf_state.velocity.x, eskf_state.velocity.y, eskf_state.velocity.z);
                 }
                 // Fallback to simple attitude estimator if ESKF not available
                 else if (g_attitude_est.isInitialized()) {
                     g_attitude_est.update(a, g, 0.0025f);
                     auto att_state = g_attitude_est.getState();
                     state.updateAttitude(att_state.roll, att_state.pitch, att_state.yaw);
+                }
+            } else {
+                imu_read_fail_counter++;
+                // 連続失敗時にログ出力
+                if (imu_read_fail_counter % 400 == 1) {
+                    ESP_LOGW(TAG, "IMU read failed, consecutive fails=%lu", imu_read_fail_counter);
                 }
             }
         }
@@ -324,16 +386,14 @@ static void MagTask(void* pvParameters)
                 // Update state (no outlier filter for now - needs calibration first)
                 state.updateMag(mag_body_x, mag_body_y, mag_body_z);
 
-                stampfly::math::Vector3 m(mag_body_x, mag_body_y, mag_body_z);
-
-                // Update ESKF with magnetometer (yaw correction)
-                if (g_eskf.isInitialized()) {
-                    g_eskf.updateMag(m);
-                }
-                // Fallback to simple attitude estimator
-                else if (g_attitude_est.isInitialized()) {
-                    g_attitude_est.updateMag(m);
-                }
+                // 地磁気による観測更新は校正後に有効化
+                // stampfly::math::Vector3 m(mag_body_x, mag_body_y, mag_body_z);
+                // if (g_eskf.isInitialized()) {
+                //     g_eskf.updateMag(m);
+                // }
+                // else if (g_attitude_est.isInitialized()) {
+                //     g_attitude_est.updateMag(m);
+                // }
             }
         }
 
@@ -991,19 +1051,15 @@ static esp_err_t initEstimators()
     }
 
     // ESKF (15-state Error-State Kalman Filter)
-    // 一時的に無効化してセンサ値を確認
-#if 0
     {
         auto cfg = stampfly::ESKF::Config::defaultConfig();
         esp_err_t ret = g_eskf.init(cfg);
         if (ret != ESP_OK) {
             ESP_LOGW(TAG, "ESKF init failed: %s", esp_err_to_name(ret));
         } else {
-            ESP_LOGI(TAG, "ESKF initialized");
+            ESP_LOGI(TAG, "ESKF initialized (predict at 100Hz)");
         }
     }
-#endif
-    ESP_LOGW(TAG, "ESKF disabled for sensor debugging");
 
     // Simple Attitude Estimator (backup/complementary)
     {

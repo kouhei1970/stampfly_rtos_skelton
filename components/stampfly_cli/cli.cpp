@@ -420,63 +420,51 @@ void CLI::outputTeleplot()
 
     auto& state = StampFlyState::getInstance();
 
-    // IMU data
-    Vec3 accel, gyro;
-    state.getIMUData(accel, gyro);
-    print(">accel_x:%.3f\r\n", accel.x);
-    print(">accel_y:%.3f\r\n", accel.y);
-    print(">accel_z:%.3f\r\n", accel.z);
-    print(">gyro_x:%.4f\r\n", gyro.x);
-    print(">gyro_y:%.4f\r\n", gyro.y);
-    print(">gyro_z:%.4f\r\n", gyro.z);
+    // バッファにまとめて出力（シリアル出力のブロッキングを最小化）
+    static char buf[1024];
+    int len = 0;
 
-    // Mag data
-    Vec3 mag;
-    state.getMagData(mag);
-    print(">mag_x:%.1f\r\n", mag.x);
-    print(">mag_y:%.1f\r\n", mag.y);
-    print(">mag_z:%.1f\r\n", mag.z);
-
-    // Baro data
+    // すべてのデータを一度に取得してからフォーマット
+    Vec3 accel, gyro, mag;
     float altitude, pressure;
-    state.getBaroData(altitude, pressure);
-    print(">pressure:%.0f\r\n", pressure);
-    print(">altitude:%.3f\r\n", altitude);
-
-    // ToF data
     float tof_bottom, tof_front;
-    state.getToFData(tof_bottom, tof_front);
-    print(">tof_bottom:%.3f\r\n", tof_bottom);
-    print(">tof_front:%.3f\r\n", tof_front);
-
-    // OptFlow data
     float flow_vx, flow_vy;
-    state.getFlowData(flow_vx, flow_vy);
-    print(">flow_vx:%.4f\r\n", flow_vx);
-    print(">flow_vy:%.4f\r\n", flow_vy);
-
-    // Power data
     float voltage, current;
-    state.getPowerData(voltage, current);
-    print(">voltage:%.3f\r\n", voltage);
-    print(">current:%.1f\r\n", current * 1000.0f);
-
-    // ESKF estimated state
     float roll, pitch, yaw;
+    StateVector3 pos, vel;
+
+    // データ取得（各関数内でmutexを使用）
+    state.getIMUData(accel, gyro);
+    state.getMagData(mag);
+    state.getBaroData(altitude, pressure);
+    state.getToFData(tof_bottom, tof_front);
+    state.getFlowData(flow_vx, flow_vy);
+    state.getPowerData(voltage, current);
     state.getAttitudeEuler(roll, pitch, yaw);
-    print(">roll:%.4f\r\n", roll);
-    print(">pitch:%.4f\r\n", pitch);
-    print(">yaw:%.4f\r\n", yaw);
+    pos = state.getPosition();
+    vel = state.getVelocity();
 
-    StateVector3 pos = state.getPosition();
-    print(">pos_x:%.4f\r\n", pos.x);
-    print(">pos_y:%.4f\r\n", pos.y);
-    print(">pos_z:%.4f\r\n", pos.z);
+    // バッファにフォーマット（IMU + 姿勢のみ、主要データに絞る）
+    len += snprintf(buf + len, sizeof(buf) - len,
+        ">accel_x:%.3f\r\n>accel_y:%.3f\r\n>accel_z:%.3f\r\n",
+        accel.x, accel.y, accel.z);
+    len += snprintf(buf + len, sizeof(buf) - len,
+        ">gyro_x:%.4f\r\n>gyro_y:%.4f\r\n>gyro_z:%.4f\r\n",
+        gyro.x, gyro.y, gyro.z);
+    len += snprintf(buf + len, sizeof(buf) - len,
+        ">roll:%.4f\r\n>pitch:%.4f\r\n>yaw:%.4f\r\n",
+        roll, pitch, yaw);
+    len += snprintf(buf + len, sizeof(buf) - len,
+        ">tof_bottom:%.3f\r\n>altitude:%.3f\r\n",
+        tof_bottom, altitude);
+    len += snprintf(buf + len, sizeof(buf) - len,
+        ">pos_z:%.4f\r\n>vel_z:%.4f\r\n",
+        pos.z, vel.z);
 
-    StateVector3 vel = state.getVelocity();
-    print(">vel_x:%.4f\r\n", vel.x);
-    print(">vel_y:%.4f\r\n", vel.y);
-    print(">vel_z:%.4f\r\n", vel.z);
+    // 一度に出力
+    if (len > 0) {
+        write(STDOUT_FILENO, buf, len);
+    }
 }
 
 }  // namespace stampfly
