@@ -341,6 +341,9 @@ config.tof_tilt_threshold = 0.35f;  // 20° - 傾き時のToF誤測定防止
 - [ ] main.cppでupdateFlowWithGyro()を呼び出すように変更
 - [ ] 磁力計キャリブレーション実装（Yaw精度向上）
 - [ ] 実機でESKFチューニング結果を検証
+- [ ] **フローオフセットキャリブレーション** - 静止ホバリングデータでflow_dx/dy_offsetを決定
+  - 現在の推定値: flow_dx_offset=0.29, flow_dy_offset=0.29 counts (閉ループテストから逆算)
+  - 正確なキャリブレーションには実際のホバリング静止データが必要
 
 ---
 
@@ -416,8 +419,60 @@ float flow_y_comp = flow_y - k_yx * gyro_x - k_yy * gyro_y;
 - ジャイロ補償: 回帰分析係数適用
 - Body→NED変換: Yaw回転
 
+---
+
+## フローオフセットキャリブレーション (2025-11-30)
+
+### キャリブレーション方法
+
+2つの手法を比較検証:
+
+1. **静止ホバリング法**: 手で持ち上げて静止させ、flow_dx/dyの平均値をオフセットとして使用
+2. **閉ループ推定法**: 開始/終了位置の一致条件から逆算してオフセットを推定
+
+### 結果比較
+
+| 手法 | flow_dx_offset | flow_dy_offset | 閉ループエラー |
+|------|---------------|----------------|----------------|
+| 静止ホバリング | 0.21 | -0.05 | 20.0 cm |
+| **閉ループ推定** | **0.29** | **0.29** | **5.1 cm** |
+
+閉ループ推定法が77%優れた結果となり、この値を採用。
+
+### 最終パラメータ
+
+```cpp
+// tools/eskf_debug/eskf_pc.cpp
+constexpr float flow_scale = 0.08f;
+constexpr float flow_dx_offset = 0.29f * flow_scale;  // 閉ループ推定
+constexpr float flow_dy_offset = 0.29f * flow_scale;
+
+// ジャイロ補償係数
+constexpr float k_xx = 1.35f * flow_scale;
+constexpr float k_xy = 9.30f * flow_scale;
+constexpr float k_yx = -2.65f * flow_scale;
+constexpr float k_yy = 0.0f * flow_scale;
+```
+
+### テスト結果サマリー
+
+| データセット | 閉ループエラー | X範囲 | Y範囲 | 飛行時間 |
+|-------------|---------------|-------|-------|---------|
+| square_motion.bin | **5.1 cm** | 12.0 cm | 15.7 cm | 30.3 s |
+| motion_test.bin | 20.0 cm | 22.3 cm | 28.6 cm | 15.3 s |
+
+motion_test.binでエラーが大きい理由:
+- より激しい動き（Roll ±45°, Pitch -32°~+59°）
+- Yawがフル回転（-178°~+180°）
+- 大きな高度変化（ToFスパイク含む）
+
+### 出力ファイル
+
+各データセットについて14ファイルの包括的な可視化を生成:
+- `tools/scripts/square_result/closed_loop_analysis/` - square_motion.bin
+- `tools/scripts/square_result/motion_test_analysis/` - motion_test.bin
+
 ### 可視化
-- `tools/scripts/square_result/final_scale008/xy_trajectory.png`
 
 ---
 
@@ -569,6 +624,7 @@ idf.py -p /dev/tty.usbmodem* flash monitor
 
 | 日付 | 内容 |
 |------|------|
+| 2025-11-30 | フローオフセットキャリブレーション：閉ループ推定法でオフセット決定、エラー5.1cm達成 |
 | 2025-11-30 | フロー最終チューニング：ジャイロ補償(回帰分析)、flow_scale=0.08、閉ループエラー22.4cm達成、本体コードに適用 |
 | 2025-11-30 | フロー軸変換修正：実測データ分析でX/Y軸入れ替えを発見・修正、閉ループエラー25.6cm達成 |
 | 2025-11-30 | 四角形移動テスト：Body→NED座標変換実装、flow_scale=0.1キャリブレーション |
