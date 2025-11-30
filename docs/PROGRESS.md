@@ -338,7 +338,9 @@ config.tof_tilt_threshold = 0.35f;  // 20° - 傾き時のToF誤測定防止
 ### 次のステップ
 
 - [x] 本体コード(`components/stampfly_eskf/eskf.cpp`)に修正適用 ✅
-- [ ] main.cppでupdateFlowWithGyro()を呼び出すように変更
+- [x] main.cppでupdateFlowWithGyro()を呼び出すように変更 ✅
+- [x] フローオフセット補正を実機コードに適用 ✅
+- [x] デフォルトQ/Rパラメータをチューニング済み値に更新 ✅
 - [ ] 磁力計キャリブレーション実装（Yaw精度向上）
 - [ ] 実機でESKFチューニング結果を検証
 - [ ] **フローオフセットキャリブレーション** - 静止ホバリングデータでflow_dx/dy_offsetを決定
@@ -693,6 +695,7 @@ idf.py -p /dev/tty.usbmodem* flash monitor
 
 | 日付 | 内容 |
 |------|------|
+| 2025-11-30 | PCデバッグ済みESKFパラメータを実機コードに完全反映（オフセット、Q/R、updateFlowWithGyro） |
 | 2025-11-30 | 自動キャリブレーションフレームワーク設計完了（docs/auto_calibration_design.md） |
 | 2025-11-30 | Q/Rパラメータ検証：センサデータから推定した値と比較、デフォルト値が安定と結論 |
 | 2025-11-30 | フローオフセットキャリブレーション：閉ループ推定法でオフセット決定、エラー5.1cm達成 |

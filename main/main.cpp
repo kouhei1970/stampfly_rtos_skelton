@@ -339,11 +339,25 @@ static void OptFlowTask(void* pvParameters)
 
                     state.updateOpticalFlow(flow_body_x, flow_body_y, burst.squal);
 
-                    // Update ESKF with optical flow (need height for velocity calculation)
+                    // Update ESKF with optical flow (need height and gyro for velocity calculation)
                     if (g_eskf.isInitialized()) {
                         float height = state.getAltitude();
-                        if (height > 0.05f) {  // Only update if height is valid
-                            g_eskf.updateFlow(flow_body_x * 0.001f, flow_body_y * 0.001f, height);
+                        if (height > 0.02f) {  // Only update if height is valid (lowered for desk test)
+                            // Get gyro data for rotation compensation
+                            stampfly::Vec3 accel, gyro;
+                            state.getIMUData(accel, gyro);
+
+                            // flow_scale = 0.08 rad/count (calibrated)
+                            constexpr float flow_scale = 0.08f;
+                            float flow_x_rad = flow_body_x * flow_scale;
+                            float flow_y_rad = flow_body_y * flow_scale;
+
+                            // updateFlowWithGyro includes:
+                            // - Gyro compensation (rotation component removal)
+                            // - Axis swap (实測データから導出)
+                            // - Body→NED transformation
+                            // - Flow offset correction
+                            g_eskf.updateFlowWithGyro(flow_x_rad, flow_y_rad, height, gyro.x, gyro.y);
                         }
                     }
                 }

@@ -66,28 +66,38 @@ public:
         float flow_max_height;
 
         // デフォルト設定
+        // PCデバッグ環境で検証済みのパラメータ (2025-11-30)
         static Config defaultConfig() {
             Config cfg;
-            cfg.gyro_noise = 0.001f;           // GitHub版: 0.001 rad/s
-            cfg.accel_noise = 0.1f;            // GitHub版: 0.1 m/s²
-            cfg.gyro_bias_noise = 0.00005f;    // GitHub版: 0.00005 rad/s/√s
-            cfg.accel_bias_noise = 0.001f;     // GitHub版: 0.001 m/s²/√s
-            cfg.baro_noise = 1.0f;
-            cfg.tof_noise = 0.05f;
-            cfg.mag_noise = 0.3f;              // GitHub版: 0.3
-            cfg.flow_noise = 1.0f;             // GitHub版: 1.0 rad/s
-            cfg.accel_att_noise = 0.1f;        // GitHub版: 0.1 m/s²
+            // プロセスノイズ (Q) - デフォルト値維持（安定性重視）
+            cfg.gyro_noise = 0.001f;           // rad/s/√Hz
+            cfg.accel_noise = 0.1f;            // m/s²/√Hz
+            cfg.gyro_bias_noise = 0.00005f;    // rad/s/√s
+            cfg.accel_bias_noise = 0.001f;     // m/s²/√s
+
+            // 観測ノイズ (R) - PCデバッグで調整済み
+            cfg.baro_noise = 0.1f;             // m (推定値: 0.099m)
+            cfg.tof_noise = 0.05f;             // m
+            cfg.mag_noise = 0.3f;              // uT
+            cfg.flow_noise = 0.01f;            // 調整済み（デフォルト1.0では効きすぎない）
+            cfg.accel_att_noise = 0.1f;        // m/s²
+
+            // 初期共分散
             cfg.init_pos_std = 1.0f;
             cfg.init_vel_std = 0.5f;
             cfg.init_att_std = 0.1f;
             cfg.init_gyro_bias_std = 0.01f;
             cfg.init_accel_bias_std = 0.1f;
+
+            // 参照値
             cfg.mag_ref = Vector3(20.0f, 0.0f, 40.0f);  // 日本近辺の概算
             cfg.gravity = 9.81f;
+
+            // 閾値 - PCデバッグで調整済み
             cfg.mahalanobis_threshold = 7.81f; // χ²(2) 95%信頼区間
-            cfg.tof_tilt_threshold = 0.5f;     // ~28度
-            cfg.accel_motion_threshold = 0.5f; // GitHub版: 0.5 m/s²
-            cfg.flow_min_height = 0.1f;
+            cfg.tof_tilt_threshold = 0.35f;    // ~20度（傾き時のToF誤測定防止）
+            cfg.accel_motion_threshold = 0.5f; // m/s²
+            cfg.flow_min_height = 0.02f;       // m（机上テスト対応）
             cfg.flow_max_height = 4.0f;        // ToFの最大レンジ
             return cfg;
         }
