@@ -163,7 +163,8 @@ int main(int argc, char* argv[])
     fprintf(out, "accel_bias_x,accel_bias_y,accel_bias_z,");
     fprintf(out, "raw_accel_x,raw_accel_y,raw_accel_z,");
     fprintf(out, "raw_gyro_x,raw_gyro_y,raw_gyro_z,");
-    fprintf(out, "raw_baro_alt,raw_tof,raw_flow_squal\n");
+    fprintf(out, "raw_baro_alt,raw_tof,raw_flow_squal,");
+    fprintf(out, "raw_flow_dx,raw_flow_dy\n");
 
     // Process packets
     uint32_t last_timestamp = packets[0].timestamp_ms;
@@ -227,11 +228,17 @@ int main(int argc, char* argv[])
         }
 
         if (i % flow_rate == 0 && pkt.flow_squal >= flow_squal_min) {
-            // Convert raw flow to rad/s (approximate, sensor dependent)
-            float flow_scale = 0.001f;  // TODO: calibrate
+            // Convert raw flow to rad/s
+            // PMW3901: FOV = 42°, resolution ~35x35 pixels
+            // Empirical calibration from square motion test:
+            // Expected ~40cm movement, measured ~6cm with scale=0.02
+            // Adjusted: 0.02 * (40/6) ≈ 0.13
+            float flow_scale = 0.1f;  // rad/count (calibrated)
             float flow_x = pkt.flow_dx * flow_scale;
             float flow_y = pkt.flow_dy * flow_scale;
             float height = std::max(pkt.tof_bottom, 0.02f);  // Allow low height for desk test
+
+            // NED変換のみ（ジャイロ補償はさらなる調査が必要）
             eskf.updateFlow(flow_x, flow_y, height);
         }
         #endif
@@ -258,8 +265,10 @@ int main(int argc, char* argv[])
                 pkt.accel_x, pkt.accel_y, pkt.accel_z);
         fprintf(out, "%.6f,%.6f,%.6f,",
                 pkt.gyro_x, pkt.gyro_y, pkt.gyro_z);
-        fprintf(out, "%.4f,%.4f,%d\n",
+        fprintf(out, "%.4f,%.4f,%d,",
                 pkt.baro_alt, pkt.tof_bottom, pkt.flow_squal);
+        fprintf(out, "%d,%d\n",
+                pkt.flow_dx, pkt.flow_dy);
 
         packet_count++;
 

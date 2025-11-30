@@ -148,6 +148,20 @@ public:
     void updateFlow(float flow_x, float flow_y, float height);
 
     /**
+     * @brief オプティカルフロー更新 (ジャイロ補償付き)
+     * @param flow_x X方向フロー [rad/s]
+     * @param flow_y Y方向フロー [rad/s]
+     * @param height 高度 [m]
+     * @param gyro_x X軸角速度 [rad/s] (回転成分除去用)
+     * @param gyro_y Y軸角速度 [rad/s] (回転成分除去用)
+     *
+     * ジャイロ補償: 回転によるフロー成分を除去
+     * Body→NED変換: Yaw角で座標変換
+     */
+    void updateFlowWithGyro(float flow_x, float flow_y, float height,
+                            float gyro_x, float gyro_y);
+
+    /**
      * @brief 加速度計による姿勢補正 (Roll/Pitch)
      * @param accel 加速度 [m/s²] (ボディ座標系)
      *

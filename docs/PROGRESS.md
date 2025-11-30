@@ -339,6 +339,54 @@ config.tof_tilt_threshold = 0.35f;  // 20° - 傾き時のToF誤測定防止
 
 - [ ] 本体コード(`components/stampfly_eskf/src/eskf.cpp`)に同じ修正を適用
 - [ ] 磁力計キャリブレーション実装（Yaw精度向上）
+- [ ] ジャイロ補償の符号/軸対応を再調査（現在は逆効果のため無効）
+
+---
+
+## 四角形移動テスト結果 (2025-11-30)
+
+### テスト内容
+- 持ち上げ → 時計回りに四角形移動 → 下ろす
+- 期待移動量: 20-30cm
+
+### 実装した改良
+
+**1. Body→NED座標変換** ✅ 実装・有効
+```cpp
+// updateFlowWithGyro()内
+float cos_yaw = std::cos(state_.yaw);
+float sin_yaw = std::sin(state_.yaw);
+float vx_ned = cos_yaw * vx_body - sin_yaw * vy_body;  // North
+float vy_ned = sin_yaw * vx_body + cos_yaw * vy_body;  // East
+```
+- Yaw角約110°変化に対応
+- 軌跡がNED座標系で一貫した方向に表示
+
+**2. ジャイロ補償** ⚠️ 実装済みだが無効化
+```cpp
+// 回転成分除去
+float flow_x_comp = flow_x - gyro_y;  // pitch
+float flow_y_comp = flow_y - gyro_x;  // roll
+```
+- テスト結果: 閉ループエラーが悪化（24cm→29cm）
+- 原因: 符号/軸対応がまだ正しくない可能性
+- 状態: 追加調査が必要、現在は無効化
+
+### テスト結果
+
+| 設定 | X範囲 | Y範囲 | 閉ループエラー |
+|------|-------|-------|----------------|
+| NED変換なし (flow_scale=0.1) | 30.3cm | 14.2cm | 27cm |
+| NED変換あり | 32.0cm | 13.6cm | 24.2cm |
+| NED変換+ジャイロ補償 | 34.4cm | 15.8cm | 29.2cm |
+
+### 結論
+- **Body→NED変換**: 有効、閉ループエラー改善
+- **flow_scale=0.1**: 経験的にキャリブレーション済み（デフォルト0.001は小さすぎ）
+- **ジャイロ補償**: 追加調査が必要
+
+### 可視化
+- `tools/scripts/square_result/xy_trajectory_final.png`
 
 ---
 
@@ -490,6 +538,7 @@ idf.py -p /dev/tty.usbmodem* flash monitor
 
 | 日付 | 内容 |
 |------|------|
+| 2025-11-30 | 四角形移動テスト：Body→NED座標変換実装、flow_scale=0.1キャリブレーション、閉ループエラー24cm達成 |
 | 2025-11-30 | PC版ESKFチューニング完了（重力補正、ToF傾き閾値、フローパラメータ）、静的・動的テストで検証 |
 | 2025-11-30 | ESKFデバッグ環境完成、binlogコマンド追加、USB CDC line ending問題解決 |
 | 2025-11-28 | ESKF計算負荷問題特定・暫定対策：predict頻度を400Hz→100Hzに制限、IMUデータ平均化で安定動作確認 |

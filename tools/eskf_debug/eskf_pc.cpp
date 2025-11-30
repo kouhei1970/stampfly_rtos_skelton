@@ -275,17 +275,59 @@ void ESKF::updateMag(const Vector3& mag)
 
 void ESKF::updateFlow(float flow_x, float flow_y, float height)
 {
+    // 後方互換: ジャイロなしバージョン（Body→NED変換のみ）
+    updateFlowWithGyro(flow_x, flow_y, height, 0.0f, 0.0f);
+}
+
+void ESKF::updateFlowWithGyro(float flow_x, float flow_y, float height,
+                               float gyro_x, float gyro_y)
+{
     if (!initialized_ || height < config_.flow_min_height) return;
 
-    // オプティカルフローから水平速度を推定
-    // v = flow * height (簡略モデル)
-    float vx_meas = flow_y * height;  // 座標系変換
-    float vy_meas = -flow_x * height;
+    // ============================================================
+    // 1. ジャイロ補償（回転成分の除去）
+    // ============================================================
+    // オプティカルフローは回転+並進の両方を検出する
+    // 純粋な並進速度を得るため、回転成分を除去する
+    //
+    // 座標系:
+    //   flow_x = body X (前方) フロー、flow_y = body Y (右) フロー
+    //   gyro_x = roll rate, gyro_y = pitch rate
+    //
+    // 回転によるフロー:
+    //   pitch > 0 (機首上) → 地面は後方へ流れる → flow_x 増加
+    //   roll > 0 (右翼上) → 地面は右へ流れる → flow_y 増加
+    //
+    // 補償式:
+    float flow_x_comp = flow_x - gyro_y;  // pitch回転成分を除去
+    float flow_y_comp = flow_y - gyro_x;  // roll回転成分を除去
 
-    // 観測モデル
+    // ============================================================
+    // 2. ボディ座標系での速度計算
+    // ============================================================
+    // フローセンサは下向きに地面を見ている
+    // 地面が前方(+X)に流れる → 機体は後方(-X)に移動
+    // 地面が右(+Y)に流れる → 機体は左(-Y)に移動
+    // よって: v_body = -flow * height
+    float vx_body = -flow_x_comp * height;  // 前方速度
+    float vy_body = -flow_y_comp * height;  // 右方速度
+
+    // ============================================================
+    // 3. Body座標系 → NED座標系への変換
+    // ============================================================
+    // Yaw回転のみ適用（Roll/Pitchは小さいと仮定）
+    float cos_yaw = std::cos(state_.yaw);
+    float sin_yaw = std::sin(state_.yaw);
+
+    float vx_ned = cos_yaw * vx_body - sin_yaw * vy_body;  // North
+    float vy_ned = sin_yaw * vx_body + cos_yaw * vy_body;  // East
+
+    // ============================================================
+    // 4. カルマンフィルタ観測更新
+    // ============================================================
     Matrix<2, 1> z;
-    z(0, 0) = vx_meas;
-    z(1, 0) = vy_meas;
+    z(0, 0) = vx_ned;
+    z(1, 0) = vy_ned;
 
     Matrix<2, 1> h;
     h(0, 0) = state_.velocity.x;
