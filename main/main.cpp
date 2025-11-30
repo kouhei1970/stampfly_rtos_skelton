@@ -278,6 +278,8 @@ static void IMUTask(void* pvParameters)
                                 state.updateAttitude(eskf_state.roll, eskf_state.pitch, eskf_state.yaw);
                                 state.updateEstimatedPosition(eskf_state.position.x, eskf_state.position.y, eskf_state.position.z);
                                 state.updateEstimatedVelocity(eskf_state.velocity.x, eskf_state.velocity.y, eskf_state.velocity.z);
+                                state.updateGyroBias(eskf_state.gyro_bias.x, eskf_state.gyro_bias.y, eskf_state.gyro_bias.z);
+                                state.updateAccelBias(eskf_state.accel_bias.x, eskf_state.accel_bias.y, eskf_state.accel_bias.z);
                             } else {
                                 eskf_error_counter++;
                                 if (eskf_error_counter % 100 == 1) {
@@ -766,8 +768,12 @@ static void CLITask(void* pvParameters)
             }
 
             // Output binary log data at fixed interval (100Hz for ESKF debug)
-            if (g_cli.isBinlogEnabled() && (now - last_binlog) >= binlog_period) {
-                g_cli.outputBinaryLog();
+            if ((g_cli.isBinlogEnabled() || g_cli.isBinlogV2Enabled()) && (now - last_binlog) >= binlog_period) {
+                if (g_cli.isBinlogV2Enabled()) {
+                    g_cli.outputBinaryLogV2();
+                } else {
+                    g_cli.outputBinaryLog();
+                }
                 last_binlog = now;
             }
         }
@@ -1085,12 +1091,15 @@ static esp_err_t initEstimators()
 
     // ESKF (15-state Error-State Kalman Filter)
     {
+        auto& state = stampfly::StampFlyState::getInstance();
         auto cfg = stampfly::ESKF::Config::defaultConfig();
         esp_err_t ret = g_eskf.init(cfg);
         if (ret != ESP_OK) {
             ESP_LOGW(TAG, "ESKF init failed: %s", esp_err_to_name(ret));
+            state.setESKFInitialized(false);
         } else {
             ESP_LOGI(TAG, "ESKF initialized (predict at 100Hz)");
+            state.setESKFInitialized(true);
         }
     }
 

@@ -123,6 +123,16 @@ public:
     void updateEstimatedPosition(float x, float y, float z);
     void updateEstimatedVelocity(float vx, float vy, float vz);
 
+    // ESKF bias estimates
+    void updateGyroBias(float bx, float by, float bz);
+    void updateAccelBias(float bx, float by, float bz);
+    StateVector3 getGyroBias() const;
+    StateVector3 getAccelBias() const;
+
+    // ESKF status
+    void setESKFInitialized(bool initialized);
+    bool isESKFInitialized() const;
+
     // Control input
     void getControlInput(float& throttle, float& roll, float& pitch, float& yaw) const;
     void updateControlInput(uint16_t throttle, uint16_t roll, uint16_t pitch, uint16_t yaw);
@@ -155,8 +165,11 @@ private:
     float power_current_ = 0;
 
     // Estimated state (from ESKF)
-    StateVector3 position_ = {};  // [m] NED
-    StateVector3 velocity_ = {};  // [m/s]
+    StateVector3 position_ = {};      // [m] NED
+    StateVector3 velocity_ = {};      // [m/s]
+    StateVector3 gyro_bias_ = {};     // [rad/s]
+    StateVector3 accel_bias_ = {};    // [m/s²]
+    bool eskf_initialized_ = false;
 
     // Attitude
     float roll_ = 0;

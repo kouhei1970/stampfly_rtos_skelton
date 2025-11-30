@@ -17,12 +17,12 @@
 namespace stampfly {
 
 /**
- * @brief Binary log packet structure (64 bytes)
+ * @brief Binary log packet structure V1 (64 bytes) - Legacy
  *
- * Used for ESKF debugging - all sensor data in one packet
+ * Used for ESKF debugging - sensor data only
  */
 #pragma pack(push, 1)
-struct BinaryLogPacket {
+struct BinaryLogPacketV1 {
     uint8_t header[2];      // 0xAA, 0x55
     uint32_t timestamp_ms;  // ms since boot
     float accel_x;          // [m/s²]
@@ -45,7 +45,80 @@ struct BinaryLogPacket {
 };
 #pragma pack(pop)
 
-static_assert(sizeof(BinaryLogPacket) == 64, "BinaryLogPacket must be 64 bytes");
+static_assert(sizeof(BinaryLogPacketV1) == 64, "BinaryLogPacketV1 must be 64 bytes");
+
+/**
+ * @brief Binary log packet structure V2 (128 bytes)
+ *
+ * Includes sensor data + ESKF estimates
+ * Header: 0xAA, 0x56 (different from V1 for detection)
+ */
+#pragma pack(push, 1)
+struct BinaryLogPacketV2 {
+    // Header (2 bytes)
+    uint8_t header[2];      // 0xAA, 0x56 (V2)
+
+    // Timestamp (4 bytes)
+    uint32_t timestamp_ms;  // ms since boot
+
+    // IMU data (24 bytes)
+    float accel_x;          // [m/s²]
+    float accel_y;
+    float accel_z;
+    float gyro_x;           // [rad/s]
+    float gyro_y;
+    float gyro_z;
+
+    // Magnetometer (12 bytes)
+    float mag_x;            // [uT]
+    float mag_y;
+    float mag_z;
+
+    // Barometer (8 bytes)
+    float pressure;         // [Pa]
+    float baro_alt;         // [m]
+
+    // ToF (8 bytes)
+    float tof_bottom;       // [m]
+    float tof_front;        // [m]
+
+    // Optical Flow (5 bytes)
+    int16_t flow_dx;        // raw delta
+    int16_t flow_dy;
+    uint8_t flow_squal;     // surface quality
+
+    // === ESKF Estimates (52 bytes) ===
+    // Position (12 bytes)
+    float pos_x;            // [m] NED
+    float pos_y;
+    float pos_z;
+
+    // Velocity (12 bytes)
+    float vel_x;            // [m/s] NED
+    float vel_y;
+    float vel_z;
+
+    // Attitude (12 bytes)
+    float roll;             // [rad]
+    float pitch;
+    float yaw;
+
+    // Biases (12 bytes)
+    float gyro_bias_z;      // [rad/s] Yaw bias only (most important)
+    float accel_bias_x;     // [m/s²]
+    float accel_bias_y;
+
+    // Status + padding (17 bytes total to reach 128)
+    uint8_t eskf_status;    // 0=not initialized, 1=running
+    uint8_t reserved[15];   // padding to reach 128 bytes
+    uint8_t checksum;       // XOR of bytes 2-126
+};
+#pragma pack(pop)
+
+static_assert(sizeof(BinaryLogPacketV2) == 128, "BinaryLogPacketV2 must be 128 bytes");
+
+// Alias for current version
+using BinaryLogPacket = BinaryLogPacketV1;
 
 /**
  * @brief Command handler function pointer type
@@ -153,9 +226,24 @@ public:
     void setBinlogEnabled(bool enabled) { binlog_enabled_ = enabled; }
 
     /**
-     * @brief Output binary log packet (call periodically from task at 100Hz)
+     * @brief Output binary log packet V1 (call periodically from task at 100Hz)
      */
     void outputBinaryLog();
+
+    /**
+     * @brief Output binary log packet V2 with ESKF estimates (call periodically from task at 100Hz)
+     */
+    void outputBinaryLogV2();
+
+    /**
+     * @brief Check if V2 binary logging is enabled
+     */
+    bool isBinlogV2Enabled() const { return binlog_v2_enabled_; }
+
+    /**
+     * @brief Set V2 binary logging state
+     */
+    void setBinlogV2Enabled(bool enabled) { binlog_v2_enabled_ = enabled; }
 
     /**
      * @brief Get binary log sample counter
@@ -184,6 +272,7 @@ private:
     bool teleplot_enabled_ = false;
     bool log_enabled_ = false;
     bool binlog_enabled_ = false;
+    bool binlog_v2_enabled_ = false;
     uint32_t log_counter_ = 0;
     uint32_t binlog_counter_ = 0;
     CommandEntry commands_[MAX_COMMANDS] = {};

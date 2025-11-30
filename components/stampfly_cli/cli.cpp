@@ -335,45 +335,41 @@ static void cmd_binlog(int argc, char** argv, void* context)
     CLI* cli = static_cast<CLI*>(context);
 
     if (argc < 2) {
-        cli->print("Usage: binlog [on|off]\r\n");
-        cli->print("  on  - Start binary logging (100Hz, 64B/pkt)\r\n");
+        cli->print("Usage: binlog [on|off|v2]\r\n");
+        cli->print("  on  - Start V1 binary logging (100Hz, 64B/pkt, sensor only)\r\n");
+        cli->print("  v2  - Start V2 binary logging (100Hz, 128B/pkt, sensor + ESKF)\r\n");
         cli->print("  off - Stop binary logging\r\n");
-        cli->print("Current: %s, samples: %lu\r\n",
-                   cli->isBinlogEnabled() ? "on" : "off",
+        cli->print("Current: %s%s, samples: %lu\r\n",
+                   cli->isBinlogEnabled() ? "V1" : (cli->isBinlogV2Enabled() ? "V2" : "off"),
+                   (cli->isBinlogEnabled() || cli->isBinlogV2Enabled()) ? " on" : "",
                    (unsigned long)cli->getBinlogCounter());
-        cli->print("\r\nPacket format (64 bytes):\r\n");
-        cli->print("  [0-1]   Header: 0xAA 0x55\r\n");
-        cli->print("  [2-5]   timestamp_ms (uint32)\r\n");
-        cli->print("  [6-17]  accel xyz (float x3)\r\n");
-        cli->print("  [18-29] gyro xyz (float x3)\r\n");
-        cli->print("  [30-41] mag xyz (float x3)\r\n");
-        cli->print("  [42-45] pressure (float)\r\n");
-        cli->print("  [46-49] baro_alt (float)\r\n");
-        cli->print("  [50-53] tof_bottom (float)\r\n");
-        cli->print("  [54-57] tof_front (float)\r\n");
-        cli->print("  [58-59] flow_dx (int16)\r\n");
-        cli->print("  [60-61] flow_dy (int16)\r\n");
-        cli->print("  [62]    flow_squal (uint8)\r\n");
-        cli->print("  [63]    checksum (XOR of 2-62)\r\n");
+        cli->print("\r\nV1 Packet format (64 bytes): Header 0xAA 0x55\r\n");
+        cli->print("V2 Packet format (128 bytes): Header 0xAA 0x56 + ESKF estimates\r\n");
         return;
     }
 
     if (strcmp(argv[1], "on") == 0) {
         cli->resetBinlogCounter();
-        // Suppress all ESP_LOG output to prevent interference with binary stream
+        cli->setBinlogV2Enabled(false);
         esp_log_level_set("*", ESP_LOG_NONE);
-        cli->print("Binary logging ON (100Hz) - ESP_LOG suppressed\r\n");
-        // Small delay to ensure the message is sent before binary stream starts
+        cli->print("Binary logging V1 ON (100Hz, 64B) - ESP_LOG suppressed\r\n");
         vTaskDelay(pdMS_TO_TICKS(100));
         cli->setBinlogEnabled(true);
+    } else if (strcmp(argv[1], "v2") == 0) {
+        cli->resetBinlogCounter();
+        cli->setBinlogEnabled(false);
+        esp_log_level_set("*", ESP_LOG_NONE);
+        cli->print("Binary logging V2 ON (100Hz, 128B) - ESP_LOG suppressed\r\n");
+        vTaskDelay(pdMS_TO_TICKS(100));
+        cli->setBinlogV2Enabled(true);
     } else if (strcmp(argv[1], "off") == 0) {
         cli->setBinlogEnabled(false);
-        // Restore normal log level
+        cli->setBinlogV2Enabled(false);
         esp_log_level_set("*", ESP_LOG_INFO);
         cli->print("Binary logging OFF, total samples: %lu\r\n",
                    (unsigned long)cli->getBinlogCounter());
     } else {
-        cli->print("Usage: binlog [on|off]\r\n");
+        cli->print("Usage: binlog [on|off|v2]\r\n");
     }
 }
 
@@ -662,6 +658,104 @@ void CLI::outputBinaryLog()
     uint8_t* data = reinterpret_cast<uint8_t*>(&pkt);
     uint8_t checksum = 0;
     for (int i = 2; i < 63; i++) {
+        checksum ^= data[i];
+    }
+    pkt.checksum = checksum;
+
+    // Write binary packet using raw write()
+    int fd = fileno(stdout);
+    write(fd, data, sizeof(pkt));
+
+    binlog_counter_++;
+}
+
+void CLI::outputBinaryLogV2()
+{
+    if (!binlog_v2_enabled_) return;
+
+    auto& state = StampFlyState::getInstance();
+
+    BinaryLogPacketV2 pkt;
+
+    // Header (V2: 0xAA, 0x56)
+    pkt.header[0] = 0xAA;
+    pkt.header[1] = 0x56;
+
+    // Timestamp
+    pkt.timestamp_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
+
+    // IMU data
+    Vec3 accel, gyro;
+    state.getIMUData(accel, gyro);
+    pkt.accel_x = accel.x;
+    pkt.accel_y = accel.y;
+    pkt.accel_z = accel.z;
+    pkt.gyro_x = gyro.x;
+    pkt.gyro_y = gyro.y;
+    pkt.gyro_z = gyro.z;
+
+    // Mag data
+    Vec3 mag;
+    state.getMagData(mag);
+    pkt.mag_x = mag.x;
+    pkt.mag_y = mag.y;
+    pkt.mag_z = mag.z;
+
+    // Baro data
+    float baro_alt, pressure;
+    state.getBaroData(baro_alt, pressure);
+    pkt.pressure = pressure;
+    pkt.baro_alt = baro_alt;
+
+    // ToF data
+    float tof_bottom, tof_front;
+    state.getToFData(tof_bottom, tof_front);
+    pkt.tof_bottom = tof_bottom;
+    pkt.tof_front = tof_front;
+
+    // OptFlow raw data
+    int16_t flow_dx, flow_dy;
+    uint8_t flow_squal;
+    state.getFlowRawData(flow_dx, flow_dy, flow_squal);
+    pkt.flow_dx = flow_dx;
+    pkt.flow_dy = flow_dy;
+    pkt.flow_squal = flow_squal;
+
+    // === ESKF Estimates ===
+    // Position
+    StateVector3 pos = state.getPosition();
+    pkt.pos_x = pos.x;
+    pkt.pos_y = pos.y;
+    pkt.pos_z = pos.z;
+
+    // Velocity
+    StateVector3 vel = state.getVelocity();
+    pkt.vel_x = vel.x;
+    pkt.vel_y = vel.y;
+    pkt.vel_z = vel.z;
+
+    // Attitude
+    float roll, pitch, yaw;
+    state.getAttitudeEuler(roll, pitch, yaw);
+    pkt.roll = roll;
+    pkt.pitch = pitch;
+    pkt.yaw = yaw;
+
+    // Biases (only most important ones to save space)
+    StateVector3 gyro_bias = state.getGyroBias();
+    StateVector3 accel_bias = state.getAccelBias();
+    pkt.gyro_bias_z = gyro_bias.z;      // Yaw bias (most important)
+    pkt.accel_bias_x = accel_bias.x;
+    pkt.accel_bias_y = accel_bias.y;
+
+    // Status
+    pkt.eskf_status = state.isESKFInitialized() ? 1 : 0;
+    memset(pkt.reserved, 0, sizeof(pkt.reserved));
+
+    // Calculate checksum (XOR of bytes 2-126)
+    uint8_t* data = reinterpret_cast<uint8_t*>(&pkt);
+    uint8_t checksum = 0;
+    for (int i = 2; i < 127; i++) {
         checksum ^= data[i];
     }
     pkt.checksum = checksum;

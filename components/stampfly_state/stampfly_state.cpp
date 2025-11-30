@@ -320,6 +320,55 @@ void StampFlyState::updateEstimatedVelocity(float vx, float vy, float vz)
     xSemaphoreGive(mutex_);
 }
 
+void StampFlyState::updateGyroBias(float bx, float by, float bz)
+{
+    xSemaphoreTake(mutex_, portMAX_DELAY);
+    gyro_bias_.x = bx;
+    gyro_bias_.y = by;
+    gyro_bias_.z = bz;
+    xSemaphoreGive(mutex_);
+}
+
+void StampFlyState::updateAccelBias(float bx, float by, float bz)
+{
+    xSemaphoreTake(mutex_, portMAX_DELAY);
+    accel_bias_.x = bx;
+    accel_bias_.y = by;
+    accel_bias_.z = bz;
+    xSemaphoreGive(mutex_);
+}
+
+StateVector3 StampFlyState::getGyroBias() const
+{
+    xSemaphoreTake(mutex_, portMAX_DELAY);
+    StateVector3 bias = gyro_bias_;
+    xSemaphoreGive(mutex_);
+    return bias;
+}
+
+StateVector3 StampFlyState::getAccelBias() const
+{
+    xSemaphoreTake(mutex_, portMAX_DELAY);
+    StateVector3 bias = accel_bias_;
+    xSemaphoreGive(mutex_);
+    return bias;
+}
+
+void StampFlyState::setESKFInitialized(bool initialized)
+{
+    xSemaphoreTake(mutex_, portMAX_DELAY);
+    eskf_initialized_ = initialized;
+    xSemaphoreGive(mutex_);
+}
+
+bool StampFlyState::isESKFInitialized() const
+{
+    xSemaphoreTake(mutex_, portMAX_DELAY);
+    bool init = eskf_initialized_;
+    xSemaphoreGive(mutex_);
+    return init;
+}
+
 void StampFlyState::getControlInput(float& throttle, float& roll, float& pitch, float& yaw) const
 {
     xSemaphoreTake(mutex_, portMAX_DELAY);
