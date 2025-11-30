@@ -473,6 +473,55 @@ motion_test.binでエラーが大きい理由:
 - `tools/scripts/square_result/motion_test_analysis/` - motion_test.bin
 
 ### 可視化
+- `tools/scripts/square_result/closed_loop_analysis/` - square_motion.bin
+- `tools/scripts/square_result/motion_test_analysis/` - motion_test.bin
+
+---
+
+## Q/Rパラメータ検証 (2025-11-30)
+
+### 検証内容
+
+センサデータ（static_test02.bin）からAllan分散と統計分析でQ/Rパラメータを推定し、デフォルト値と比較検証。
+
+### 推定値 vs デフォルト値
+
+| パラメータ | 推定値 | デフォルト | 比率 |
+|-----------|--------|----------|------|
+| **Process Noise (Q)** |
+| gyro_noise | 0.0002 rad/s/√Hz | 0.001 | 5x過大 |
+| accel_noise | 0.001 m/s²/√Hz | 0.1 | 100x過大 |
+| gyro_bias_noise | 0.00002 | 0.00005 | 2.5x過大 |
+| accel_bias_noise | 0.0001 | 0.001 | 10x過大 |
+| **Measurement Noise (R)** |
+| baro_noise | 0.099 m | 1.0 m | 10x過大 |
+| tof_noise | 0.0013 m | 0.05 m | 38x過大 |
+| flow_noise | 0.74 | 1.0 | 妥当 |
+
+### 検証結果
+
+| 設定 | 閉ループエラー | Yaw Bias推定 | 評価 |
+|-----|--------------|-------------|------|
+| デフォルトQ/R | **5.1 cm** | 0.46°/s (安定) | ✓ 良好 |
+| 推定Q/R | 9.1 cm | -9.5°/s (発散) | ✗ 不安定 |
+
+### 結論
+
+**プロセスノイズ(Q)はデフォルト値を維持すべき**
+
+理由:
+1. 推定したgyro_bias_noiseが小さすぎると、Yawバイアス推定が発散
+2. 静止データからの推定値は「理論的最小値」であり、実運用にはマージンが必要
+3. デフォルト値は経験的に調整されており、安定性を重視した設計
+
+観測ノイズ(R)については推定値を参考に調整可能:
+- baro_noise: 0.1m (推定0.099m)
+- tof_noise: 現状のtof_tilt_thresholdで十分制御
+
+### 出力ファイル
+- `tools/scripts/qr_params.json` - 推定パラメータ
+- `tools/scripts/qr_analysis.png` - Allan分散・ヒストグラム
+- `tools/scripts/square_result/qr_comparison.png` - 比較結果
 
 ---
 
@@ -624,6 +673,7 @@ idf.py -p /dev/tty.usbmodem* flash monitor
 
 | 日付 | 内容 |
 |------|------|
+| 2025-11-30 | Q/Rパラメータ検証：センサデータから推定した値と比較、デフォルト値が安定と結論 |
 | 2025-11-30 | フローオフセットキャリブレーション：閉ループ推定法でオフセット決定、エラー5.1cm達成 |
 | 2025-11-30 | フロー最終チューニング：ジャイロ補償(回帰分析)、flow_scale=0.08、閉ループエラー22.4cm達成、本体コードに適用 |
 | 2025-11-30 | フロー軸変換修正：実測データ分析でX/Y軸入れ替えを発見・修正、閉ループエラー25.6cm達成 |

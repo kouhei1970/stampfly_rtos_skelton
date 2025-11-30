@@ -145,6 +145,23 @@ int main(int argc, char* argv[])
     config.flow_min_height = 0.02f;  // Allow flow updates at low height (desk test)
     config.flow_noise = 0.01f;       // Reduce flow noise for better velocity correction
     config.tof_tilt_threshold = 0.35f;  // 20° - stricter threshold for ToF reliability
+
+    // センサデータから推定したQ/Rパラメータ (estimate_qr.py参照)
+    // 結論: プロセスノイズ(Q)はデフォルト値を維持し、観測ノイズ(R)のみ調整
+    //
+    // 理由: 推定したQ値が小さすぎるとバイアス推定が不安定になる
+    //       特にgyro_bias_noiseを小さくするとYawバイアスが発散する
+    //
+    // 推定値 vs デフォルト:
+    //   gyro_noise:       0.0002 vs 0.001 (デフォルト維持)
+    //   accel_noise:      0.001  vs 0.1   (デフォルト維持)
+    //   gyro_bias_noise:  0.00002 vs 0.00005 (デフォルト維持)
+    //   accel_bias_noise: 0.0001 vs 0.001 (デフォルト維持)
+    //
+    // 観測ノイズ(R)は推定値を参考に調整:
+    //   baro_noise: 0.1m (推定0.099m)
+    //   tof_noise:  0.002m (推定0.0013m) - 既にtof_tilt_thresholdで調整済み
+
     eskf.init(config);
 
     // Open output CSV
