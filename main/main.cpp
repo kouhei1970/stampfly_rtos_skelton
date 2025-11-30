@@ -327,22 +327,24 @@ static void OptFlowTask(void* pvParameters)
                 // Check quality
                 if (stampfly::OutlierDetector::isFlowValid(burst.squal)) {
                     // ============================================================
-                    // PMW3901座標系 → 機体座標系 変換
-                    // センサX → 機体Y (右方向)
-                    // センサY → 機体-X (後方)
-                    // 変換式:
-                    //   機体X = -センサY
-                    //   機体Y = センサX
+                    // PMW3901座標系 → 中間座標系 変換（第1段階）
+                    // この変換はbinlog出力と互換性を保つためのもの
+                    // 最終的な機体座標への変換はESKF内部で行われる
                     // ============================================================
-                    int16_t flow_body_x = -burst.delta_y;   // 前方
-                    int16_t flow_body_y =  burst.delta_x;  // 右方向
+                    int16_t flow_body_x = -burst.delta_y;
+                    int16_t flow_body_y =  burst.delta_x;
 
                     state.updateOpticalFlow(flow_body_x, flow_body_y, burst.squal);
 
-                    // Update ESKF with optical flow (need height and gyro for velocity calculation)
+                    // Update ESKF with optical flow
+                    // 注: updateFlowWithGyro()内でさらに軸変換が行われる
+                    //     最終的な変換結果:
+                    //       vx_body = -flow_body_y * h = -delta_x * h
+                    //       vy_body = -flow_body_x * h = +delta_y * h
+                    //     これはPC版ESKFで検証済みの変換
                     if (g_eskf.isInitialized()) {
                         float height = state.getAltitude();
-                        if (height > 0.02f) {  // Only update if height is valid (lowered for desk test)
+                        if (height > 0.02f) {  // Only update if height is valid
                             // Get gyro data for rotation compensation
                             stampfly::Vec3 accel, gyro;
                             state.getIMUData(accel, gyro);
@@ -354,8 +356,8 @@ static void OptFlowTask(void* pvParameters)
 
                             // updateFlowWithGyro includes:
                             // - Gyro compensation (rotation component removal)
-                            // - Axis swap (实測データから導出)
-                            // - Body→NED transformation
+                            // - Final axis transformation to body frame
+                            // - Body→NED transformation (Yaw rotation)
                             // - Flow offset correction
                             g_eskf.updateFlowWithGyro(flow_x_rad, flow_y_rad, height, gyro.x, gyro.y);
                         }

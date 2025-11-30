@@ -349,11 +349,17 @@ void ESKF::updateFlowWithGyro(float flow_x, float flow_y, float height,
     float flow_y_comp = flow_y - k_yx * gyro_x - k_yy * gyro_y - flow_dy_offset;
 
     // ============================================================
-    // 2. ボディ座標系での速度計算
+    // 2. ボディ座標系での速度計算（第2段階の軸変換）
     // ============================================================
-    // 実測データ分析結果（軸入れ替えが必要）:
-    //   vx_body = -flow_y * height (前方速度)
-    //   vy_body = -flow_x * height (右方速度)
+    // 入力: main.cppで第1段階の変換済み
+    //   flow_x = (-sensor_delta_y) * scale
+    //   flow_y = (+sensor_delta_x) * scale
+    //
+    // 実測データ分析により決定した最終変換:
+    //   vx_body = -flow_y * h = -sensor_delta_x * h (前方速度)
+    //   vy_body = -flow_x * h = +sensor_delta_y * h (右方速度)
+    //
+    // PC版ESKFで検証済み（閉ループエラー5.1cm達成）
     float vx_body = -flow_y_comp * height;
     float vy_body = -flow_x_comp * height;
 
