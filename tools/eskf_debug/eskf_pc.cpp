@@ -315,16 +315,16 @@ void ESKF::updateFlowWithGyro(float flow_x, float flow_y, float height,
     // 2. ボディ座標系での速度計算
     // ============================================================
     // バイナリログの座標系（main.cppで変換済み）:
-    //   flow_x = -sensor_delta_y (機体X方向に対応するはずだったが...)
-    //   flow_y =  sensor_delta_x (機体Y方向に対応するはずだったが...)
+    //   flow_x = -sensor_delta_y (機体X方向に対応)
+    //   flow_y =  sensor_delta_x (機体Y方向に対応)
     //
-    // 実測データ分析結果:
-    //   右移動時: flow_x=-261, flow_y=+99 → vy_body > 0 が期待
-    //   後方移動時: flow_x=+38, flow_y=+252 → vx_body < 0 が期待
+    // NED座標系 (Yaw=0):
+    //   前方移動 → +X (North)
+    //   後方移動 → -X (South)
+    //   右移動   → +Y (East)
+    //   左移動   → -Y (West)
     //
-    // 正しい変換（実測データから導出）:
-    //   vx_body = -flow_y * height
-    //   vy_body = -flow_x * height
+    // 速度変換
     float vx_body = -flow_y_comp * height;  // 前方速度
     float vy_body = -flow_x_comp * height;  // 右方速度
 

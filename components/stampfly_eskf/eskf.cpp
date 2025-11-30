@@ -77,6 +77,8 @@ void ESKF::reset()
     // ジャイロバイアス
     P_(BG_X, BG_X) = bg_var;
     P_(BG_Y, BG_Y) = bg_var;
+    // 地磁気無効時も初期共分散は設定（特異性回避）
+    // バイアスZ更新のスキップはinjectErrorStateで行う
     P_(BG_Z, BG_Z) = bg_var;
     // 加速度バイアス
     P_(BA_X, BA_X) = ba_var;
@@ -84,25 +86,23 @@ void ESKF::reset()
     P_(BA_Z, BA_Z) = ba_var;
 }
 
-// Helper to check for NaN/Inf in a value
-static inline bool isValidFloat(float v) {
-    return !std::isnan(v) && !std::isinf(v);
+void ESKF::setGyroBias(const Vector3& bias)
+{
+    state_.gyro_bias = bias;
 }
 
 void ESKF::predict(const Vector3& accel, const Vector3& gyro, float dt)
 {
     if (!initialized_ || dt <= 0) return;
 
-    // Validate inputs
-    if (!isValidFloat(accel.x) || !isValidFloat(accel.y) || !isValidFloat(accel.z) ||
-        !isValidFloat(gyro.x) || !isValidFloat(gyro.y) || !isValidFloat(gyro.z)) {
-        ESP_LOGW(TAG, "ESKF predict: invalid input");
-        return;
-    }
-
     // バイアス補正
     Vector3 gyro_corrected = gyro - state_.gyro_bias;
     Vector3 accel_corrected = accel - state_.accel_bias;
+
+    // Yaw固定モード: Yawレートを0に強制（地磁気無効時のテスト用）
+    if (!config_.mag_enabled) {
+        gyro_corrected.z = 0.0f;
+    }
 
     // 回転行列
     Matrix<3, 3> R = quaternionToRotationMatrix(state_.orientation);
@@ -130,6 +130,12 @@ void ESKF::predict(const Vector3& accel, const Vector3& gyro, float dt)
 
     // オイラー角更新
     state_.orientation.toEuler(state_.roll, state_.pitch, state_.yaw);
+
+    // Yaw固定モード: Yawを0にリセット
+    if (!config_.mag_enabled) {
+        state_.yaw = 0.0f;
+        state_.orientation = Quaternion::fromEuler(state_.roll, state_.pitch, 0.0f);
+    }
 
     // 共分散の予測更新（メンバ変数を使用してスタック使用量を削減）
     // 状態遷移行列 F (離散化)
@@ -168,59 +174,39 @@ void ESKF::predict(const Vector3& accel, const Vector3& gyro, float dt)
     float bg_var = config_.gyro_bias_noise * config_.gyro_bias_noise * dt;
     float ba_var = config_.accel_bias_noise * config_.accel_bias_noise * dt;
 
-    // 位置ノイズ (速度積分による位置変化の不確かさ)
-    // 離散時間での位置変化: Δp = v*dt + 0.5*a*dt²
-    // 位置分散 ≈ accel_var * (0.5*dt²)² = accel_var * 0.25 * dt⁴
-    // より保守的に: accel_var * dt² を使用
-    float pos_var = accel_var * dt * dt;
-    Q_(POS_X, POS_X) = pos_var;
-    Q_(POS_Y, POS_Y) = pos_var;
-    Q_(POS_Z, POS_Z) = pos_var;
+    // 姿勢ノイズ
+    Q_(ATT_X, ATT_X) = gyro_var;
+    Q_(ATT_Y, ATT_Y) = gyro_var;
+    Q_(ATT_Z, ATT_Z) = gyro_var;
 
     // 速度ノイズ (回転行列経由、対角成分のみ簡略化)
     for (int i = 0; i < 3; i++) {
         Q_(VEL_X + i, VEL_X + i) = accel_var;
     }
 
-    // 姿勢ノイズ
-    Q_(ATT_X, ATT_X) = gyro_var;
-    Q_(ATT_Y, ATT_Y) = gyro_var;
-    Q_(ATT_Z, ATT_Z) = gyro_var;
-
     // バイアスノイズ
     Q_(BG_X, BG_X) = bg_var;
     Q_(BG_Y, BG_Y) = bg_var;
-    Q_(BG_Z, BG_Z) = bg_var;
+    // 地磁気無効時: バイアスZのプロセスノイズを0に（初期キャリブレーション値を維持）
+    Q_(BG_Z, BG_Z) = config_.mag_enabled ? bg_var : 0.0f;
     Q_(BA_X, BA_X) = ba_var;
     Q_(BA_Y, BA_Y) = ba_var;
     Q_(BA_Z, BA_Z) = ba_var;
 
-    // P = F * P * F' + Q (メンバ変数temp1_, temp2_を使用)
-    temp1_ = F_ * P_;
-    temp2_ = temp1_ * F_.transpose();
-    P_ = temp2_ + Q_;
-
-    // 共分散行列の対称性・正定値性を強制
-    enforceCovarianceSymmetry();
-
-    // Check for NaN in state and reset if needed
-    if (!isValidFloat(state_.position.x) || !isValidFloat(state_.velocity.x) ||
-        !isValidFloat(state_.orientation.w)) {
-        ESP_LOGW(TAG, "ESKF predict: NaN detected, resetting");
-        reset();
-    }
+    // P = F * P * F' + Q
+    Matrix<15, 15> FP = F_ * P_;
+    Matrix<15, 15> FPFT = FP * F_.transpose();
+    P_ = FPFT + Q_;
 }
 
 void ESKF::updateBaro(float altitude)
 {
     if (!initialized_) return;
-    if (!isValidFloat(altitude)) return;
 
-    // 観測モデル: z = p_z
-    // 気圧高度は「上が正」で入力されるが、NEDでは「下が正」
-    // よって符号反転: z = -altitude
+    // 観測モデル: z = -altitude (上昇=プラスの高度をNED変換)
+    // 引数altitudeは相対高度（起動時0、上昇=プラス）を期待
     Matrix<1, 1> z;
-    z(0, 0) = -altitude;
+    z(0, 0) = -altitude;  // NED: 上昇=マイナス
 
     Matrix<1, 1> h;
     h(0, 0) = state_.position.z;
@@ -239,9 +225,8 @@ void ESKF::updateBaro(float altitude)
 void ESKF::updateToF(float distance)
 {
     if (!initialized_) return;
-    if (!isValidFloat(distance) || distance < 0.01f) return;
 
-    // 傾きが大きい場合はスキップ (GitHub版: >0.1 radでスキップ、ここでは設定可能)
+    // 傾きが大きい場合はToF更新をスキップ（誤測定防止）
     float tilt = std::sqrt(state_.roll * state_.roll + state_.pitch * state_.pitch);
     if (tilt > config_.tof_tilt_threshold) {
         return;
@@ -252,7 +237,8 @@ void ESKF::updateToF(float distance)
     float cos_pitch = std::cos(state_.pitch);
     float height = distance * cos_roll * cos_pitch;
 
-    // 観測モデル: z = -p_z (NEDなので下向きが正)
+    // 観測モデル: z = -height (ToFは上向き正、NEDは下向き正なので符号反転)
+    // 引数distanceは正の値（ToFからの距離）を期待
     Matrix<1, 1> z;
     z(0, 0) = -height;
 
@@ -273,9 +259,6 @@ void ESKF::updateToF(float distance)
 void ESKF::updateMag(const Vector3& mag)
 {
     if (!initialized_) return;
-    if (!isValidFloat(mag.x) || !isValidFloat(mag.y) || !isValidFloat(mag.z)) return;
-    // Skip if mag vector is too small (sensor error)
-    if (mag.norm() < 1.0f) return;
 
     // 参照ベクトル（NED）をボディ座標系に変換
     Matrix<3, 3> R = quaternionToRotationMatrix(state_.orientation);
@@ -307,22 +290,16 @@ void ESKF::updateMag(const Vector3& mag)
     measurementUpdate<1>(z, h, H, R_mat);
 }
 
-void ESKF::updateFlow(float flow_x, float flow_y, float height)
+void ESKF::updateFlow(float flow_x, float flow_y, float distance)
 {
     // 後方互換: ジャイロなしバージョン
-    updateFlowWithGyro(flow_x, flow_y, height, 0.0f, 0.0f);
+    updateFlowWithGyro(flow_x, flow_y, distance, 0.0f, 0.0f);
 }
 
-void ESKF::updateFlowWithGyro(float flow_x, float flow_y, float height,
+void ESKF::updateFlowWithGyro(float flow_x, float flow_y, float distance,
                                float gyro_x, float gyro_y)
 {
-    if (!initialized_) return;
-    if (!isValidFloat(flow_x) || !isValidFloat(flow_y) || !isValidFloat(height)) return;
-
-    // 高度ゲーティング
-    if (height < config_.flow_min_height || height > config_.flow_max_height) {
-        return;
-    }
+    if (!initialized_ || distance < config_.flow_min_height) return;
 
     // ============================================================
     // 1. ジャイロ補償（回転成分の除去）
@@ -355,13 +332,15 @@ void ESKF::updateFlowWithGyro(float flow_x, float flow_y, float height,
     //   flow_x = (-sensor_delta_y) * scale
     //   flow_y = (+sensor_delta_x) * scale
     //
-    // 実測データ分析により決定した最終変換:
-    //   vx_body = -flow_y * h = -sensor_delta_x * h (前方速度)
-    //   vy_body = -flow_x * h = +sensor_delta_y * h (右方速度)
+    // NED座標系 (Yaw=0):
+    //   前方移動 → +X (North)
+    //   後方移動 → -X (South)
+    //   右移動   → +Y (East)
+    //   左移動   → -Y (West)
     //
-    // PC版ESKFで検証済み（閉ループエラー5.1cm達成）
-    float vx_body = -flow_y_comp * height;
-    float vy_body = -flow_x_comp * height;
+    // 速度変換（PC版と同一）
+    float vx_body = -flow_y_comp * distance;  // 前方速度
+    float vy_body = -flow_x_comp * distance;  // 右方速度
 
     // ============================================================
     // 3. Body座標系 → NED座標系への変換
@@ -399,7 +378,6 @@ void ESKF::updateFlowWithGyro(float flow_x, float flow_y, float height,
 void ESKF::updateAccelAttitude(const Vector3& accel)
 {
     if (!initialized_) return;
-    if (!isValidFloat(accel.x) || !isValidFloat(accel.y) || !isValidFloat(accel.z)) return;
 
     // 加速度ノルムをチェック（静止時は重力のみ）
     float accel_norm = accel.norm();
@@ -465,10 +443,19 @@ void ESKF::injectErrorState(const Matrix<15, 1>& dx)
     // オイラー角更新
     state_.orientation.toEuler(state_.roll, state_.pitch, state_.yaw);
 
+    // Yaw固定モード: 観測更新後もYawを0にリセット
+    if (!config_.mag_enabled) {
+        state_.yaw = 0.0f;
+        state_.orientation = Quaternion::fromEuler(state_.roll, state_.pitch, 0.0f);
+    }
+
     // ジャイロバイアス
     state_.gyro_bias.x += dx(BG_X, 0);
     state_.gyro_bias.y += dx(BG_Y, 0);
-    state_.gyro_bias.z += dx(BG_Z, 0);
+    // 地磁気無効時: バイアスZを更新しない（初期キャリブレーション値を維持）
+    if (config_.mag_enabled) {
+        state_.gyro_bias.z += dx(BG_Z, 0);
+    }
 
     // 加速度バイアス
     state_.accel_bias.x += dx(BA_X, 0);
@@ -482,14 +469,6 @@ bool ESKF::measurementUpdate(const Matrix<M, 1>& z,
                               const Matrix<M, 15>& H,
                               const Matrix<M, M>& R)
 {
-    // 入力のNaNチェック
-    for (int i = 0; i < M; i++) {
-        if (!isValidFloat(z(i, 0)) || !isValidFloat(h(i, 0))) {
-            ESP_LOGW(TAG, "measurementUpdate(M=%d): NaN in input z or h", M);
-            return false;
-        }
-    }
-
     // イノベーション
     Matrix<M, 1> y = z - h;
 
@@ -497,150 +476,41 @@ bool ESKF::measurementUpdate(const Matrix<M, 1>& z,
     Matrix<M, 15> HP = H * P_;
     Matrix<M, M> S = HP * H.transpose() + R;
 
-    // Sの値チェック
-    for (int i = 0; i < M; i++) {
-        if (!isValidFloat(S(i, i))) {
-            ESP_LOGW(TAG, "measurementUpdate(M=%d): NaN in S", M);
-            return false;
-        }
-    }
-
     // カルマンゲイン: K = P * H' * S^{-1}
     Matrix<15, M> PHT = P_ * H.transpose();
-
-    // 逆行列計算（M=1,2の場合は直接計算で安全に）
-    Matrix<M, M> S_inv;
-    if constexpr (M == 1) {
-        // 1x1の場合は単純な除算
-        float s = S(0, 0);
-        if (std::abs(s) < 1e-10f) {
-            ESP_LOGW(TAG, "measurementUpdate: singular S (1x1), s=%.6f", s);
-            return false;
-        }
-        S_inv(0, 0) = 1.0f / s;
-    } else if constexpr (M == 2) {
-        // 2x2の場合は行列式で計算
-        float det = S(0, 0) * S(1, 1) - S(0, 1) * S(1, 0);
-        if (std::abs(det) < 1e-10f) {
-            ESP_LOGW(TAG, "measurementUpdate: singular S (2x2), det=%.6f", det);
-            return false;
-        }
-        float inv_det = 1.0f / det;
-        S_inv(0, 0) = S(1, 1) * inv_det;
-        S_inv(0, 1) = -S(0, 1) * inv_det;
-        S_inv(1, 0) = -S(1, 0) * inv_det;
-        S_inv(1, 1) = S(0, 0) * inv_det;
-    } else {
-        S_inv = inverse<M>(S);
-    }
-
-    // S_invのNaNチェック
-    if (!isValidFloat(S_inv(0, 0))) {
-        ESP_LOGW(TAG, "measurementUpdate(M=%d): NaN in S_inv", M);
-        return false;
-    }
-
-    // Mahalanobis距離によるアウトライア棄却
-    // d² = y' * S^{-1} * y
-    Matrix<M, 1> Sinv_y = S_inv * y;
-    float mahal_dist_sq = 0.0f;
-    for (int i = 0; i < M; i++) {
-        mahal_dist_sq += y(i, 0) * Sinv_y(i, 0);
-    }
-
-    if (!isValidFloat(mahal_dist_sq) || mahal_dist_sq > config_.mahalanobis_threshold) {
-        // アウトライア検出または異常値: 更新をスキップ
-        return false;
-    }
-
+    Matrix<M, M> S_inv = inverse<M>(S);
     Matrix<15, M> K = PHT * S_inv;
-
-    // Kのサンプルチェック
-    if (!isValidFloat(K(0, 0))) {
-        ESP_LOGW(TAG, "measurementUpdate(M=%d): NaN in K", M);
-        return false;
-    }
 
     // 状態更新
     Matrix<15, 1> dx = K * y;
-
-    // NaNチェック（全要素）
-    for (int i = 0; i < 15; i++) {
-        if (!isValidFloat(dx(i, 0))) {
-            ESP_LOGW(TAG, "measurementUpdate(M=%d): NaN in dx[%d]", M, i);
-            return false;
-        }
-    }
-
     injectErrorState(dx);
 
     // 共分散更新 (Joseph形式: 数値安定)
     // P = (I - K*H) * P * (I - K*H)' + K * R * K'
-    // メンバ変数temp1_, temp2_を使用してスタック使用量を削減
+    // メンバ変数を使用してスタック使用量を削減
     temp1_ = Matrix<15, 15>::identity() - K * H;  // I - K*H
     temp2_ = temp1_ * P_;                          // (I - K*H) * P
-    F_ = temp2_ * temp1_.transpose();              // (I - K*H) * P * (I - K*H)' (F_を一時変数として再利用)
+    F_ = temp2_ * temp1_.transpose();              // (I - K*H) * P * (I - K*H)'
 
     // K * R * K' を計算 (K: 15xM, R: MxM, K': Mx15)
     Matrix<15, M> KR = K * R;
-    Q_ = KR * K.transpose();  // Q_を一時変数として再利用
+    Q_ = KR * K.transpose();
     P_ = F_ + Q_;
 
-    // 共分散行列の対称性・正定値性を強制
-    enforceCovarianceSymmetry();
+    // 地磁気無効時: BG_Zの共分散を小さな値に固定（発散防止）
+    if (!config_.mag_enabled) {
+        // BG_Z行・列のオフ対角成分をゼロにする
+        for (int i = 0; i < 15; i++) {
+            if (i != BG_Z) {
+                P_(BG_Z, i) = 0.0f;
+                P_(i, BG_Z) = 0.0f;
+            }
+        }
+        // 対角成分は小さな値を維持（完全に0だと数値的問題）
+        P_(BG_Z, BG_Z) = 1e-10f;
+    }
 
     return true;
-}
-
-void ESKF::enforceCovarianceSymmetry()
-{
-    bool has_nan = false;
-
-    // NaNチェックと対称性の強制
-    for (int i = 0; i < 15; i++) {
-        for (int j = i; j < 15; j++) {
-            if (!isValidFloat(P_(i, j)) || !isValidFloat(P_(j, i))) {
-                has_nan = true;
-                break;
-            }
-            if (i != j) {
-                float avg = 0.5f * (P_(i, j) + P_(j, i));
-                P_(i, j) = avg;
-                P_(j, i) = avg;
-            }
-        }
-        if (has_nan) break;
-    }
-
-    // NaNが検出された場合は共分散行列をリセット
-    if (has_nan) {
-        ESP_LOGW(TAG, "enforceCovarianceSymmetry: NaN detected, resetting P");
-        P_ = Matrix<15, 15>::zeros();
-        float pos_var = config_.init_pos_std * config_.init_pos_std;
-        float vel_var = config_.init_vel_std * config_.init_vel_std;
-        float att_var = config_.init_att_std * config_.init_att_std;
-        float bg_var = config_.init_gyro_bias_std * config_.init_gyro_bias_std;
-        float ba_var = config_.init_accel_bias_std * config_.init_accel_bias_std;
-        for (int i = 0; i < 3; i++) {
-            P_(i, i) = pos_var;
-            P_(3 + i, 3 + i) = vel_var;
-            P_(6 + i, 6 + i) = att_var;
-            P_(9 + i, 9 + i) = bg_var;
-            P_(12 + i, 12 + i) = ba_var;
-        }
-        return;
-    }
-
-    // 正定値性を確保: 対角成分が負または極端に大きくならないように
-    const float min_variance = 1e-10f;
-    const float max_variance = 1e6f;
-    for (int i = 0; i < 15; i++) {
-        if (P_(i, i) < min_variance) {
-            P_(i, i) = min_variance;
-        } else if (P_(i, i) > max_variance) {
-            P_(i, i) = max_variance;
-        }
-    }
 }
 
 // テンプレートの明示的インスタンス化
@@ -685,11 +555,8 @@ void AttitudeEstimator::update(const Vector3& accel, const Vector3& gyro, float 
     float accel_norm = accel.norm();
     if (accel_norm > 0.5f && accel_norm < 3.0f * 9.81f) {
         // 加速度から roll, pitch を計算
-        // NED座標系: 静止時 accel = (0, 0, -g) （比力は上向き）
-        // roll: Y軸周りの回転 → atan2(-ay, -az)
-        // pitch: X軸周りの回転 → atan2(ax, sqrt(ay² + az²))
-        float roll_acc = std::atan2(-accel.y, -accel.z);
-        float pitch_acc = std::atan2(accel.x, std::sqrt(accel.y*accel.y + accel.z*accel.z));
+        float roll_acc = std::atan2(accel.y, accel.z);
+        float pitch_acc = std::atan2(-accel.x, std::sqrt(accel.y*accel.y + accel.z*accel.z));
 
         // ジャイロから roll, pitch を取得
         float roll_gyro, pitch_gyro, yaw_gyro;

@@ -138,6 +138,10 @@ namespace {
     // CLI
     stampfly::CLI g_cli;
 
+    // Barometer reference for relative altitude (ESKF expects NED, origin at boot)
+    float g_baro_reference_altitude = 0.0f;
+    bool g_baro_reference_set = false;
+
     // Task handles
     TaskHandle_t g_imu_task_handle = nullptr;
     TaskHandle_t g_optflow_task_handle = nullptr;
@@ -273,8 +277,20 @@ static void IMUTask(void* pvParameters)
                             // Update StampFlyState with ESKF estimated state
                             auto eskf_state = g_eskf.getState();
 
-                            // 出力値の検証
-                            if (std::isfinite(eskf_state.roll) && std::isfinite(eskf_state.pitch)) {
+                            // 出力値の検証（NaNチェック + 発散検出）
+                            bool eskf_valid = std::isfinite(eskf_state.roll) && std::isfinite(eskf_state.pitch);
+
+                            // 発散検出: 位置/速度が異常に大きい場合
+                            constexpr float MAX_POS = 100.0f;   // 100m以上は異常
+                            constexpr float MAX_VEL = 50.0f;    // 50m/s以上は異常
+                            bool pos_diverged = std::abs(eskf_state.position.x) > MAX_POS ||
+                                               std::abs(eskf_state.position.y) > MAX_POS ||
+                                               std::abs(eskf_state.position.z) > MAX_POS;
+                            bool vel_diverged = std::abs(eskf_state.velocity.x) > MAX_VEL ||
+                                               std::abs(eskf_state.velocity.y) > MAX_VEL ||
+                                               std::abs(eskf_state.velocity.z) > MAX_VEL;
+
+                            if (eskf_valid && !pos_diverged && !vel_diverged) {
                                 state.updateAttitude(eskf_state.roll, eskf_state.pitch, eskf_state.yaw);
                                 state.updateEstimatedPosition(eskf_state.position.x, eskf_state.position.y, eskf_state.position.z);
                                 state.updateEstimatedVelocity(eskf_state.velocity.x, eskf_state.velocity.y, eskf_state.velocity.z);
@@ -283,7 +299,14 @@ static void IMUTask(void* pvParameters)
                             } else {
                                 eskf_error_counter++;
                                 if (eskf_error_counter % 100 == 1) {
-                                    ESP_LOGW(TAG, "ESKF output NaN, errors=%lu", eskf_error_counter);
+                                    if (!eskf_valid) {
+                                        ESP_LOGW(TAG, "ESKF output NaN, errors=%lu", eskf_error_counter);
+                                    } else {
+                                        ESP_LOGW(TAG, "ESKF diverged: pos=[%.1f,%.1f,%.1f] vel=[%.1f,%.1f,%.1f], resetting...",
+                                                 eskf_state.position.x, eskf_state.position.y, eskf_state.position.z,
+                                                 eskf_state.velocity.x, eskf_state.velocity.y, eskf_state.velocity.z);
+                                        g_eskf.reset();
+                                    }
                                 }
                             }
                         } else {
@@ -345,8 +368,12 @@ static void OptFlowTask(void* pvParameters)
                     //       vy_body = -flow_body_x * h = +delta_y * h
                     //     これはPC版ESKFで検証済みの変換
                     if (g_eskf.isInitialized()) {
-                        float height = state.getAltitude();
-                        if (height > 0.02f) {  // Only update if height is valid
+                        // ToFからの距離を使用（速度計算: v = flow × distance）
+                        float tof_bottom, tof_front;
+                        state.getToFData(tof_bottom, tof_front);
+                        float distance = tof_bottom;
+                        if (distance < 0.02f) distance = 0.02f;  // Minimum distance
+                        if (distance > 0.02f) {  // Only update if distance is valid
                             // Get gyro data for rotation compensation
                             stampfly::Vec3 accel, gyro;
                             state.getIMUData(accel, gyro);
@@ -361,7 +388,7 @@ static void OptFlowTask(void* pvParameters)
                             // - Final axis transformation to body frame
                             // - Body→NED transformation (Yaw rotation)
                             // - Flow offset correction
-                            g_eskf.updateFlowWithGyro(flow_x_rad, flow_y_rad, height, gyro.x, gyro.y);
+                            g_eskf.updateFlowWithGyro(flow_x_rad, flow_y_rad, distance, gyro.x, gyro.y);
                         }
                     }
                 }
@@ -382,9 +409,13 @@ static void MagTask(void* pvParameters)
     ESP_LOGI(TAG, "MagTask started");
 
     TickType_t last_wake_time = xTaskGetTickCount();
-    const TickType_t period = pdMS_TO_TICKS(10);  // 100Hz
+    const TickType_t period = pdMS_TO_TICKS(10);  // 100Hz センサ読み取り
 
     auto& state = stampfly::StampFlyState::getInstance();
+
+    // ESKF更新は10Hz（PC版と同じ）
+    int eskf_update_counter = 0;
+    constexpr int ESKF_UPDATE_DIVISOR = 10;  // 100Hz / 10 = 10Hz
 
     while (true) {
         if (g_mag.isInitialized()) {
@@ -404,13 +435,14 @@ static void MagTask(void* pvParameters)
                 // Update state (no outlier filter for now - needs calibration first)
                 state.updateMag(mag_body_x, mag_body_y, mag_body_z);
 
-                // 地磁気による観測更新は校正後に有効化
-                // stampfly::math::Vector3 m(mag_body_x, mag_body_y, mag_body_z);
-                // if (g_eskf.isInitialized()) {
-                //     g_eskf.updateMag(m);
-                // }
-                // else if (g_attitude_est.isInitialized()) {
-                //     g_attitude_est.updateMag(m);
+                // 地磁気によるYaw補正（ESKF）- 現在無効
+                // eskf_update_counter++;
+                // if (eskf_update_counter >= ESKF_UPDATE_DIVISOR) {
+                //     eskf_update_counter = 0;
+                //     stampfly::math::Vector3 m(mag_body_x, mag_body_y, mag_body_z);
+                //     if (g_eskf.isInitialized()) {
+                //         g_eskf.updateMag(m);
+                //     }
                 // }
             }
         }
@@ -439,8 +471,18 @@ static void BaroTask(void* pvParameters)
                 state.updateBaro(baro.pressure_pa, baro.temperature_c, baro.altitude_m);
 
                 // Update ESKF with barometer
+                // updateBaro()は相対高度（正の値、上昇=プラス）を期待
+                // ESKF内部でNED変換される
                 if (g_eskf.isInitialized()) {
-                    g_eskf.updateBaro(baro.altitude_m);
+                    // 初回測定で基準高度を設定
+                    if (!g_baro_reference_set) {
+                        g_baro_reference_altitude = baro.altitude_m;
+                        g_baro_reference_set = true;
+                        ESP_LOGI(TAG, "Baro reference set: %.3f m", g_baro_reference_altitude);
+                    }
+                    // 相対高度を計算（上昇=プラス）
+                    float relative_alt = baro.altitude_m - g_baro_reference_altitude;
+                    g_eskf.updateBaro(relative_alt);
                 }
                 // Fallback to simple altitude estimator
                 else if (g_altitude_est.isInitialized()) {
@@ -495,6 +537,7 @@ static void ToFTask(void* pvParameters)
                         state.updateToF(stampfly::ToFPosition::BOTTOM, distance_m, status);
 
                         // Update ESKF with ToF
+                        // updateToF()は正の距離を期待、内部でNED変換される
                         if (g_eskf.isInitialized()) {
                             g_eskf.updateToF(distance_m);
                         }
@@ -1093,6 +1136,7 @@ static esp_err_t initEstimators()
     {
         auto& state = stampfly::StampFlyState::getInstance();
         auto cfg = stampfly::ESKF::Config::defaultConfig();
+        cfg.mag_enabled = false;  // 地磁気無効（安定性優先）
         esp_err_t ret = g_eskf.init(cfg);
         if (ret != ESP_OK) {
             ESP_LOGW(TAG, "ESKF init failed: %s", esp_err_to_name(ret));
@@ -1100,6 +1144,42 @@ static esp_err_t initEstimators()
         } else {
             ESP_LOGI(TAG, "ESKF initialized (predict at 100Hz)");
             state.setESKFInitialized(true);
+
+            // ジャイロバイアスキャリブレーション（静止状態で実行）
+            if (g_imu.isInitialized()) {
+                ESP_LOGI(TAG, "Calibrating gyro bias (keep device still)...");
+                constexpr int CALIB_SAMPLES = 200;  // 200サンプル @ 400Hz = 0.5秒
+                float gyro_sum_x = 0, gyro_sum_y = 0, gyro_sum_z = 0;
+                int valid_samples = 0;
+
+                for (int i = 0; i < CALIB_SAMPLES; i++) {
+                    stampfly::AccelData accel;
+                    stampfly::GyroData gyro;
+                    if (g_imu.readSensorData(accel, gyro) == ESP_OK) {
+                        // BMI270座標系 → 機体座標系(NED) 変換
+                        float gyro_body_x = gyro.y;     // Roll rate
+                        float gyro_body_y = gyro.x;     // Pitch rate
+                        float gyro_body_z = -gyro.z;    // Yaw rate
+
+                        gyro_sum_x += gyro_body_x;
+                        gyro_sum_y += gyro_body_y;
+                        gyro_sum_z += gyro_body_z;
+                        valid_samples++;
+                    }
+                    vTaskDelay(pdMS_TO_TICKS(2));  // ~500Hz
+                }
+
+                if (valid_samples > 0) {
+                    stampfly::math::Vector3 gyro_bias(
+                        gyro_sum_x / valid_samples,
+                        gyro_sum_y / valid_samples,
+                        gyro_sum_z / valid_samples
+                    );
+                    g_eskf.setGyroBias(gyro_bias);
+                    ESP_LOGI(TAG, "Gyro bias set: [%.5f, %.5f, %.5f] rad/s",
+                             gyro_bias.x, gyro_bias.y, gyro_bias.z);
+                }
+            }
         }
     }
 
@@ -1305,8 +1385,22 @@ extern "C" void app_main(void)
     vTaskDelay(pdMS_TO_TICKS(1000));
     state.setFlightState(stampfly::FlightState::IDLE);
 
+    // Wait for ESKF to stabilize (sensor data accumulation)
+    ESP_LOGI(TAG, "Waiting for ESKF to stabilize...");
+    vTaskDelay(pdMS_TO_TICKS(2000));
+
+    // ESKF ready notification - 3 short beeps + green LED
+    ESP_LOGI(TAG, "ESKF ready - playing notification...");
+    g_buzzer.beep();
+    vTaskDelay(pdMS_TO_TICKS(150));
+    g_buzzer.beep();
+    vTaskDelay(pdMS_TO_TICKS(150));
+    g_buzzer.beep();
+    g_led.setPattern(stampfly::LED::Pattern::SOLID, 0x00FF00);  // Green = ready
+
     ESP_LOGI(TAG, "========================================");
     ESP_LOGI(TAG, "StampFly initialized successfully!");
+    ESP_LOGI(TAG, "ESKF ready - you can start logging now");
     ESP_LOGI(TAG, "Free heap: %lu bytes", esp_get_free_heap_size());
     ESP_LOGI(TAG, "========================================");
 

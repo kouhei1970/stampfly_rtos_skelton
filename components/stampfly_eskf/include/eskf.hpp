@@ -65,6 +65,10 @@ public:
         float flow_min_height;
         float flow_max_height;
 
+        // 地磁気有効フラグ
+        // false: 地磁気観測なし、ジャイロバイアスZは初期値から更新しない
+        bool mag_enabled;
+
         // デフォルト設定
         // PCデバッグ環境で検証済みのパラメータ (2025-11-30)
         static Config defaultConfig() {
@@ -79,8 +83,8 @@ public:
             cfg.baro_noise = 0.1f;             // m (推定値: 0.099m)
             cfg.tof_noise = 0.05f;             // m
             cfg.mag_noise = 0.3f;              // uT
-            cfg.flow_noise = 0.01f;            // 調整済み（デフォルト1.0では効きすぎない）
-            cfg.accel_att_noise = 0.1f;        // m/s²
+            cfg.flow_noise = 0.5f;             // m/s (Mahalanobis棄却を緩和するため大きめに)
+            cfg.accel_att_noise = 1.0f;        // m/s² (姿勢補正の影響を弱める)
 
             // 初期共分散
             cfg.init_pos_std = 1.0f;
@@ -94,11 +98,12 @@ public:
             cfg.gravity = 9.81f;
 
             // 閾値 - PCデバッグで調整済み
-            cfg.mahalanobis_threshold = 7.81f; // χ²(2) 95%信頼区間
+            cfg.mahalanobis_threshold = 15.0f; // 緩和（初期発散からの回復を許容）
             cfg.tof_tilt_threshold = 0.35f;    // ~20度（傾き時のToF誤測定防止）
-            cfg.accel_motion_threshold = 0.5f; // m/s²
+            cfg.accel_motion_threshold = 0.3f; // m/s² (厳しくして動作中は補正スキップ)
             cfg.flow_min_height = 0.02f;       // m（机上テスト対応）
             cfg.flow_max_height = 4.0f;        // ToFの最大レンジ
+            cfg.mag_enabled = false;           // デフォルトは地磁気無効
             return cfg;
         }
     };
@@ -153,22 +158,22 @@ public:
      * @brief オプティカルフロー更新 (水平速度)
      * @param flow_x X方向フロー [rad/s]
      * @param flow_y Y方向フロー [rad/s]
-     * @param height 高度 [m]
+     * @param distance ToFからの距離 [m]
      */
-    void updateFlow(float flow_x, float flow_y, float height);
+    void updateFlow(float flow_x, float flow_y, float distance);
 
     /**
      * @brief オプティカルフロー更新 (ジャイロ補償付き)
      * @param flow_x X方向フロー [rad/s]
      * @param flow_y Y方向フロー [rad/s]
-     * @param height 高度 [m]
+     * @param distance ToFからの距離 [m]
      * @param gyro_x X軸角速度 [rad/s] (回転成分除去用)
      * @param gyro_y Y軸角速度 [rad/s] (回転成分除去用)
      *
      * ジャイロ補償: 回転によるフロー成分を除去
      * Body→NED変換: Yaw角で座標変換
      */
-    void updateFlowWithGyro(float flow_x, float flow_y, float height,
+    void updateFlowWithGyro(float flow_x, float flow_y, float distance,
                             float gyro_x, float gyro_y);
 
     /**
@@ -189,6 +194,14 @@ public:
      * @brief 状態リセット
      */
     void reset();
+
+    /**
+     * @brief ジャイロバイアスを設定
+     * @param bias ジャイロバイアス [rad/s] (ボディ座標系)
+     *
+     * 起動時のキャリブレーションで取得した値を設定
+     */
+    void setGyroBias(const Vector3& bias);
 
     /**
      * @brief 共分散行列取得 (デバッグ用)
