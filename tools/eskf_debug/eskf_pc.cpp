@@ -290,27 +290,36 @@ void ESKF::updateFlowWithGyro(float flow_x, float flow_y, float height,
     // オプティカルフローは回転+並進の両方を検出する
     // 純粋な並進速度を得るため、回転成分を除去する
     //
-    // 座標系:
-    //   flow_x = body X (前方) フロー、flow_y = body Y (右) フロー
-    //   gyro_x = roll rate, gyro_y = pitch rate
+    // 軸入れ替え後の変換:
+    //   vx_body = -flow_y * h  (前方速度)
+    //   vy_body = -flow_x * h  (右方速度)
+    //
+    // ジャイロ補償:
+    //   flow_y → vx_body に使用 → pitch補償が必要
+    //   flow_x → vy_body に使用 → roll補償が必要
     //
     // 回転によるフロー:
-    //   pitch > 0 (機首上) → 地面は後方へ流れる → flow_x 増加
-    //   roll > 0 (右翼上) → 地面は右へ流れる → flow_y 増加
-    //
-    // 補償式:
-    float flow_x_comp = flow_x - gyro_y;  // pitch回転成分を除去
-    float flow_y_comp = flow_y - gyro_x;  // roll回転成分を除去
+    //   pitch > 0 → 地面は後方(+flow_y)へ流れる → flow_y から gyro_y を引く
+    //   roll > 0 → 地面は右(+flow_x)へ流れる → flow_x から gyro_x を引く
+    float flow_x_comp = flow_x - gyro_x;  // roll回転成分を除去 (vy_body用)
+    float flow_y_comp = flow_y - gyro_y;  // pitch回転成分を除去 (vx_body用)
 
     // ============================================================
     // 2. ボディ座標系での速度計算
     // ============================================================
-    // フローセンサは下向きに地面を見ている
-    // 地面が前方(+X)に流れる → 機体は後方(-X)に移動
-    // 地面が右(+Y)に流れる → 機体は左(-Y)に移動
-    // よって: v_body = -flow * height
-    float vx_body = -flow_x_comp * height;  // 前方速度
-    float vy_body = -flow_y_comp * height;  // 右方速度
+    // バイナリログの座標系（main.cppで変換済み）:
+    //   flow_x = -sensor_delta_y (機体X方向に対応するはずだったが...)
+    //   flow_y =  sensor_delta_x (機体Y方向に対応するはずだったが...)
+    //
+    // 実測データ分析結果:
+    //   右移動時: flow_x=-261, flow_y=+99 → vy_body > 0 が期待
+    //   後方移動時: flow_x=+38, flow_y=+252 → vx_body < 0 が期待
+    //
+    // 正しい変換（実測データから導出）:
+    //   vx_body = -flow_y * height
+    //   vy_body = -flow_x * height
+    float vx_body = -flow_y_comp * height;  // 前方速度
+    float vy_body = -flow_x_comp * height;  // 右方速度
 
     // ============================================================
     // 3. Body座標系 → NED座標系への変換

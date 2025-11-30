@@ -238,7 +238,7 @@ int main(int argc, char* argv[])
             float flow_y = pkt.flow_dy * flow_scale;
             float height = std::max(pkt.tof_bottom, 0.02f);  // Allow low height for desk test
 
-            // NED変換のみ（ジャイロ補償はさらなる調査が必要）
+            // NED変換のみ（ジャイロ補償はスケール調整が必要なため無効）
             eskf.updateFlow(flow_x, flow_y, height);
         }
         #endif
