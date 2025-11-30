@@ -31,4 +31,4 @@ __pycache__/
 tools/scripts/*.bin
 tools/scripts/*.csv
 tools/scripts/*_result/
-tools/scripts/*.png/
+tools/scripts/plots/
