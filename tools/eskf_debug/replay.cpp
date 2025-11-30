@@ -228,18 +228,19 @@ int main(int argc, char* argv[])
         }
 
         if (i % flow_rate == 0 && pkt.flow_squal >= flow_squal_min) {
-            // Convert raw flow to rad/s
+            // Convert raw flow counts to rad/s
             // PMW3901: FOV = 42°, resolution ~35x35 pixels
-            // Empirical calibration from square motion test:
-            // Expected ~40cm movement, measured ~6cm with scale=0.02
-            // Adjusted: 0.02 * (40/6) ≈ 0.13
-            float flow_scale = 0.1f;  // rad/count (calibrated)
+            // Theoretical: 1 count ≈ (42°/35) = 1.2°/count ≈ 0.021 rad/count
+            // Data rate: 100Hz at this scale, so counts are already delta
+            float flow_scale = 0.08f;  // 0.07と0.10の中間
+
+            // Flow in rad/s (assuming counts are per-frame at 100Hz)
             float flow_x = pkt.flow_dx * flow_scale;
             float flow_y = pkt.flow_dy * flow_scale;
-            float height = std::max(pkt.tof_bottom, 0.02f);  // Allow low height for desk test
+            float height = std::max(pkt.tof_bottom, 0.02f);
 
-            // NED変換のみ（ジャイロ補償はスケール調整が必要なため無効）
-            eskf.updateFlow(flow_x, flow_y, height);
+            // updateFlowWithGyro includes axis swap and Body→NED transformation
+            eskf.updateFlowWithGyro(flow_x, flow_y, height, gyro.x, gyro.y);
         }
         #endif
 

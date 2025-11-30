@@ -309,24 +309,63 @@ void ESKF::updateMag(const Vector3& mag)
 
 void ESKF::updateFlow(float flow_x, float flow_y, float height)
 {
+    // 後方互換: ジャイロなしバージョン
+    updateFlowWithGyro(flow_x, flow_y, height, 0.0f, 0.0f);
+}
+
+void ESKF::updateFlowWithGyro(float flow_x, float flow_y, float height,
+                               float gyro_x, float gyro_y)
+{
     if (!initialized_) return;
     if (!isValidFloat(flow_x) || !isValidFloat(flow_y) || !isValidFloat(height)) return;
 
-    // 高度ゲーティング (GitHub版: 最小・最大高度チェック)
+    // 高度ゲーティング
     if (height < config_.flow_min_height || height > config_.flow_max_height) {
         return;
     }
 
-    // オプティカルフローから水平速度を推定
-    // v = flow * height (簡略モデル)
-    // 入力は既に機体座標系に変換済み (main.cppで変換)
-    float vx_meas = flow_x * height;
-    float vy_meas = flow_y * height;
+    // ============================================================
+    // 1. ジャイロ補償（回転成分の除去）
+    // ============================================================
+    // 回帰分析で得た補償係数（counts/[rad/s]単位）:
+    //   flow_dx = 1.35×gyro_x + 9.30×gyro_y + offset
+    //   flow_dy = -2.65×gyro_x + 0×gyro_y + offset
+    //
+    // flow_x/flow_yはrad単位で渡される（counts * flow_scale）
+    // 補償もrad単位に変換: k * flow_scale * gyro
+    constexpr float flow_scale = 0.08f;  // rad/count (calibrated)
+    constexpr float k_xx = 1.35f * flow_scale;   // gyro_x → flow_x [rad]
+    constexpr float k_xy = 9.30f * flow_scale;   // gyro_y → flow_x [rad]
+    constexpr float k_yx = -2.65f * flow_scale;  // gyro_x → flow_y [rad]
+    constexpr float k_yy = 0.0f * flow_scale;    // gyro_y → flow_y [rad]
 
-    // 観測モデル
+    float flow_x_comp = flow_x - k_xx * gyro_x - k_xy * gyro_y;
+    float flow_y_comp = flow_y - k_yx * gyro_x - k_yy * gyro_y;
+
+    // ============================================================
+    // 2. ボディ座標系での速度計算
+    // ============================================================
+    // 実測データ分析結果（軸入れ替えが必要）:
+    //   vx_body = -flow_y * height (前方速度)
+    //   vy_body = -flow_x * height (右方速度)
+    float vx_body = -flow_y_comp * height;
+    float vy_body = -flow_x_comp * height;
+
+    // ============================================================
+    // 3. Body座標系 → NED座標系への変換
+    // ============================================================
+    float cos_yaw = std::cos(state_.yaw);
+    float sin_yaw = std::sin(state_.yaw);
+
+    float vx_ned = cos_yaw * vx_body - sin_yaw * vy_body;  // North
+    float vy_ned = sin_yaw * vx_body + cos_yaw * vy_body;  // East
+
+    // ============================================================
+    // 4. カルマンフィルタ観測更新
+    // ============================================================
     Matrix<2, 1> z;
-    z(0, 0) = vx_meas;
-    z(1, 0) = vy_meas;
+    z(0, 0) = vx_ned;
+    z(1, 0) = vy_ned;
 
     Matrix<2, 1> h;
     h(0, 0) = state_.velocity.x;

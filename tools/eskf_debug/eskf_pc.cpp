@@ -290,19 +290,20 @@ void ESKF::updateFlowWithGyro(float flow_x, float flow_y, float height,
     // オプティカルフローは回転+並進の両方を検出する
     // 純粋な並進速度を得るため、回転成分を除去する
     //
-    // 軸入れ替え後の変換:
-    //   vx_body = -flow_y * h  (前方速度)
-    //   vy_body = -flow_x * h  (右方速度)
+    // 回帰分析で得た補償係数（counts/[rad/s]単位）:
+    //   flow_dx = 1.35×gyro_x + 9.30×gyro_y + offset
+    //   flow_dy = -2.65×gyro_x + 0×gyro_y + offset
     //
-    // ジャイロ補償:
-    //   flow_y → vx_body に使用 → pitch補償が必要
-    //   flow_x → vy_body に使用 → roll補償が必要
-    //
-    // 回転によるフロー:
-    //   pitch > 0 → 地面は後方(+flow_y)へ流れる → flow_y から gyro_y を引く
-    //   roll > 0 → 地面は右(+flow_x)へ流れる → flow_x から gyro_x を引く
-    float flow_x_comp = flow_x - gyro_x;  // roll回転成分を除去 (vy_body用)
-    float flow_y_comp = flow_y - gyro_y;  // pitch回転成分を除去 (vx_body用)
+    // flow_x/flow_yはrad単位で渡される（counts * flow_scale）
+    // 補償もrad単位に変換: k * flow_scale * gyro
+    constexpr float flow_scale = 0.08f;  // rad/count (replay.cppと同じ)
+    constexpr float k_xx = 1.35f * flow_scale;   // gyro_x → flow_x [rad]
+    constexpr float k_xy = 9.30f * flow_scale;   // gyro_y → flow_x [rad]
+    constexpr float k_yx = -2.65f * flow_scale;  // gyro_x → flow_y [rad]
+    constexpr float k_yy = 0.0f * flow_scale;    // gyro_y → flow_y [rad]
+
+    float flow_x_comp = flow_x - k_xx * gyro_x - k_xy * gyro_y;
+    float flow_y_comp = flow_y - k_yx * gyro_x - k_yy * gyro_y;
 
     // ============================================================
     // 2. ボディ座標系での速度計算

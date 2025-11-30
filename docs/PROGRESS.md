@@ -337,9 +337,10 @@ config.tof_tilt_threshold = 0.35f;  // 20° - 傾き時のToF誤測定防止
 
 ### 次のステップ
 
-- [ ] 本体コード(`components/stampfly_eskf/src/eskf.cpp`)に同じ修正を適用
+- [x] 本体コード(`components/stampfly_eskf/eskf.cpp`)に修正適用 ✅
+- [ ] main.cppでupdateFlowWithGyro()を呼び出すように変更
 - [ ] 磁力計キャリブレーション実装（Yaw精度向上）
-- [ ] ジャイロ補償の符号/軸対応を再調査（現在は逆効果のため無効）
+- [ ] 実機でESKFチューニング結果を検証
 
 ---
 
@@ -362,44 +363,61 @@ float vy_ned = sin_yaw * vx_body + cos_yaw * vy_body;  // East
 - Yaw角約110°変化に対応
 - 軌跡がNED座標系で一貫した方向に表示
 
-**2. ジャイロ補償** ⚠️ 実装済みだが無効化
+**2. ジャイロ補償** ✅ 実装・有効（回帰分析でキャリブレーション）
 ```cpp
-// 回転成分除去
-float flow_x_comp = flow_x - gyro_y;  // pitch
-float flow_y_comp = flow_y - gyro_x;  // roll
-```
-- テスト結果: 閉ループエラーが悪化（24cm→29cm）
-- 原因: 符号/軸対応がまだ正しくない可能性
-- 状態: 追加調査が必要、現在は無効化
+// 回帰分析で得た補償係数（counts/[rad/s]単位）:
+//   flow_dx = 1.35×gyro_x + 9.30×gyro_y + offset
+//   flow_dy = -2.65×gyro_x + 0×gyro_y + offset
+constexpr float flow_scale = 0.08f;  // rad/count
+constexpr float k_xx = 1.35f * flow_scale;
+constexpr float k_xy = 9.30f * flow_scale;
+constexpr float k_yx = -2.65f * flow_scale;
+constexpr float k_yy = 0.0f * flow_scale;
 
-### テスト結果
+float flow_x_comp = flow_x - k_xx * gyro_x - k_xy * gyro_y;
+float flow_y_comp = flow_y - k_yx * gyro_x - k_yy * gyro_y;
+```
+- 回帰分析により補償係数を決定
+- flow_scaleと補償係数のスケールを統一
+
+**3. フロースケール最適化** ✅ キャリブレーション完了
+- PMW3901理論値: 0.021 rad/count (FOV=42°, 35px)
+- 最適値: **0.08 rad/count** (理論値×4倍)
+- Y範囲25.6cmが目標(20-30cm)に合致
+
+### テスト結果（最終）
 
 | 設定 | X範囲 | Y範囲 | 閉ループエラー |
 |------|-------|-------|----------------|
-| 修正前 (flow_scale=0.1) | 30.3cm | 14.2cm | 27cm |
-| 軸入れ替え修正後 | 15.3cm | 31.9cm | **25.6cm** |
-| 軸入れ替え+ジャイロ補償 | 16.5cm | 35.5cm | 32.2cm |
+| 初期 (flow_scale=0.1, no gyro comp) | 30.3cm | 14.2cm | 27cm |
+| 軸入れ替えのみ (scale=0.1) | 15.3cm | 31.9cm | 25.6cm |
+| **最終 (scale=0.08, gyro comp)** | **13.5cm** | **25.6cm** | **22.4cm** |
 
 ### 発見した問題と修正
 
-**フロー軸変換の誤り**:
+**1. フロー軸変換の誤り**:
 - 四角形移動データを分析し、実測と期待の対応を確認
 - 右移動時: flow_x=-261 → vy_body > 0 が期待
 - 修正前: `vx_body = -flow_x * h, vy_body = -flow_y * h`
 - 修正後: `vx_body = -flow_y * h, vy_body = -flow_x * h`
 
-**ジャイロ補償**:
-- スケールの不一致（flow: counts, gyro: rad/s）のため効果なし
-- 追加調査が必要、現在は無効化
+**2. ジャイロ補償のスケール不一致**:
+- 問題: 補償係数(counts/[rad/s])とflow値(rad)のスケール不一致
+- 解決: `k * flow_scale * gyro` でスケールを統一
 
-### 結論
-- **軸入れ替え修正**: 閉ループエラー 27cm → 25.6cm に改善
-- **Body→NED変換**: 有効、Yaw変化に対応
-- **flow_scale=0.1**: 経験的にキャリブレーション済み
-- **ジャイロ補償**: スケール調整が必要（未実装）
+**3. フロースケールの決定**:
+- 理論値(0.021)では範囲が小さすぎ、大きすぎるとドリフト
+- 実験的に0.08が最適（範囲とエラーのバランス）
+
+### 本体コードへの適用 ✅ 完了
+`components/stampfly_eskf/eskf.cpp`に以下を適用:
+- `updateFlowWithGyro()`関数追加
+- 軸入れ替え: `vx_body = -flow_y * h, vy_body = -flow_x * h`
+- ジャイロ補償: 回帰分析係数適用
+- Body→NED変換: Yaw回転
 
 ### 可視化
-- `tools/scripts/square_result/xy_trajectory_axis_fix.png`
+- `tools/scripts/square_result/final_scale008/xy_trajectory.png`
 
 ---
 
@@ -551,6 +569,7 @@ idf.py -p /dev/tty.usbmodem* flash monitor
 
 | 日付 | 内容 |
 |------|------|
+| 2025-11-30 | フロー最終チューニング：ジャイロ補償(回帰分析)、flow_scale=0.08、閉ループエラー22.4cm達成、本体コードに適用 |
 | 2025-11-30 | フロー軸変換修正：実測データ分析でX/Y軸入れ替えを発見・修正、閉ループエラー25.6cm達成 |
 | 2025-11-30 | 四角形移動テスト：Body→NED座標変換実装、flow_scale=0.1キャリブレーション |
 | 2025-11-30 | PC版ESKFチューニング完了（重力補正、ToF傾き閾値、フローパラメータ）、静的・動的テストで検証 |
