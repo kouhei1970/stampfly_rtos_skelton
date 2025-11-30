@@ -100,9 +100,12 @@ void ESKF::predict(const Vector3& accel, const Vector3& gyro, float dt)
     // 回転行列
     Matrix<3, 3> R = quaternionToRotationMatrix(state_.orientation);
 
-    // ワールド座標系での加速度（重力除去）
+    // ワールド座標系での加速度（重力補正）
+    // 加速度計は比力(specific force)を測定: a_sensor = a_actual - g
+    // NEDフレーム: g = (0, 0, +9.81) (下向き正)
+    // 静止時: a_sensor = (0, 0, -9.81), a_actual = a_sensor + g = (0, 0, 0)
     Vector3 accel_world = toVector3(R * toMatrix(accel_corrected));
-    accel_world.z -= config_.gravity;
+    accel_world.z += config_.gravity;  // 重力を足して実加速度を得る
 
     // 名目状態の更新
     // 位置: p = p + v*dt + 0.5*a*dt^2
@@ -207,6 +210,12 @@ void ESKF::updateToF(float distance)
 {
     if (!initialized_) return;
 
+    // 傾きが大きい場合はToF更新をスキップ（誤測定防止）
+    float tilt = std::sqrt(state_.roll * state_.roll + state_.pitch * state_.pitch);
+    if (tilt > config_.tof_tilt_threshold) {
+        return;  // 傾き閾値超過、ToF測定は信頼できない
+    }
+
     // 姿勢に基づく地上距離への変換
     float cos_roll = std::cos(state_.roll);
     float cos_pitch = std::cos(state_.pitch);
@@ -266,7 +275,7 @@ void ESKF::updateMag(const Vector3& mag)
 
 void ESKF::updateFlow(float flow_x, float flow_y, float height)
 {
-    if (!initialized_ || height < 0.1f) return;
+    if (!initialized_ || height < config_.flow_min_height) return;
 
     // オプティカルフローから水平速度を推定
     // v = flow * height (簡略モデル)
@@ -293,6 +302,53 @@ void ESKF::updateFlow(float flow_x, float flow_y, float height)
     R(1, 1) = config_.flow_noise * config_.flow_noise;
 
     measurementUpdate<2>(z, h, H, R);
+}
+
+void ESKF::updateAccelAttitude(const Vector3& accel)
+{
+    if (!initialized_) return;
+
+    // 加速度ノルムをチェック（静止時は重力のみ）
+    float accel_norm = std::sqrt(accel.x*accel.x + accel.y*accel.y + accel.z*accel.z);
+    float gravity_diff = std::abs(accel_norm - config_.gravity);
+
+    // モーション閾値を超えている場合はスキップ (default: 1.0 m/s²)
+    if (gravity_diff > config_.accel_motion_threshold) {
+        return;
+    }
+
+    // 静止時の加速度計出力の期待値（ボディ座標系）
+    // 加速度計は比力を測定: a_sensor = a_actual - g = 0 - g = -g
+    // NEDフレーム: g = (0, 0, +9.81), よって a_sensor = (0, 0, -9.81)
+    // ボディ座標系への変換: a_expected = R^T * a_sensor_world = R^T * (0, 0, -g)
+    Matrix<3, 3> R = quaternionToRotationMatrix(state_.orientation);
+    Vector3 neg_g_world(0.0f, 0.0f, -config_.gravity);  // 静止時の比力 = -g
+    Vector3 g_expected = toVector3(R.transpose() * toMatrix(neg_g_world));
+
+    // Roll/Pitchのみ補正（XY成分）
+    Matrix<2, 1> z;
+    z(0, 0) = accel.x;
+    z(1, 0) = accel.y;
+
+    Matrix<2, 1> h;
+    h(0, 0) = g_expected.x;
+    h(1, 0) = g_expected.y;
+
+    // ヤコビアン (小角近似)
+    // a_expected = R^T * (0, 0, -g) where g = 9.81
+    // 小角近似: R ≈ I + [θ]×, R^T ≈ I - [θ]×
+    // a_expected_x ≈ +g * pitch,  a_expected_y ≈ -g * roll
+    // ∂ax/∂pitch = +g,  ∂ay/∂roll = -g
+    Matrix<2, 15> H;
+    H(0, ATT_Y) = config_.gravity;   // ∂ax/∂pitch = +g
+    H(1, ATT_X) = -config_.gravity;  // ∂ay/∂roll = -g
+
+    // 観測ノイズ
+    Matrix<2, 2> R_mat;
+    R_mat(0, 0) = config_.accel_att_noise * config_.accel_att_noise;
+    R_mat(1, 1) = config_.accel_att_noise * config_.accel_att_noise;
+
+    measurementUpdate<2>(z, h, H, R_mat);
 }
 
 void ESKF::injectErrorState(const Matrix<15, 1>& dx)
@@ -328,7 +384,7 @@ void ESKF::injectErrorState(const Matrix<15, 1>& dx)
 }
 
 template<int M>
-void ESKF::measurementUpdate(const Matrix<M, 1>& z,
+bool ESKF::measurementUpdate(const Matrix<M, 1>& z,
                               const Matrix<M, 1>& h,
                               const Matrix<M, 15>& H,
                               const Matrix<M, M>& R)
@@ -359,14 +415,16 @@ void ESKF::measurementUpdate(const Matrix<M, 1>& z,
     Matrix<15, M> KR = K * R;
     Matrix<15, 15> KRKT = KR * K.transpose();
     P_ = I_KH_P_I_KHT + KRKT;
+
+    return true;
 }
 
 // テンプレートの明示的インスタンス化
-template void ESKF::measurementUpdate<1>(const Matrix<1, 1>&, const Matrix<1, 1>&,
+template bool ESKF::measurementUpdate<1>(const Matrix<1, 1>&, const Matrix<1, 1>&,
                                           const Matrix<1, 15>&, const Matrix<1, 1>&);
-template void ESKF::measurementUpdate<2>(const Matrix<2, 1>&, const Matrix<2, 1>&,
+template bool ESKF::measurementUpdate<2>(const Matrix<2, 1>&, const Matrix<2, 1>&,
                                           const Matrix<2, 15>&, const Matrix<2, 2>&);
-template void ESKF::measurementUpdate<3>(const Matrix<3, 1>&, const Matrix<3, 1>&,
+template bool ESKF::measurementUpdate<3>(const Matrix<3, 1>&, const Matrix<3, 1>&,
                                           const Matrix<3, 15>&, const Matrix<3, 3>&);
 
 // ============================================================================

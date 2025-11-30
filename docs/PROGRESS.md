@@ -282,6 +282,66 @@ python estimate_qr.py sensor_log.bin
 
 ---
 
+## PC版ESKFチューニング結果 (2025-11-30)
+
+### 修正内容
+
+| ファイル | 修正 | 内容 |
+|---------|------|------|
+| `eskf_pc.cpp` predict() | 重力補正 | `accel_world.z -= gravity` → `+= gravity` |
+| `eskf_pc.cpp` updateAccelAttitude() | 期待値 | `g_world = (0,0,+g)` → `(0,0,-g)` |
+| `eskf_pc.cpp` updateAccelAttitude() | ヤコビアン | `H(0,ATT_Y)=-g, H(1,ATT_X)=+g` → `+g, -g` |
+| `eskf_pc.cpp` updateToF() | 傾き閾値 | 傾き > threshold でスキップ追加 |
+| `eskf_pc.cpp` updateFlow() | 高度閾値 | ハードコード`0.1f` → `config_.flow_min_height` |
+
+### 推奨Config設定
+
+```cpp
+config.flow_min_height = 0.02f;     // 机上テスト対応
+config.flow_noise = 0.01f;          // 速度補正改善（デフォルト1.0は大きすぎ）
+config.tof_tilt_threshold = 0.35f;  // 20° - 傾き時のToF誤測定防止
+```
+
+### テスト結果
+
+**静的テスト（机上静止）:**
+| 項目 | 値 | 評価 |
+|------|-----|------|
+| Position X/Y | 数mm | ✓ ドリフトなし |
+| Position Z | -19mm | ✓ ToF値と一致 |
+| Velocity | ~1mm/s | ✓ 静止状態 |
+| Roll/Pitch | ~-1.2° | ✓ 机の傾き検出 |
+
+**動的テスト（持ち上げ→Roll/Pitch/Yaw揺らし）:**
+| 項目 | 値 | 評価 |
+|------|-----|------|
+| 高度 | 最大0.40m | ✓ 期待値~40cmに一致 |
+| Roll追従 | ±45° | ✓ |
+| Pitch追従 | -29°~+62° | ✓ |
+| 位置ドリフト | X:2mm, Y:6mm | ✓ |
+| 最終速度 | ~1-2mm/s | ✓ 静止に収束 |
+
+### 発見した問題と解決
+
+1. **高度スパイク問題**
+   - 原因: ToFセンサが傾くと床面でなく壁/遠方を測定
+   - 解決: `updateToF()`に傾き閾値チェック追加（>20°でスキップ）
+
+2. **水平速度ドリフト問題**
+   - 原因: `flow_noise=1.0`が大きすぎてフロー観測が無視される
+   - 解決: `flow_noise=0.01`に調整
+
+3. **机上テストでフロー更新されない問題**
+   - 原因: `flow_min_height=0.1m`で高度25mmの机上では無効
+   - 解決: `flow_min_height=0.02m`に調整
+
+### 次のステップ
+
+- [ ] 本体コード(`components/stampfly_eskf/src/eskf.cpp`)に同じ修正を適用
+- [ ] 磁力計キャリブレーション実装（Yaw精度向上）
+
+---
+
 ## 次のステップ
 
 ### 直近の作業予定（優先度順）
@@ -430,6 +490,7 @@ idf.py -p /dev/tty.usbmodem* flash monitor
 
 | 日付 | 内容 |
 |------|------|
+| 2025-11-30 | PC版ESKFチューニング完了（重力補正、ToF傾き閾値、フローパラメータ）、静的・動的テストで検証 |
 | 2025-11-30 | ESKFデバッグ環境完成、binlogコマンド追加、USB CDC line ending問題解決 |
 | 2025-11-28 | ESKF計算負荷問題特定・暫定対策：predict頻度を400Hz→100Hzに制限、IMUデータ平均化で安定動作確認 |
 | 2025-11-28 | 加速度単位修正：g→m/s²変換追加（×9.81）、teleplot出力最適化（バッファ一括出力） |

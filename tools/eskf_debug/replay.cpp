@@ -142,6 +142,9 @@ int main(int argc, char* argv[])
     // Initialize ESKF
     ESKF eskf;
     ESKF::Config config = ESKF::Config::defaultConfig();
+    config.flow_min_height = 0.02f;  // Allow flow updates at low height (desk test)
+    config.flow_noise = 0.01f;       // Reduce flow noise for better velocity correction
+    config.tof_tilt_threshold = 0.35f;  // 20° - stricter threshold for ToF reliability
     eskf.init(config);
 
     // Open output CSV
@@ -176,16 +179,38 @@ int main(int argc, char* argv[])
         }
         last_timestamp = pkt.timestamp_ms;
 
-        // IMU data
-        Vector3 accel(pkt.accel_x, pkt.accel_y, pkt.accel_z);
+        // IMU data - convert [g] to [m/s²] if needed
+        // Detect unit: if |az| < 2, assume [g] units; if |az| > 5, assume [m/s²]
+        constexpr float GRAVITY = 9.81f;
+        float accel_scale = (std::abs(pkt.accel_z) < 2.0f) ? GRAVITY : 1.0f;
+        Vector3 accel(pkt.accel_x * accel_scale,
+                      pkt.accel_y * accel_scale,
+                      pkt.accel_z * accel_scale);
         Vector3 gyro(pkt.gyro_x, pkt.gyro_y, pkt.gyro_z);
 
         // ESKF predict step (every packet = 100Hz)
         eskf.predict(accel, gyro, dt);
 
+        // Accel attitude update (uses gravity vector for roll/pitch correction)
+        // Run at 10Hz to avoid over-correction
+        static int accel_att_counter = 0;
+        if (++accel_att_counter >= 10) {
+            accel_att_counter = 0;
+            eskf.updateAccelAttitude(accel);
+        }
+
+        // Measurement updates
+        #if 1
         // Measurement updates at lower rates
-        if (i % baro_rate == 0) {
-            eskf.updateBaro(pkt.baro_alt);
+        // Note: If baro_alt is 0, calculate from pressure using barometric formula
+        float baro_alt = pkt.baro_alt;
+        if (std::abs(baro_alt) < 0.001f && pkt.pressure > 80000.0f) {
+            // Calculate altitude from pressure: h = 44330 * (1 - (P/P0)^0.1903)
+            constexpr float P0 = 101325.0f;  // Sea level pressure [Pa]
+            baro_alt = 44330.0f * (1.0f - std::pow(pkt.pressure / P0, 0.1903f));
+        }
+        if (i % baro_rate == 0 && std::abs(baro_alt) > 0.001f) {
+            eskf.updateBaro(baro_alt);
         }
 
         if (i % tof_rate == 0 && pkt.tof_bottom > 0.01f && pkt.tof_bottom < 4.0f) {
@@ -194,7 +219,11 @@ int main(int argc, char* argv[])
 
         if (i % mag_rate == 0) {
             Vector3 mag(pkt.mag_x, pkt.mag_y, pkt.mag_z);
-            eskf.updateMag(mag);
+            // Only update if mag data is valid (magnitude > 10 uT)
+            float mag_norm = std::sqrt(mag.x*mag.x + mag.y*mag.y + mag.z*mag.z);
+            if (mag_norm > 10.0f) {
+                eskf.updateMag(mag);
+            }
         }
 
         if (i % flow_rate == 0 && pkt.flow_squal >= flow_squal_min) {
@@ -202,9 +231,10 @@ int main(int argc, char* argv[])
             float flow_scale = 0.001f;  // TODO: calibrate
             float flow_x = pkt.flow_dx * flow_scale;
             float flow_y = pkt.flow_dy * flow_scale;
-            float height = std::max(pkt.tof_bottom, 0.1f);
+            float height = std::max(pkt.tof_bottom, 0.02f);  // Allow low height for desk test
             eskf.updateFlow(flow_x, flow_y, height);
         }
+        #endif
 
         // Get state
         auto state = eskf.getState();
