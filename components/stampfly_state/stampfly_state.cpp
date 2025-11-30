@@ -154,6 +154,15 @@ void StampFlyState::getFlowData(float& vx, float& vy) const
     xSemaphoreGive(mutex_);
 }
 
+void StampFlyState::getFlowRawData(int16_t& dx, int16_t& dy, uint8_t& squal) const
+{
+    xSemaphoreTake(mutex_, portMAX_DELAY);
+    dx = flow_delta_x_;
+    dy = flow_delta_y_;
+    squal = flow_squal_;
+    xSemaphoreGive(mutex_);
+}
+
 void StampFlyState::getPowerData(float& voltage, float& current) const
 {
     xSemaphoreTake(mutex_, portMAX_DELAY);

@@ -725,20 +725,37 @@ static void CLITask(void* pvParameters)
     g_cli.print("> ");
 
     TickType_t last_teleplot = xTaskGetTickCount();
+    TickType_t last_csvlog = xTaskGetTickCount();
+    TickType_t last_binlog = xTaskGetTickCount();
     const TickType_t teleplot_period = pdMS_TO_TICKS(50);  // 20Hz teleplot output
+    const TickType_t csvlog_period = pdMS_TO_TICKS(50);    // 20Hz CSV log output
+    const TickType_t binlog_period = pdMS_TO_TICKS(10);    // 100Hz binary log output
 
     while (true) {
         if (g_cli.isInitialized()) {
             g_cli.processInput();
 
-            // Output teleplot data at fixed interval
             TickType_t now = xTaskGetTickCount();
+
+            // Output teleplot data at fixed interval
             if (g_cli.isTeleplotEnabled() && (now - last_teleplot) >= teleplot_period) {
                 g_cli.outputTeleplot();
                 last_teleplot = now;
             }
+
+            // Output CSV log data at fixed interval
+            if (g_cli.isLogEnabled() && (now - last_csvlog) >= csvlog_period) {
+                g_cli.outputCSVLog();
+                last_csvlog = now;
+            }
+
+            // Output binary log data at fixed interval (100Hz for ESKF debug)
+            if (g_cli.isBinlogEnabled() && (now - last_binlog) >= binlog_period) {
+                g_cli.outputBinaryLog();
+                last_binlog = now;
+            }
         }
-        vTaskDelay(pdMS_TO_TICKS(10));  // 10ms polling
+        vTaskDelay(pdMS_TO_TICKS(5));  // 5ms polling for 100Hz binlog
     }
 }
 

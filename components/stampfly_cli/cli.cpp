@@ -18,6 +18,7 @@
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "esp_vfs_cdcacm.h"
 #include <cstdio>
 #include <cstring>
 #include <cstdarg>
@@ -33,6 +34,8 @@ static void cmd_help(int argc, char** argv, void* context);
 static void cmd_status(int argc, char** argv, void* context);
 static void cmd_sensor(int argc, char** argv, void* context);
 static void cmd_teleplot(int argc, char** argv, void* context);
+static void cmd_log(int argc, char** argv, void* context);
+static void cmd_binlog(int argc, char** argv, void* context);
 static void cmd_calib(int argc, char** argv, void* context);
 static void cmd_motor(int argc, char** argv, void* context);
 static void cmd_pair(int argc, char** argv, void* context);
@@ -45,6 +48,13 @@ static void cmd_version(int argc, char** argv, void* context);
 esp_err_t CLI::init()
 {
     ESP_LOGI(TAG, "Initializing CLI");
+
+    // Disable line ending conversion for binary output
+    // This prevents 0x0a from being converted to 0x0d 0x0a
+    // Using CDC ACM VFS functions since CONFIG_ESP_CONSOLE_USB_CDC is enabled
+    // See: https://docs.espressif.com/projects/esp-idf/en/stable/esp32s3/api-guides/stdio.html
+    esp_vfs_dev_cdcacm_set_tx_line_endings(ESP_LINE_ENDINGS_LF);
+    esp_vfs_dev_cdcacm_set_rx_line_endings(ESP_LINE_ENDINGS_LF);
 
     // Disable buffering on stdin and stdout for immediate I/O
     setvbuf(stdin, NULL, _IONBF, 0);
@@ -179,6 +189,8 @@ void CLI::registerDefaultCommands()
     registerCommand("status", cmd_status, "Show system status", this);
     registerCommand("sensor", cmd_sensor, "Show sensor data", this);
     registerCommand("teleplot", cmd_teleplot, "Teleplot stream [on|off]", this);
+    registerCommand("log", cmd_log, "CSV log [on|off|header]", this);
+    registerCommand("binlog", cmd_binlog, "Binary log [on|off] @100Hz", this);
     registerCommand("calib", cmd_calib, "Run calibration", this);
     registerCommand("motor", cmd_motor, "Motor control", this);
     registerCommand("pair", cmd_pair, "Enter pairing mode", this);
@@ -277,6 +289,91 @@ static void cmd_teleplot(int argc, char** argv, void* context)
         cli->print("Teleplot streaming OFF\r\n");
     } else {
         cli->print("Usage: teleplot [on|off]\r\n");
+    }
+}
+
+static void cmd_log(int argc, char** argv, void* context)
+{
+    CLI* cli = static_cast<CLI*>(context);
+
+    if (argc < 2) {
+        cli->print("Usage: log [on|off|header]\r\n");
+        cli->print("  on     - Start CSV logging (20Hz)\r\n");
+        cli->print("  off    - Stop CSV logging\r\n");
+        cli->print("  header - Print CSV header\r\n");
+        cli->print("Current: %s, samples: %lu\r\n",
+                   cli->isLogEnabled() ? "on" : "off",
+                   (unsigned long)cli->getLogCounter());
+        return;
+    }
+
+    if (strcmp(argv[1], "on") == 0) {
+        cli->resetLogCounter();
+        cli->setLogEnabled(true);
+        cli->print("CSV logging ON\r\n");
+    } else if (strcmp(argv[1], "off") == 0) {
+        cli->setLogEnabled(false);
+        cli->print("CSV logging OFF, total samples: %lu\r\n",
+                   (unsigned long)cli->getLogCounter());
+    } else if (strcmp(argv[1], "header") == 0) {
+        // Print CSV header for ESKF debugging
+        cli->print("# StampFly Sensor Log for ESKF Debug\r\n");
+        cli->print("# timestamp_ms,");
+        cli->print("accel_x,accel_y,accel_z,");
+        cli->print("gyro_x,gyro_y,gyro_z,");
+        cli->print("mag_x,mag_y,mag_z,");
+        cli->print("pressure_pa,baro_alt_m,");
+        cli->print("tof_bottom_m,tof_front_m,");
+        cli->print("flow_dx,flow_dy,flow_squal\r\n");
+    } else {
+        cli->print("Usage: log [on|off|header]\r\n");
+    }
+}
+
+static void cmd_binlog(int argc, char** argv, void* context)
+{
+    CLI* cli = static_cast<CLI*>(context);
+
+    if (argc < 2) {
+        cli->print("Usage: binlog [on|off]\r\n");
+        cli->print("  on  - Start binary logging (100Hz, 64B/pkt)\r\n");
+        cli->print("  off - Stop binary logging\r\n");
+        cli->print("Current: %s, samples: %lu\r\n",
+                   cli->isBinlogEnabled() ? "on" : "off",
+                   (unsigned long)cli->getBinlogCounter());
+        cli->print("\r\nPacket format (64 bytes):\r\n");
+        cli->print("  [0-1]   Header: 0xAA 0x55\r\n");
+        cli->print("  [2-5]   timestamp_ms (uint32)\r\n");
+        cli->print("  [6-17]  accel xyz (float x3)\r\n");
+        cli->print("  [18-29] gyro xyz (float x3)\r\n");
+        cli->print("  [30-41] mag xyz (float x3)\r\n");
+        cli->print("  [42-45] pressure (float)\r\n");
+        cli->print("  [46-49] baro_alt (float)\r\n");
+        cli->print("  [50-53] tof_bottom (float)\r\n");
+        cli->print("  [54-57] tof_front (float)\r\n");
+        cli->print("  [58-59] flow_dx (int16)\r\n");
+        cli->print("  [60-61] flow_dy (int16)\r\n");
+        cli->print("  [62]    flow_squal (uint8)\r\n");
+        cli->print("  [63]    checksum (XOR of 2-62)\r\n");
+        return;
+    }
+
+    if (strcmp(argv[1], "on") == 0) {
+        cli->resetBinlogCounter();
+        // Suppress all ESP_LOG output to prevent interference with binary stream
+        esp_log_level_set("*", ESP_LOG_NONE);
+        cli->print("Binary logging ON (100Hz) - ESP_LOG suppressed\r\n");
+        // Small delay to ensure the message is sent before binary stream starts
+        vTaskDelay(pdMS_TO_TICKS(100));
+        cli->setBinlogEnabled(true);
+    } else if (strcmp(argv[1], "off") == 0) {
+        cli->setBinlogEnabled(false);
+        // Restore normal log level
+        esp_log_level_set("*", ESP_LOG_INFO);
+        cli->print("Binary logging OFF, total samples: %lu\r\n",
+                   (unsigned long)cli->getBinlogCounter());
+    } else {
+        cli->print("Usage: binlog [on|off]\r\n");
     }
 }
 
@@ -465,6 +562,115 @@ void CLI::outputTeleplot()
     if (len > 0) {
         write(STDOUT_FILENO, buf, len);
     }
+}
+
+void CLI::outputCSVLog()
+{
+    if (!log_enabled_) return;
+
+    auto& state = StampFlyState::getInstance();
+
+    // Get timestamp (milliseconds since boot)
+    uint32_t timestamp_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
+
+    // IMU data
+    Vec3 accel, gyro;
+    state.getIMUData(accel, gyro);
+
+    // Mag data
+    Vec3 mag;
+    state.getMagData(mag);
+
+    // Baro data
+    float baro_alt, pressure;
+    state.getBaroData(baro_alt, pressure);
+
+    // ToF data
+    float tof_bottom, tof_front;
+    state.getToFData(tof_bottom, tof_front);
+
+    // OptFlow raw data (dx, dy, squal)
+    int16_t flow_dx, flow_dy;
+    uint8_t flow_squal;
+    state.getFlowRawData(flow_dx, flow_dy, flow_squal);
+
+    // Output CSV line (one line per sample)
+    print("%lu,", (unsigned long)timestamp_ms);
+    print("%.4f,%.4f,%.4f,", accel.x, accel.y, accel.z);
+    print("%.5f,%.5f,%.5f,", gyro.x, gyro.y, gyro.z);
+    print("%.2f,%.2f,%.2f,", mag.x, mag.y, mag.z);
+    print("%.1f,%.4f,", pressure, baro_alt);
+    print("%.4f,%.4f,", tof_bottom, tof_front);
+    print("%d,%d,%u\r\n", flow_dx, flow_dy, flow_squal);
+
+    log_counter_++;
+}
+
+void CLI::outputBinaryLog()
+{
+    if (!binlog_enabled_) return;
+
+    auto& state = StampFlyState::getInstance();
+
+    BinaryLogPacket pkt;
+
+    // Header
+    pkt.header[0] = 0xAA;
+    pkt.header[1] = 0x55;
+
+    // Timestamp
+    pkt.timestamp_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
+
+    // IMU data
+    Vec3 accel, gyro;
+    state.getIMUData(accel, gyro);
+    pkt.accel_x = accel.x;
+    pkt.accel_y = accel.y;
+    pkt.accel_z = accel.z;
+    pkt.gyro_x = gyro.x;
+    pkt.gyro_y = gyro.y;
+    pkt.gyro_z = gyro.z;
+
+    // Mag data
+    Vec3 mag;
+    state.getMagData(mag);
+    pkt.mag_x = mag.x;
+    pkt.mag_y = mag.y;
+    pkt.mag_z = mag.z;
+
+    // Baro data
+    float baro_alt, pressure;
+    state.getBaroData(baro_alt, pressure);
+    pkt.pressure = pressure;
+    pkt.baro_alt = baro_alt;
+
+    // ToF data
+    float tof_bottom, tof_front;
+    state.getToFData(tof_bottom, tof_front);
+    pkt.tof_bottom = tof_bottom;
+    pkt.tof_front = tof_front;
+
+    // OptFlow raw data
+    int16_t flow_dx, flow_dy;
+    uint8_t flow_squal;
+    state.getFlowRawData(flow_dx, flow_dy, flow_squal);
+    pkt.flow_dx = flow_dx;
+    pkt.flow_dy = flow_dy;
+    pkt.flow_squal = flow_squal;
+
+    // Calculate checksum (XOR of bytes 2-62)
+    uint8_t* data = reinterpret_cast<uint8_t*>(&pkt);
+    uint8_t checksum = 0;
+    for (int i = 2; i < 63; i++) {
+        checksum ^= data[i];
+    }
+    pkt.checksum = checksum;
+
+    // Write binary packet using raw write()
+    int fd = fileno(stdout);
+    write(fd, data, sizeof(pkt));
+
+    binlog_counter_++;
 }
 
 }  // namespace stampfly

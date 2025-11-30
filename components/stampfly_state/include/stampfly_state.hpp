@@ -93,6 +93,7 @@ public:
     void getBaroData(float& altitude, float& pressure) const;
     void getToFData(float& bottom, float& front) const;
     void getFlowData(float& vx, float& vy) const;
+    void getFlowRawData(int16_t& dx, int16_t& dy, uint8_t& squal) const;
     void getPowerData(float& voltage, float& current) const;
 
     // Sensor availability

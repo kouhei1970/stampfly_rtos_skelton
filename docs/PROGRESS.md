@@ -1,6 +1,6 @@
 # StampFly RTOS Skeleton 実装進捗
 
-## 最終更新: 2025-11-28
+## 最終更新: 2025-11-30
 
 ---
 
@@ -83,6 +83,7 @@ main.cppに以下を統合:
 | ESP-NOW | ✅ | 未確認 | 初期化成功、通信は未テスト |
 | CLI | ✅ | ✅ | helpコマンド動作確認、エコーバック正常 |
 | CLI teleplot | ✅ | ✅ | Teleplotストリーミング動作確認 |
+| CLI binlog | ✅ | ✅ | バイナリログ出力、エラー率0%達成 |
 
 ### CLI コマンド一覧
 | コマンド | 説明 |
@@ -91,6 +92,7 @@ main.cppに以下を統合:
 | `status` | システム状態表示 |
 | `sensor [imu\|mag\|baro\|tof\|flow\|power\|all]` | センサ値表示（実データ） |
 | `teleplot [on\|off]` | Teleplotストリーミング開始/停止 |
+| `binlog [on\|off]` | バイナリログ出力開始/停止（100Hz、64バイトパケット） |
 | `calib [gyro\|accel\|mag]` | キャリブレーション（stub） |
 | `motor [arm\|disarm\|test <id> <throttle>]` | モーター制御（stub） |
 | `pair` | ペアリングモード開始 |
@@ -202,6 +204,82 @@ main.cppに以下を統合:
     - 原因: 複数のprint()呼び出しがシリアル出力をブロック
     - 修正: バッファにまとめて一括write()に変更
 
+20. **バイナリログのチェックサムエラー**
+    - 原因: USB CDC VFSのline ending変換が0x0Aを0x0D 0x0Aに変換
+    - 修正: `esp_vfs_dev_cdcacm_set_tx_line_endings(ESP_LINE_ENDINGS_LF)`で変換無効化
+    - 結果: エラー率8.5%→0%に改善
+
+---
+
+## ESKFデバッグ環境 ✅ 完了 (2025-11-30)
+
+PCでESKFのチューニング・デバッグを行うための環境を構築。
+
+### 構成
+
+```
+tools/
+├── eskf_debug/              # C++ ESKFリプレイ環境
+│   ├── CMakeLists.txt
+│   ├── eskf_pc.cpp          # PC用ESKF実装
+│   ├── eskf_pc.hpp
+│   └── replay.cpp           # バイナリログ再生・ESKF実行
+└── scripts/
+    ├── log_capture.py       # バイナリログキャプチャツール
+    ├── visualize_eskf.py    # ESKF出力可視化
+    └── estimate_qr.py       # Q/Rパラメータ推定
+```
+
+### バイナリログ形式
+
+| オフセット | サイズ | 内容 |
+|-----------|-------|------|
+| 0-1 | 2 | ヘッダ (0xAA 0x55) |
+| 2-5 | 4 | タイムスタンプ (ms) |
+| 6-17 | 12 | 加速度 (x,y,z float) |
+| 18-29 | 12 | ジャイロ (x,y,z float) |
+| 30-41 | 12 | 磁気 (x,y,z float) |
+| 42-45 | 4 | 気圧高度 (float) |
+| 46-49 | 4 | ToF下 (float) |
+| 50-53 | 4 | ToF前 (float) |
+| 54-57 | 4 | OptFlow dx (float) |
+| 58-61 | 4 | OptFlow dy (float) |
+| 62 | 1 | 予約 |
+| 63 | 1 | XORチェックサム |
+
+### 使用方法
+
+```bash
+# 1. バイナリログキャプチャ
+cd tools/scripts
+python log_capture.py -p /dev/tty.usbmodem* -o sensor_log.bin
+
+# 2. ESKFリプレイ (C++)
+cd tools/eskf_debug
+mkdir build && cd build
+cmake .. && make
+./eskf_debug ../../../sensor_log.bin output.csv
+
+# 3. 可視化
+cd tools/scripts
+python visualize_eskf.py output.csv
+
+# 4. Q/Rパラメータ推定
+python estimate_qr.py sensor_log.bin
+```
+
+### 解決した技術的問題
+
+**USB CDC バイナリ出力問題**
+- 問題: stdoutの行末変換で0x0A→0x0D 0x0Aに変換され、バイナリが破損
+- 原因: ESP-IDF VFSのデフォルト設定が`ESP_LINE_ENDINGS_CRLF`
+- 解決: `esp_vfs_dev_cdcacm_set_tx_line_endings(ESP_LINE_ENDINGS_LF)`
+- 注: `CONFIG_ESP_CONSOLE_USB_CDC`使用時は`esp_vfs_cdcacm.h`のAPIを使用
+
+**ESP_LOGとバイナリストリームの競合**
+- 問題: ESP_LOGの出力がバイナリストリームに混入
+- 解決: binlog on時に`esp_log_level_set("*", ESP_LOG_NONE)`で抑制
+
 ---
 
 ## 次のステップ
@@ -285,6 +363,15 @@ stampfly_rtos_skelton/
 │   ├── stampfly_state/          # ✅ State, SystemManager (新規)
 │   ├── stampfly_comm/           # ✅ ESP-NOW (新規)
 │   └── stampfly_cli/            # ✅ CLI (新規)
+├── tools/
+│   ├── eskf_debug/              # ✅ ESKFリプレイ環境 (新規)
+│   │   ├── CMakeLists.txt
+│   │   ├── eskf_pc.cpp/hpp
+│   │   └── replay.cpp
+│   └── scripts/                 # ✅ デバッグツール (新規)
+│       ├── log_capture.py
+│       ├── visualize_eskf.py
+│       └── estimate_qr.py
 └── docs/
     ├── implementation_plan.md   # 実装計画
     └── PROGRESS.md              # この進捗ファイル
@@ -343,6 +430,7 @@ idf.py -p /dev/tty.usbmodem* flash monitor
 
 | 日付 | 内容 |
 |------|------|
+| 2025-11-30 | ESKFデバッグ環境完成、binlogコマンド追加、USB CDC line ending問題解決 |
 | 2025-11-28 | ESKF計算負荷問題特定・暫定対策：predict頻度を400Hz→100Hzに制限、IMUデータ平均化で安定動作確認 |
 | 2025-11-28 | 加速度単位修正：g→m/s²変換追加（×9.81）、teleplot出力最適化（バッファ一括出力） |
 | 2025-11-28 | センサ軸変換・重力補償修正完了：BMI270/BMM150/PMW3901→NED座標系変換、ESKF重力補償符号修正、AttitudeEstimator姿勢計算修正 |
