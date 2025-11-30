@@ -22,3 +22,13 @@ compile_commands.json
 
 # ESP-IDF managed components
 dependencies.lock
+
+# Python cache
+__pycache__/
+*.pyc
+
+# ESKF debug test data and results
+tools/scripts/*.bin
+tools/scripts/*.csv
+tools/scripts/*_result/
+tools/scripts/*.png/
