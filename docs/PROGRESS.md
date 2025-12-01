@@ -1216,10 +1216,72 @@ PC版とDevice版の設定を比較検証:
 
 ---
 
+## フローオフセット除去 ✅ 完了 (2025-12-01)
+
+### 問題
+
+静止状態で20秒間に約2cmのXYドリフトが発生。
+
+### 原因分析
+
+1. **フローはほぼゼロ**（mean=-0.002, 累積も-3,-4程度）→ フローはドリフトの原因ではない
+2. **しかし速度に1mm/s程度のオフセット**が存在
+
+調査の結果、`updateFlowWithGyro()`内のフローオフセット補正が原因と判明:
+
+```cpp
+// 以前の設定
+constexpr float flow_dx_offset = 0.29f * flow_scale;  // = 0.0232
+constexpr float flow_dy_offset = 0.29f * flow_scale;
+
+// 静止状態での影響計算
+// velocity = offset * height = 0.0232 * 0.034m = 0.79 mm/s
+```
+
+このオフセットは閉ループテスト（動的飛行）から逆算した値だが、静止状態ではフローが0なのでオフセット補正が逆効果になっていた。
+
+### 修正
+
+フローオフセットを0に設定（動的検討時に再評価）:
+
+```cpp
+// components/stampfly_eskf/eskf.cpp
+// tools/eskf_debug/eskf_pc.cpp
+
+// フローオフセット補正（動的検討時に再評価）
+constexpr float flow_dx_offset = 0.0f;
+constexpr float flow_dy_offset = 0.0f;
+```
+
+### 結果
+
+| 項目 | Before (offset=0.29) | After (offset=0) | 改善率 |
+|------|---------------------|------------------|--------|
+| XY Drift (PC, 20s) | 2.20 cm | **0.21 cm** | 90% |
+| XY Drift (Device, 20s) | 2.74 cm | **0.20 cm** | 93% |
+| PC vs Device Error | 0.54 cm | **0.04 cm** | 93% |
+| Velocity X mean | 1.18 mm/s | 0.23 mm/s | - |
+| Velocity Y mean | 0.29 mm/s | -0.06 mm/s | - |
+
+### 変更ファイル
+
+| ファイル | 変更内容 |
+|---------|---------|
+| `components/stampfly_eskf/eskf.cpp` | flow_dx/dy_offset = 0 |
+| `tools/eskf_debug/eskf_pc.cpp` | 同上 |
+
+### 今後の検討事項
+
+- 動的飛行テスト時にフローオフセットが必要かどうか再評価
+- 必要な場合は、静止状態と動的状態を区別するロジックを検討
+
+---
+
 ## 変更履歴
 
 | 日付 | 内容 |
 |------|------|
+| 2025-12-01 | フローオフセット除去: flow_dx/dy_offset=0に設定、静止ドリフト2.2cm→0.2cm (90%改善) |
 | 2025-12-01 | PC vs Device ESKFデバッグ: レースコンディション対策(data_readyフラグ)、tof_noise調整、PC版reset()/setGyroBias()追加 |
 | 2025-12-01 | ESKF設計指針追加: Baro NED変換方式、メンバ変数による行列管理、PC/デバイス版同期 |
 | 2025-12-01 | センサデータ整合性検証: 更新レート修正(Flow/AccelAtt)、V2パケットにbaro_ref_alt追加 |

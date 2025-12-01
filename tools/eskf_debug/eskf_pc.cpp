@@ -335,11 +335,9 @@ void ESKF::updateFlowWithGyro(float flow_x, float flow_y, float height,
     constexpr float k_yx = -2.65f * flow_scale;  // gyro_x → flow_y [rad]
     constexpr float k_yy = 0.0f * flow_scale;    // gyro_y → flow_y [rad]
 
-    // フローオフセット補正（閉ループテストから推定）
-    // 静止ホバリング: (0.21, -0.05) → エラー20.0cm
-    // 閉ループ推定:   (0.29, 0.29)  → エラー5.1cm ← 採用
-    constexpr float flow_dx_offset = 0.29f * flow_scale;  // counts → rad
-    constexpr float flow_dy_offset = 0.29f * flow_scale;
+    // フローオフセット補正（動的検討時に再評価）
+    constexpr float flow_dx_offset = 0.0f;
+    constexpr float flow_dy_offset = 0.0f;
 
     float flow_x_comp = flow_x - k_xx * gyro_x - k_xy * gyro_y - flow_dx_offset;
     float flow_y_comp = flow_y - k_yx * gyro_x - k_yy * gyro_y - flow_dy_offset;
