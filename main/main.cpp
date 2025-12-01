@@ -147,6 +147,26 @@ namespace {
     float g_baro_reference_altitude = 0.0f;
     bool g_baro_reference_set = false;
 
+    // Mag reference ring buffer for averaging (1 second = 100 samples at 100Hz)
+    static constexpr int MAG_REF_BUFFER_SIZE = 100;
+    stampfly::math::Vector3 g_mag_buffer[MAG_REF_BUFFER_SIZE];
+    int g_mag_buffer_index = 0;
+    int g_mag_buffer_count = 0;
+    bool g_mag_ref_set = false;  // mag_refが設定済みかどうか
+
+    // 起動時のジャイロバイアス（binlog reset後に復元するため）
+    stampfly::math::Vector3 g_initial_gyro_bias = stampfly::math::Vector3::zero();
+
+    // センサ data_ready フラグ (ESKF updateをIMUTaskに集約するため)
+    volatile bool g_mag_data_ready = false;
+    volatile bool g_baro_data_ready = false;
+    volatile bool g_tof_data_ready = false;
+
+    // センサデータキャッシュ (data_ready時のデータを保持)
+    stampfly::math::Vector3 g_mag_data_cache;
+    float g_baro_data_cache = 0.0f;
+    float g_tof_data_cache = 0.0f;
+
     // Task handles
     TaskHandle_t g_imu_task_handle = nullptr;
     TaskHandle_t g_optflow_task_handle = nullptr;
@@ -158,6 +178,59 @@ namespace {
     TaskHandle_t g_button_task_handle = nullptr;
     TaskHandle_t g_comm_task_handle = nullptr;
     TaskHandle_t g_cli_task_handle = nullptr;
+}
+
+// =============================================================================
+// Helper Functions
+// =============================================================================
+
+/**
+ * @brief Mag参照ベクトルをバッファの平均値で設定
+ *
+ * ARM時またはbinlog開始時に呼び出す
+ */
+static void setMagReferenceFromBuffer()
+{
+    if (g_mag_buffer_count == 0) {
+        ESP_LOGW(TAG, "No mag samples in buffer, cannot set reference");
+        return;
+    }
+
+    // バッファの平均を計算
+    stampfly::math::Vector3 sum = stampfly::math::Vector3::zero();
+    int count = std::min(g_mag_buffer_count, MAG_REF_BUFFER_SIZE);
+    for (int i = 0; i < count; i++) {
+        sum += g_mag_buffer[i];
+    }
+    stampfly::math::Vector3 avg = sum * (1.0f / count);
+
+    // ESKFに設定
+    if (g_eskf.isInitialized()) {
+        g_eskf.setMagReference(avg);
+        g_mag_ref_set = true;
+        ESP_LOGI(TAG, "Mag reference set from %d samples: (%.1f, %.1f, %.1f) uT",
+                 count, avg.x, avg.y, avg.z);
+    }
+}
+
+/**
+ * @brief binlog開始時のコールバック
+ *
+ * ESKFをリセットしてmag_refを設定する
+ * PC版ESKFとの同期のため、binlog開始時に初期化
+ */
+static void onBinlogStart()
+{
+    // ESKFをリセット（PC版と同じ初期状態にする）
+    if (g_eskf.isInitialized()) {
+        g_eskf.reset();
+        // ジャイロバイアスを復元（reset()でゼロになるため）
+        g_eskf.setGyroBias(g_initial_gyro_bias);
+        ESP_LOGI(TAG, "ESKF reset for binlog, gyro bias restored");
+    }
+
+    // mag_refを設定（バッファの最新値で更新）
+    setMagReferenceFromBuffer();
 }
 
 // =============================================================================
@@ -279,6 +352,46 @@ static void IMUTask(void* pvParameters)
                                 g_eskf.updateAccelAttitude(a_avg);
                             }
 
+                            // オプティカルフロー更新（IMUタスク内で実行、100Hz）
+                            {
+                                int16_t flow_dx, flow_dy;
+                                uint8_t flow_squal;
+                                state.getFlowRawData(flow_dx, flow_dy, flow_squal);
+
+                                if (stampfly::OutlierDetector::isFlowValid(flow_squal)) {
+                                    float tof_bottom, tof_front;
+                                    state.getToFData(tof_bottom, tof_front);
+                                    float distance = tof_bottom;
+                                    if (distance < 0.02f) distance = 0.02f;
+                                    if (distance > 0.02f) {
+                                        constexpr float flow_scale = 0.08f;
+                                        float flow_x_rad = flow_dx * flow_scale;
+                                        float flow_y_rad = flow_dy * flow_scale;
+                                        g_eskf.updateFlowWithGyro(flow_x_rad, flow_y_rad, distance, g_avg.x, g_avg.y);
+                                    }
+                                }
+                            }
+
+                            // Baro更新（data_readyフラグで制御、50Hz）
+                            if (g_baro_data_ready) {
+                                g_baro_data_ready = false;
+                                g_eskf.updateBaro(g_baro_data_cache);
+                            }
+
+                            // ToF更新（data_readyフラグで制御、30Hz）
+                            if (g_tof_data_ready) {
+                                g_tof_data_ready = false;
+                                if (g_tof_data_cache > 0.01f && g_tof_data_cache < 4.0f) {
+                                    g_eskf.updateToF(g_tof_data_cache);
+                                }
+                            }
+
+                            // Mag更新（data_readyフラグで制御、10Hz）
+                            if (g_mag_data_ready && g_mag_ref_set) {
+                                g_mag_data_ready = false;
+                                g_eskf.updateMag(g_mag_data_cache);
+                            }
+
                             // Update StampFlyState with ESKF estimated state
                             auto eskf_state = g_eskf.getState();
 
@@ -365,37 +478,7 @@ static void OptFlowTask(void* pvParameters)
                     int16_t flow_body_y =  burst.delta_x;
 
                     state.updateOpticalFlow(flow_body_x, flow_body_y, burst.squal);
-
-                    // Update ESKF with optical flow
-                    // 注: updateFlowWithGyro()内でさらに軸変換が行われる
-                    //     最終的な変換結果:
-                    //       vx_body = -flow_body_y * h = -delta_x * h
-                    //       vy_body = -flow_body_x * h = +delta_y * h
-                    //     これはPC版ESKFで検証済みの変換
-                    if (g_eskf.isInitialized()) {
-                        // ToFからの距離を使用（速度計算: v = flow × distance）
-                        float tof_bottom, tof_front;
-                        state.getToFData(tof_bottom, tof_front);
-                        float distance = tof_bottom;
-                        if (distance < 0.02f) distance = 0.02f;  // Minimum distance
-                        if (distance > 0.02f) {  // Only update if distance is valid
-                            // Get gyro data for rotation compensation
-                            stampfly::Vec3 accel, gyro;
-                            state.getIMUData(accel, gyro);
-
-                            // flow_scale = 0.08 rad/count (calibrated)
-                            constexpr float flow_scale = 0.08f;
-                            float flow_x_rad = flow_body_x * flow_scale;
-                            float flow_y_rad = flow_body_y * flow_scale;
-
-                            // updateFlowWithGyro includes:
-                            // - Gyro compensation (rotation component removal)
-                            // - Final axis transformation to body frame
-                            // - Body→NED transformation (Yaw rotation)
-                            // - Flow offset correction
-                            g_eskf.updateFlowWithGyro(flow_x_rad, flow_y_rad, distance, gyro.x, gyro.y);
-                        }
-                    }
+                    // ESKF updateはIMUTask内で行う（レースコンディション防止）
                 }
             } catch (const stampfly::PMW3901Exception& e) {
                 // Sensor read error, continue
@@ -457,15 +540,24 @@ static void MagTask(void* pvParameters)
                 // Update state with calibrated data
                 state.updateMag(cal_mag_x, cal_mag_y, cal_mag_z);
 
-                // 地磁気によるYaw補正（ESKF）- キャリブレーション済みの場合のみ有効化
+                // キャリブレーション済みの場合のみESKF用データを準備
                 if (g_mag_cal.isCalibrated()) {
+                    stampfly::math::Vector3 m(cal_mag_x, cal_mag_y, cal_mag_z);
+
+                    // リングバッファに追加（ARM/binlog開始時の平均計算用）
+                    g_mag_buffer[g_mag_buffer_index] = m;
+                    g_mag_buffer_index = (g_mag_buffer_index + 1) % MAG_REF_BUFFER_SIZE;
+                    if (g_mag_buffer_count < MAG_REF_BUFFER_SIZE) {
+                        g_mag_buffer_count++;
+                    }
+
+                    // ESKF用データをキャッシュしてフラグを立てる（10Hz）
+                    // ESKF updateはIMUTask内で行う（レースコンディション防止）
                     eskf_update_counter++;
                     if (eskf_update_counter >= ESKF_UPDATE_DIVISOR) {
                         eskf_update_counter = 0;
-                        stampfly::math::Vector3 m(cal_mag_x, cal_mag_y, cal_mag_z);
-                        if (g_eskf.isInitialized()) {
-                            g_eskf.updateMag(m);
-                        }
+                        g_mag_data_cache = m;
+                        g_mag_data_ready = true;
                     }
                 }
             }
@@ -494,23 +586,24 @@ static void BaroTask(void* pvParameters)
                 // Use altitude from read() directly (already calculated)
                 state.updateBaro(baro.pressure_pa, baro.temperature_c, baro.altitude_m);
 
-                // Update ESKF with barometer
-                // updateBaro()は相対高度（正の値、上昇=プラス）を期待
-                // ESKF内部でNED変換される
-                if (g_eskf.isInitialized()) {
-                    // 初回測定で基準高度を設定
-                    if (!g_baro_reference_set) {
-                        g_baro_reference_altitude = baro.altitude_m;
-                        g_baro_reference_set = true;
-                        state.setBaroReferenceAltitude(g_baro_reference_altitude);
-                        ESP_LOGI(TAG, "Baro reference set: %.3f m", g_baro_reference_altitude);
-                    }
-                    // 相対高度を計算（上昇=プラス）
-                    float relative_alt = baro.altitude_m - g_baro_reference_altitude;
-                    g_eskf.updateBaro(relative_alt);
+                // 初回測定で基準高度を設定
+                if (!g_baro_reference_set) {
+                    g_baro_reference_altitude = baro.altitude_m;
+                    g_baro_reference_set = true;
+                    state.setBaroReferenceAltitude(g_baro_reference_altitude);
+                    ESP_LOGI(TAG, "Baro reference set: %.3f m", g_baro_reference_altitude);
                 }
-                // Fallback to simple altitude estimator
-                else if (g_altitude_est.isInitialized()) {
+
+                // ESKF用データをキャッシュしてフラグを立てる（50Hz）
+                // ESKF updateはIMUTask内で行う（レースコンディション防止）
+                if (g_baro_reference_set) {
+                    float relative_alt = baro.altitude_m - g_baro_reference_altitude;
+                    g_baro_data_cache = relative_alt;
+                    g_baro_data_ready = true;
+                }
+
+                // Fallback to simple altitude estimator (ESKF未使用時)
+                if (!g_eskf.isInitialized() && g_altitude_est.isInitialized()) {
                     g_altitude_est.updateBaro(baro.altitude_m);
                 }
             }
@@ -561,13 +654,13 @@ static void ToFTask(void* pvParameters)
                         float distance_m = distance_mm * 0.001f;
                         state.updateToF(stampfly::ToFPosition::BOTTOM, distance_m, status);
 
-                        // Update ESKF with ToF
-                        // updateToF()は正の距離を期待、内部でNED変換される
-                        if (g_eskf.isInitialized()) {
-                            g_eskf.updateToF(distance_m);
-                        }
-                        // Fallback to simple altitude estimator
-                        else if (g_altitude_est.isInitialized() && g_attitude_est.isInitialized()) {
+                        // ESKF用データをキャッシュしてフラグを立てる（30Hz）
+                        // ESKF updateはIMUTask内で行う（レースコンディション防止）
+                        g_tof_data_cache = distance_m;
+                        g_tof_data_ready = true;
+
+                        // Fallback to simple altitude estimator (ESKF未使用時)
+                        if (!g_eskf.isInitialized() && g_altitude_est.isInitialized() && g_attitude_est.isInitialized()) {
                             auto att = g_attitude_est.getState();
                             g_altitude_est.updateToF(distance_m, att.pitch, att.roll);
                         }
@@ -863,6 +956,8 @@ static void onButtonEvent(stampfly::Button::Event event)
             // Toggle arm/disarm in IDLE state
             if (state.getFlightState() == stampfly::FlightState::IDLE) {
                 if (state.requestArm()) {
+                    // ARM時にmag_refを設定（現在の向き=Yaw 0°）
+                    setMagReferenceFromBuffer();
                     g_buzzer.armTone();
                     ESP_LOGI(TAG, "Motors ARMED");
                 }
@@ -923,6 +1018,8 @@ static void onControlPacket(const stampfly::ControlPacket& packet)
 
     if (arm_requested && state.getFlightState() == stampfly::FlightState::IDLE) {
         if (state.requestArm()) {
+            // ARM時にmag_refを設定（現在の向き=Yaw 0°）
+            setMagReferenceFromBuffer();
             g_buzzer.armTone();
             ESP_LOGI(TAG, "Motors ARMED (from controller)");
         }
@@ -1211,8 +1308,47 @@ static esp_err_t initEstimators()
                         gyro_sum_z / valid_samples
                     );
                     g_eskf.setGyroBias(gyro_bias);
+                    g_initial_gyro_bias = gyro_bias;  // binlog reset後に復元するため保存
                     ESP_LOGI(TAG, "Gyro bias set: [%.5f, %.5f, %.5f] rad/s",
                              gyro_bias.x, gyro_bias.y, gyro_bias.z);
+                }
+            }
+
+            // 地磁気リファレンス取得（Magキャリブレーション済みの場合）
+            if (g_mag_cal.isCalibrated() && g_mag.isInitialized()) {
+                ESP_LOGI(TAG, "Acquiring mag reference (keep device still)...");
+                constexpr int MAG_CALIB_SAMPLES = 100;  // 100サンプル @ 100Hz = 1秒
+                stampfly::math::Vector3 mag_sum = stampfly::math::Vector3::zero();
+                int mag_valid_samples = 0;
+
+                for (int i = 0; i < MAG_CALIB_SAMPLES; i++) {
+                    stampfly::MagData raw_mag;
+                    if (g_mag.read(raw_mag) == ESP_OK) {
+                        // センサ座標系 → 機体座標系変換
+                        float mag_body_x = raw_mag.y;
+                        float mag_body_y = raw_mag.x;
+                        float mag_body_z = -raw_mag.z;
+                        // キャリブレーション適用
+                        float cal_x, cal_y, cal_z;
+                        g_mag_cal.applyCalibration(mag_body_x, mag_body_y, mag_body_z, cal_x, cal_y, cal_z);
+                        mag_sum.x += cal_x;
+                        mag_sum.y += cal_y;
+                        mag_sum.z += cal_z;
+                        mag_valid_samples++;
+                    }
+                    vTaskDelay(pdMS_TO_TICKS(10));  // ~100Hz
+                }
+
+                if (mag_valid_samples > 0) {
+                    stampfly::math::Vector3 mag_ref(
+                        mag_sum.x / mag_valid_samples,
+                        mag_sum.y / mag_valid_samples,
+                        mag_sum.z / mag_valid_samples
+                    );
+                    g_eskf.setMagReference(mag_ref);
+                    g_mag_ref_set = true;
+                    ESP_LOGI(TAG, "Mag reference set: [%.1f, %.1f, %.1f] uT",
+                             mag_ref.x, mag_ref.y, mag_ref.z);
                 }
             }
         }
@@ -1291,6 +1427,10 @@ static esp_err_t initCLI()
     }
 
     g_cli.registerDefaultCommands();
+
+    // binlog開始時にmag_refを設定するコールバックを登録
+    g_cli.setBinlogStartCallback(onBinlogStart);
+
     ESP_LOGI(TAG, "CLI initialized");
     return ESP_OK;
 }

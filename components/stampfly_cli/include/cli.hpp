@@ -256,6 +256,23 @@ public:
      */
     void resetBinlogCounter() { binlog_counter_ = 0; }
 
+    /**
+     * @brief Set callback for binlog start event
+     * @param callback Function to call when binlog is started
+     *
+     * Used for setting mag_ref at binlog start for PC/device sync
+     */
+    void setBinlogStartCallback(void (*callback)()) { binlog_start_callback_ = callback; }
+
+    /**
+     * @brief Call binlog start callback if set
+     */
+    void callBinlogStartCallback() {
+        if (binlog_start_callback_) {
+            binlog_start_callback_();
+        }
+    }
+
 private:
     /**
      * @brief Static command entry (no dynamic allocation)
@@ -280,6 +297,7 @@ private:
     size_t command_count_ = 0;
     char input_buffer_[MAX_CMD_LEN] = {0};
     size_t input_pos_ = 0;
+    void (*binlog_start_callback_)() = nullptr;
 };
 
 }  // namespace stampfly

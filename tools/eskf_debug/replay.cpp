@@ -106,6 +106,8 @@ struct SensorData {
     float dev_pos_x, dev_pos_y, dev_pos_z;
     float dev_vel_x, dev_vel_y, dev_vel_z;
     float dev_roll, dev_pitch, dev_yaw;
+    float gyro_bias_z;  // Device gyro bias Z (for PC initialization)
+    float accel_bias_x, accel_bias_y;  // Device accel bias X/Y (for PC initialization)
     bool has_device_eskf;
 };
 
@@ -191,6 +193,7 @@ std::vector<SensorData> load_log_file(const char* filename, int& version)
                     data.flow_dx = pkt.flow_dx;
                     data.flow_dy = pkt.flow_dy;
                     data.flow_squal = pkt.flow_squal;
+                    data.gyro_bias_z = 0.0f;  // V1 has no gyro bias
                     data.has_device_eskf = false;
                     packets.push_back(data);
                 } else {
@@ -232,6 +235,9 @@ std::vector<SensorData> load_log_file(const char* filename, int& version)
                     data.dev_roll = pkt.roll;
                     data.dev_pitch = pkt.pitch;
                     data.dev_yaw = pkt.yaw;
+                    data.gyro_bias_z = pkt.gyro_bias_z;
+                    data.accel_bias_x = pkt.accel_bias_x;
+                    data.accel_bias_y = pkt.accel_bias_y;
                     data.has_device_eskf = (pkt.eskf_status != 0);
                     packets.push_back(data);
                 } else {
@@ -319,7 +325,8 @@ int main(int argc, char* argv[])
     ESKF eskf;
     ESKF::Config config = ESKF::Config::defaultConfig();
     config.flow_min_height = 0.02f;  // Allow flow updates at low height (desk test)
-    config.flow_noise = 0.01f;       // Reduce flow noise for better velocity correction
+    // flow_noise: use default 0.5 m/s (same as device)
+    // Previous value 0.01 was too small, causing velocity to be pulled to observation too strongly
     config.tof_tilt_threshold = 0.35f;  // 20° - stricter threshold for ToF reliability
 
     // センサデータから推定したQ/Rパラメータ (estimate_qr.py参照)
@@ -339,6 +346,25 @@ int main(int argc, char* argv[])
     //   tof_noise:  0.002m (推定0.0013m) - 既にtof_tilt_thresholdで調整済み
 
     eskf.init(config);
+
+    // Reset ESKF at start (to match device behavior at binlog start)
+    // Device does reset() + setGyroBias() at binlog start
+    eskf.reset();
+
+    // Restore biases from device log (V2 only)
+    // Device preserves initial biases after reset
+    if (has_device_eskf && packets.size() > 0) {
+        // Restore gyro bias Z from first packet
+        Vector3 initial_gyro_bias(0.0f, 0.0f, packets[0].gyro_bias_z);
+        eskf.setGyroBias(initial_gyro_bias);
+        printf("Gyro bias Z restored from device: %.6f rad/s\n", packets[0].gyro_bias_z);
+
+        // Restore accel bias X/Y from first packet
+        Vector3 initial_accel_bias(packets[0].accel_bias_x, packets[0].accel_bias_y, 0.0f);
+        eskf.setAccelBias(initial_accel_bias);
+        printf("Accel bias restored from device: (%.6f, %.6f) m/s²\n",
+               packets[0].accel_bias_x, packets[0].accel_bias_y);
+    }
 
     // Open output CSV
     FILE* out = fopen(output_file, "w");
@@ -370,6 +396,19 @@ int main(int argc, char* argv[])
     uint32_t last_timestamp = packets[0].timestamp_ms;
     int packet_count = 0;
 
+    // IMU smoothing to match device behavior
+    // Device: 400Hz IMU -> LPF -> 4-sample average -> 100Hz ESKF
+    // Binary log: 100Hz samples of LPF output (no 4-sample average)
+    // We need to apply 4-sample moving average to match device
+    constexpr int IMU_HISTORY_SIZE = 4;
+    Vector3 accel_history[IMU_HISTORY_SIZE];
+    Vector3 gyro_history[IMU_HISTORY_SIZE];
+    int imu_history_idx = 0;
+    for (int j = 0; j < IMU_HISTORY_SIZE; j++) {
+        accel_history[j] = Vector3::zero();
+        gyro_history[j] = Vector3::zero();
+    }
+
     // Get baro reference altitude from device (V2) or use first packet (V1)
     float baro_alt_reference = packets[0].baro_ref_alt;
     if (std::abs(baro_alt_reference) < 0.001f) {
@@ -398,10 +437,27 @@ int main(int argc, char* argv[])
         // Detect unit: if |az| < 2, assume [g] units; if |az| > 5, assume [m/s²]
         constexpr float GRAVITY = 9.81f;
         float accel_scale = (std::abs(pkt.accel_z) < 2.0f) ? GRAVITY : 1.0f;
-        Vector3 accel(pkt.accel_x * accel_scale,
-                      pkt.accel_y * accel_scale,
-                      pkt.accel_z * accel_scale);
-        Vector3 gyro(pkt.gyro_x, pkt.gyro_y, pkt.gyro_z);
+        Vector3 accel_raw(pkt.accel_x * accel_scale,
+                          pkt.accel_y * accel_scale,
+                          pkt.accel_z * accel_scale);
+        Vector3 gyro_raw(pkt.gyro_x, pkt.gyro_y, pkt.gyro_z);
+
+        // Update IMU history for smoothing
+        accel_history[imu_history_idx] = accel_raw;
+        gyro_history[imu_history_idx] = gyro_raw;
+        imu_history_idx = (imu_history_idx + 1) % IMU_HISTORY_SIZE;
+
+        // Calculate smoothed IMU (4-sample moving average to match device)
+        // Device does: 400Hz -> 4-sample avg -> 100Hz ESKF
+        // We approximate with 4-sample moving average at 100Hz
+        Vector3 accel = Vector3::zero();
+        Vector3 gyro = Vector3::zero();
+        for (int j = 0; j < IMU_HISTORY_SIZE; j++) {
+            accel += accel_history[j];
+            gyro += gyro_history[j];
+        }
+        accel = accel * (1.0f / IMU_HISTORY_SIZE);
+        gyro = gyro * (1.0f / IMU_HISTORY_SIZE);
 
         // ESKF predict step (every packet = 100Hz)
         eskf.predict(accel, gyro, dt);
@@ -425,8 +481,9 @@ int main(int argc, char* argv[])
             constexpr float P0 = 101325.0f;  // Sea level pressure [Pa]
             baro_alt = 44330.0f * (1.0f - std::pow(pkt.pressure / P0, 0.1903f));
         }
-        // Convert to relative altitude (NED: down is positive, so negate)
-        float baro_alt_relative = -(baro_alt - baro_alt_reference);
+        // Calculate relative altitude (up is positive)
+        // NED conversion is done inside ESKF::updateBaro()
+        float baro_alt_relative = baro_alt - baro_alt_reference;
         if (i % baro_rate == 0) {
             eskf.updateBaro(baro_alt_relative);
         }
@@ -440,23 +497,38 @@ int main(int argc, char* argv[])
             // Only update if mag data is valid (magnitude > 10 uT)
             float mag_norm = std::sqrt(mag.x*mag.x + mag.y*mag.y + mag.z*mag.z);
             if (mag_norm > 10.0f) {
-                eskf.updateMag(mag);
+                // 最初の100サンプル（1秒）でmag_refを平均化して設定
+                static constexpr int MAG_REF_SAMPLES = 100;
+                static Vector3 mag_sum = Vector3::zero();
+                static int mag_sample_count = 0;
+                static bool mag_ref_initialized = false;
+
+                if (!mag_ref_initialized) {
+                    mag_sum += mag;
+                    mag_sample_count++;
+                    if (mag_sample_count >= MAG_REF_SAMPLES) {
+                        Vector3 mag_avg = mag_sum * (1.0f / mag_sample_count);
+                        eskf.setMagReference(mag_avg);
+                        mag_ref_initialized = true;
+                        printf("Mag reference set from %d samples: (%.1f, %.1f, %.1f) uT\n",
+                               mag_sample_count, mag_avg.x, mag_avg.y, mag_avg.z);
+                    }
+                }
+                // mag_ref設定後のみupdateMagを呼ぶ
+                if (mag_ref_initialized) {
+                    eskf.updateMag(mag);
+                }
             }
         }
 
+        // Flow update: every packet (same as device behavior)
+        // Device calls updateFlowWithGyro every 100Hz cycle from IMUTask
         if (i % flow_rate == 0 && pkt.flow_squal >= flow_squal_min) {
-            // Convert raw flow counts to rad/s
-            // PMW3901: FOV = 42°, resolution ~35x35 pixels
-            // Theoretical: 1 count ≈ (42°/35) = 1.2°/count ≈ 0.021 rad/count
-            // Data rate: 100Hz at this scale, so counts are already delta
-            float flow_scale = 0.08f;  // 0.07と0.10の中間
-
-            // Flow in rad/s (assuming counts are per-frame at 100Hz)
+            float flow_scale = 0.08f;
             float flow_x = pkt.flow_dx * flow_scale;
             float flow_y = pkt.flow_dy * flow_scale;
             float height = std::max(pkt.tof_bottom, 0.02f);
 
-            // updateFlowWithGyro includes axis swap and Body→NED transformation
             eskf.updateFlowWithGyro(flow_x, flow_y, height, gyro.x, gyro.y);
         }
         #endif

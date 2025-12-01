@@ -89,6 +89,21 @@ void ESKF::reset()
     P_(BA_Z, BA_Z) = ba_var;
 }
 
+void ESKF::setMagReference(const Vector3& mag_ref)
+{
+    config_.mag_ref = mag_ref;
+}
+
+void ESKF::setGyroBias(const Vector3& bias)
+{
+    state_.gyro_bias = bias;
+}
+
+void ESKF::setAccelBias(const Vector3& bias)
+{
+    state_.accel_bias = bias;
+}
+
 void ESKF::predict(const Vector3& accel, const Vector3& gyro, float dt)
 {
     if (!initialized_ || dt <= 0) return;
@@ -123,74 +138,76 @@ void ESKF::predict(const Vector3& accel, const Vector3& gyro, float dt)
     // オイラー角更新
     state_.orientation.toEuler(state_.roll, state_.pitch, state_.yaw);
 
-    // 共分散の予測更新
+    // 共分散の予測更新（メンバ変数を使用してデバイス版と同一の構造を維持）
     // 状態遷移行列 F (離散化)
-    Matrix<15, 15> F = Matrix<15, 15>::identity();
+    F_ = Matrix<15, 15>::identity();
 
     // dp/dv = I*dt
-    F(POS_X, VEL_X) = dt;
-    F(POS_Y, VEL_Y) = dt;
-    F(POS_Z, VEL_Z) = dt;
+    F_(POS_X, VEL_X) = dt;
+    F_(POS_Y, VEL_Y) = dt;
+    F_(POS_Z, VEL_Z) = dt;
 
     // dv/dθ = -R*[a]×*dt
     Matrix<3, 3> skew_a = skewSymmetric(accel_corrected);
     Matrix<3, 3> dv_dtheta = (R * skew_a) * (-dt);
     for (int i = 0; i < 3; i++) {
         for (int j = 0; j < 3; j++) {
-            F(VEL_X + i, ATT_X + j) = dv_dtheta(i, j);
+            F_(VEL_X + i, ATT_X + j) = dv_dtheta(i, j);
         }
     }
 
     // dv/db_a = -R*dt
     for (int i = 0; i < 3; i++) {
         for (int j = 0; j < 3; j++) {
-            F(VEL_X + i, BA_X + j) = -R(i, j) * dt;
+            F_(VEL_X + i, BA_X + j) = -R(i, j) * dt;
         }
     }
 
     // dθ/db_g = -I*dt
-    F(ATT_X, BG_X) = -dt;
-    F(ATT_Y, BG_Y) = -dt;
-    F(ATT_Z, BG_Z) = -dt;
+    F_(ATT_X, BG_X) = -dt;
+    F_(ATT_Y, BG_Y) = -dt;
+    F_(ATT_Z, BG_Z) = -dt;
 
     // プロセスノイズ共分散 Q
-    Matrix<15, 15> Q = Matrix<15, 15>::zeros();
+    Q_ = Matrix<15, 15>::zeros();
     float gyro_var = config_.gyro_noise * config_.gyro_noise * dt;
     float accel_var = config_.accel_noise * config_.accel_noise * dt;
     float bg_var = config_.gyro_bias_noise * config_.gyro_bias_noise * dt;
     float ba_var = config_.accel_bias_noise * config_.accel_bias_noise * dt;
 
     // 姿勢ノイズ
-    Q(ATT_X, ATT_X) = gyro_var;
-    Q(ATT_Y, ATT_Y) = gyro_var;
-    Q(ATT_Z, ATT_Z) = gyro_var;
+    Q_(ATT_X, ATT_X) = gyro_var;
+    Q_(ATT_Y, ATT_Y) = gyro_var;
+    Q_(ATT_Z, ATT_Z) = gyro_var;
 
     // 速度ノイズ (回転行列経由、対角成分のみ簡略化)
     for (int i = 0; i < 3; i++) {
-        Q(VEL_X + i, VEL_X + i) = accel_var;
+        Q_(VEL_X + i, VEL_X + i) = accel_var;
     }
 
     // バイアスノイズ
-    Q(BG_X, BG_X) = bg_var;
-    Q(BG_Y, BG_Y) = bg_var;
-    Q(BG_Z, BG_Z) = bg_var;
-    Q(BA_X, BA_X) = ba_var;
-    Q(BA_Y, BA_Y) = ba_var;
-    Q(BA_Z, BA_Z) = ba_var;
+    Q_(BG_X, BG_X) = bg_var;
+    Q_(BG_Y, BG_Y) = bg_var;
+    Q_(BG_Z, BG_Z) = bg_var;
+    Q_(BA_X, BA_X) = ba_var;
+    Q_(BA_Y, BA_Y) = ba_var;
+    Q_(BA_Z, BA_Z) = ba_var;
 
-    // P = F * P * F' + Q
-    Matrix<15, 15> FP = F * P_;
-    Matrix<15, 15> FPFT = FP * F.transpose();
-    P_ = FPFT + Q;
+    // P = F * P * F' + Q （一時行列もメンバ変数使用）
+    temp1_ = F_ * P_;
+    temp2_ = temp1_ * F_.transpose();
+    P_ = temp2_ + Q_;
 }
 
 void ESKF::updateBaro(float altitude)
 {
     if (!initialized_) return;
 
-    // 観測モデル: z = p_z
+    // 観測モデル: z = -altitude (上昇=プラスの高度をNED変換)
+    // 引数altitudeは相対高度（起動時0、上昇=プラス）を期待
+    // ESKF内部でNED変換する（上昇=マイナス）
     Matrix<1, 1> z;
-    z(0, 0) = altitude;
+    z(0, 0) = -altitude;  // NED: 上昇=マイナス
 
     Matrix<1, 1> h;
     h(0, 0) = state_.position.z;
@@ -243,9 +260,25 @@ void ESKF::updateMag(const Vector3& mag)
 {
     if (!initialized_) return;
 
-    // 参照ベクトル（NED）をボディ座標系に変換
-    Matrix<3, 3> R = quaternionToRotationMatrix(state_.orientation);
-    Vector3 mag_expected = toVector3(R.transpose() * toMatrix(config_.mag_ref));
+    // mag_refはボディ座標系で保存されている（初回測定値）
+    // 現在の姿勢に基づいて期待されるMag値を計算
+    //
+    // 初回時: mag_ref = mag_body_0, orientation = identity (yaw=0)
+    // 現在: mag_body = R_body_ned * mag_ned
+    //
+    // mag_refはYaw=0の時のボディ座標系での値なので、
+    // 現在のYaw回転を適用した期待値と比較する
+    //
+    // mag_expected = R_z(yaw) * mag_ref
+    // ただしRoll/Pitchは小さいと仮定してYaw回転のみ考慮
+    float cos_yaw = std::cos(state_.yaw);
+    float sin_yaw = std::sin(state_.yaw);
+
+    // Yaw回転を適用した期待値（Z軸周り回転）
+    Vector3 mag_expected;
+    mag_expected.x = cos_yaw * config_.mag_ref.x - sin_yaw * config_.mag_ref.y;
+    mag_expected.y = sin_yaw * config_.mag_ref.x + cos_yaw * config_.mag_ref.y;
+    mag_expected.z = config_.mag_ref.z;
 
     // 水平面での方位角のみ使用（ヨー補正）
     float yaw_meas = std::atan2(mag.y, mag.x);
@@ -465,14 +498,15 @@ bool ESKF::measurementUpdate(const Matrix<M, 1>& z,
 
     // 共分散更新 (Joseph形式: 数値安定)
     // P = (I - K*H) * P * (I - K*H)' + K * R * K'
-    Matrix<15, 15> I_KH = Matrix<15, 15>::identity() - K * H;
-    Matrix<15, 15> I_KH_P = I_KH * P_;
-    Matrix<15, 15> I_KH_P_I_KHT = I_KH_P * I_KH.transpose();
+    // メンバ変数を使用してデバイス版と同一の構造を維持
+    temp1_ = Matrix<15, 15>::identity() - K * H;  // I - K*H
+    temp2_ = temp1_ * P_;                          // (I - K*H) * P
+    F_ = temp2_ * temp1_.transpose();              // (I - K*H) * P * (I - K*H)'
 
     // K * R * K' を計算 (K: 15xM, R: MxM, K': Mx15)
     Matrix<15, M> KR = K * R;
-    Matrix<15, 15> KRKT = KR * K.transpose();
-    P_ = I_KH_P_I_KHT + KRKT;
+    Q_ = KR * K.transpose();
+    P_ = F_ + Q_;
 
     return true;
 }

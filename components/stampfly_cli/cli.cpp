@@ -357,6 +357,8 @@ static void cmd_binlog(int argc, char** argv, void* context)
     if (strcmp(argv[1], "on") == 0) {
         cli->resetBinlogCounter();
         cli->setBinlogEnabled(false);  // Ensure V1 is off
+        // binlog開始時のコールバック呼び出し（mag_ref設定など）
+        cli->callBinlogStartCallback();
         esp_log_level_set("*", ESP_LOG_NONE);
         cli->print("Binary logging ON (100Hz, 128B) - ESP_LOG suppressed\r\n");
         vTaskDelay(pdMS_TO_TICKS(100));

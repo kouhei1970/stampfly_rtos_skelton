@@ -81,7 +81,7 @@ public:
 
             // 観測ノイズ (R) - PCデバッグで調整済み
             cfg.baro_noise = 0.1f;             // m (推定値: 0.099m)
-            cfg.tof_noise = 0.05f;             // m
+            cfg.tof_noise = 0.002f;            // m (推定値: 0.001m、静止時)
             cfg.mag_noise = 0.3f;              // uT
             cfg.flow_noise = 0.5f;             // m/s (Mahalanobis棄却を緩和するため大きめに)
             cfg.accel_att_noise = 1.0f;        // m/s² (姿勢補正の影響を弱める)
@@ -204,6 +204,20 @@ public:
     void setGyroBias(const Vector3& bias);
 
     /**
+     * @brief 加速度バイアスを設定
+     * @param bias 加速度バイアス [m/s²] (ボディ座標系)
+     */
+    void setAccelBias(const Vector3& bias);
+
+    /**
+     * @brief 地磁気参照ベクトルを設定
+     * @param mag_ref 地磁気参照ベクトル (ボディ座標系)
+     *
+     * 初回測定値を設定することで、起動時の向き=Yaw 0°となる
+     */
+    void setMagReference(const Vector3& mag_ref);
+
+    /**
      * @brief 共分散行列取得 (デバッグ用)
      */
     const Matrix<15, 15>& getCovariance() const { return P_; }
@@ -222,6 +236,8 @@ private:
     Matrix<15, 15> P_;
 
     // 一時行列（スタック使用量削減のためメンバ変数化）
+    // ESP32S3のスタックサイズ制限により、15x15行列をローカル変数として
+    // 複数作成するとスタックオーバーフローが発生する
     Matrix<15, 15> F_;      // 状態遷移行列
     Matrix<15, 15> Q_;      // プロセスノイズ共分散
     Matrix<15, 15> temp1_;  // 一時計算用

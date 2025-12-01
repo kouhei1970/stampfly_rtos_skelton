@@ -995,10 +995,233 @@ idf.py -p /dev/tty.usbmodem* flash monitor
 
 ---
 
+## ESKF設計指針 (2025-12-01)
+
+### 重要な設計決定
+
+デバイス版ESKFとPC版ESKFの同期を維持するための重要な設計指針を記録。
+
+#### 1. Baro高度のNED変換方式
+
+**設計指針**: Baro高度のNED変換（上昇=マイナス）は`ESKF::updateBaro()`関数**内部**で行う
+
+```cpp
+// ESKF::updateBaro() 内部で変換
+void ESKF::updateBaro(float altitude) {
+    Matrix<1, 1> z;
+    z(0, 0) = -altitude;  // NED: 上昇=マイナス
+    // ...
+}
+
+// 呼び出し側は相対高度（上昇=プラス）をそのまま渡す
+float relative_alt = baro.altitude_m - g_baro_reference_altitude;
+g_eskf.updateBaro(relative_alt);  // NED変換しない
+```
+
+**理由**:
+- 座標系変換の責務をESKF内部に集約
+- 呼び出し側での変換忘れを防止
+- デバイス版とPC版で同一の処理を保証
+
+#### 2. メンバ変数による行列管理（ESP32-S3スタック制約）
+
+**設計指針**: 15x15行列はローカル変数ではなく**クラスメンバ変数**として保持する
+
+```cpp
+// eskf.hpp - メンバ変数として宣言
+Matrix<15, 15> F_;      // 状態遷移行列
+Matrix<15, 15> Q_;      // プロセスノイズ共分散
+Matrix<15, 15> temp1_;  // 一時計算用
+Matrix<15, 15> temp2_;  // 一時計算用
+```
+
+**理由**:
+- ESP32-S3のスタックサイズ制限（タスクあたり数KB）
+- 15x15 float行列は約900バイト（15×15×4=900）
+- ローカル変数として複数作成するとスタックオーバーフロー発生
+- メンバ変数化によりヒープ領域を使用し、スタック圧迫を回避
+
+#### 3. PC版とデバイス版の同期
+
+**設計指針**: PC版ESKFはデバイス版と同一の変数管理方式に合わせる
+
+- PC版はメモリ制約がないが、コード構造をデバイス版に合わせる
+- これにより両者の動作の一貫性を保証
+- デバッグ時にPC版とデバイス版の差異による問題を排除
+
+### 関連ファイル
+
+| ファイル | 役割 |
+|---------|------|
+| `components/stampfly_eskf/eskf.cpp` | デバイス版ESKF（メンバ変数方式 + 内部NED変換）|
+| `components/stampfly_eskf/include/eskf.hpp` | メンバ変数宣言 |
+| `tools/eskf_debug/eskf_pc.cpp` | PC版ESKF（デバイス版と同期）|
+| `tools/eskf_debug/replay.cpp` | バイナリログ再生（外部NED変換なし）|
+| `main/main.cpp` | Baro呼び出し（外部NED変換なし）|
+
+---
+
+## PC vs Device ESKFデバッグ (2025-12-01 続き)
+
+### 実施した修正
+
+#### 1. ESKF updateをIMUTaskに集約（レースコンディション対策）
+
+**問題**: 複数タスクから同時にESKFのupdate関数が呼ばれ、状態不整合が発生
+
+**修正**:
+- OptFlowTask: ESKF update削除（重複していた）
+- MagTask/BaroTask/ToFTask: ESKF update → `data_ready` フラグ設定
+- IMUTask: フラグを確認してESKF update（100Hz周期で実行）
+
+```cpp
+// センサタスク（例: BaroTask）
+if (g_baro_reference_set) {
+    float relative_alt = baro.altitude_m - g_baro_reference_altitude;
+    g_baro_data_cache = relative_alt;
+    g_baro_data_ready = true;  // フラグを立てるだけ
+}
+
+// IMUTask内で集約処理
+if (g_baro_data_ready) {
+    g_baro_data_ready = false;
+    g_eskf.updateBaro(g_baro_data_cache);
+}
+if (g_tof_data_ready) { ... }
+if (g_mag_data_ready) { ... }
+```
+
+#### 2. tof_noiseパラメータ調整
+
+**問題**: ToFの信頼度が過小評価され、Baroに過度に依存
+
+| 項目 | 修正前 | 修正後 | 実測値 |
+|------|--------|--------|--------|
+| tof_noise | 0.05m | 0.002m | 0.001m |
+
+**効果**:
+- Pos Z vs ToF 相関: 0.18 → 0.74-0.79
+- Pos Z vs Baro 相関: 0.90 → 0.07
+- 高度推定がToFに追従するように改善
+
+#### 3. PC版にreset()とgyro_bias復元を追加
+
+**問題**: DeviceはBinlog開始時にreset()するが、PC版は初期化のまま
+
+**修正**: `replay.cpp`
+```cpp
+eskf.init(config);
+eskf.reset();  // Deviceと同じ初期状態に
+
+// Deviceが保持しているgyro_bias_zを復元
+if (has_device_eskf && packets.size() > 0) {
+    Vector3 initial_gyro_bias(0.0f, 0.0f, packets[0].gyro_bias_z);
+    eskf.setGyroBias(initial_gyro_bias);
+}
+```
+
+#### 4. PC版にsetGyroBias()追加
+
+**問題**: PC版(eskf_pc.cpp)にsetGyroBias()関数がなかった
+
+**修正**: `eskf_pc.cpp`に追加
+```cpp
+void ESKF::setGyroBias(const Vector3& bias)
+{
+    state_.gyro_bias = bias;
+}
+```
+
+### Static Test 8 結果
+
+| 項目 | Test 7 (修正前) | Test 8 (修正後) | 改善率 |
+|------|----------------|-----------------|--------|
+| 位置誤差 (Mean) | 1.3 cm | 0.27 cm | 5倍改善 |
+| 位置誤差 (Max) | 6.1 cm | 0.53 cm | 12倍改善 |
+| 最終位置誤差 | 5.3 mm | 5.0 mm | - |
+| Yaw差 (Mean) | 0.18° | 0.26° | - |
+
+### 残存課題と原因分析
+
+#### 1. PCの速度がDeviceよりノイジー（Velocity X）
+
+**現象**:
+```
+Velocity std (static test 8, t>5s):
+  Velocity X: PC 0.14 cm/s, Device 0.07 cm/s (PC 2.0倍)
+  Velocity Y: PC 0.08 cm/s, Device 0.08 cm/s (1.0倍 - 一致!)
+```
+
+**原因分析**:
+- `flow_noise = 0.01` → `flow_noise = 0.5` に修正で改善
+- 以前は観測を信頼しすぎて白色ノイズ的挙動、修正後は正しいランダムウォーク挙動
+- Velocity Xのみ2倍ノイジーな原因: **Pitch推定の差**
+  - Pitch std: PC=0.017°, Device=0.006° (PC 2.7倍)
+  - PitchはVelocity Xに影響（前後方向の傾き）
+
+**根本原因**:
+- Device: 400Hz IMU → 4サンプル平均 → 100Hz ESKF
+- PC: 100Hzログ → 4サンプル移動平均（40ms遅延）
+- IMUサンプリングタイミングの構造的違いによる限界
+
+#### 2. Q/Rパラメータの整合性確認 ✅ 完了
+
+PC版とDevice版の設定を比較検証:
+
+| パラメータ | PC | Device | 一致 |
+|-----------|-----|--------|------|
+| gyro_noise | 0.001 | 0.001 | ✅ |
+| accel_noise | 0.1 | 0.1 | ✅ |
+| gyro_bias_noise | 0.00005 | 0.00005 | ✅ |
+| accel_bias_noise | 0.001 | 0.001 | ✅ |
+| baro_noise | 0.1 | 0.1 | ✅ |
+| tof_noise | 0.002 | 0.002 | ✅ |
+| mag_noise | 0.3 | 0.3 | ✅ |
+| flow_noise | 0.5 | 0.5 | ✅ (修正済) |
+| accel_att_noise | 1.0 | 1.0 | ✅ |
+
+**発見**: PC版で `flow_noise = 0.01` に誤設定されていた（Deviceは0.5）
+**修正**: PC版もdefaultConfigを使用するように統一
+
+### 変更ファイル
+
+| ファイル | 変更内容 |
+|---------|---------|
+| `main/main.cpp` | data_readyフラグ追加、IMUTaskにESKF update集約、OptFlowTask重複削除 |
+| `components/stampfly_eskf/include/eskf.hpp` | tof_noise 0.05→0.002、setAccelBias()追加 |
+| `tools/eskf_debug/eskf_pc.cpp` | setGyroBias()、setAccelBias()追加 |
+| `tools/eskf_debug/replay.cpp` | reset()、gyro/accel_bias復元追加、flow_noise=0.01削除、IMU平滑化追加 |
+| `tools/scripts/visualize_device_log.py` | 速度グラフを色分け実線に変更 |
+
+### 最終テスト結果 (Static Test 8)
+
+| 項目 | PC | Device | 評価 |
+|------|-----|--------|------|
+| Position Error | - | - | **0.5cm** ✅ |
+| Position X/Y 相関 | - | - | **0.999+** ✅ |
+| Velocity X std | 0.14 cm/s | 0.07 cm/s | 2.0x (構造的限界) |
+| Velocity Y std | 0.08 cm/s | 0.08 cm/s | **1.0x** ✅ |
+| Q/Rパラメータ | - | - | **同一** ✅ |
+
+### 結論
+
+- **位置推定**: PC vs Device誤差0.5cmで良好に一致
+- **速度推定**: Velocity Yは一致、Velocity Xは構造的な差（IMUサンプリング）
+- **Q/Rパラメータ**: 同一設定で統一完了
+
+### 次のステップ
+
+1. **動的テスト（手で動かす）** - 位置推定精度の検証
+2. **地磁気有効化テスト** - Yaw推定精度の検証
+
+---
+
 ## 変更履歴
 
 | 日付 | 内容 |
 |------|------|
+| 2025-12-01 | PC vs Device ESKFデバッグ: レースコンディション対策(data_readyフラグ)、tof_noise調整、PC版reset()/setGyroBias()追加 |
+| 2025-12-01 | ESKF設計指針追加: Baro NED変換方式、メンバ変数による行列管理、PC/デバイス版同期 |
 | 2025-12-01 | センサデータ整合性検証: 更新レート修正(Flow/AccelAtt)、V2パケットにbaro_ref_alt追加 |
 | 2025-12-01 | デバッグツール整理: visualize_device_log.pyに統合、V2デフォルト化、archive/移動 |
 | 2025-12-01 | 地磁気キャリブレーション実装: Hard Iron/Soft Iron補正、CLIコマンド(magcal)、NVS保存 |

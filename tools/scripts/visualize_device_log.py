@@ -503,26 +503,26 @@ def visualize_comparison(dev_df: pd.DataFrame, pc_df: pd.DataFrame,
     ax.grid(True, alpha=0.3)
     ax.set_aspect('equal', adjustable='datalim')
 
-    # Row 2: Velocity comparison
+    # Row 2: Velocity comparison (色分けして実線)
     ax = axes[2, 0]
-    ax.plot(t_dev, dev_df['vel_x'], 'r-', label='Device', alpha=0.8)
-    ax.plot(t_pc, pc_df['vel_x'], 'r--', label='PC', alpha=0.8)
+    ax.plot(t_dev, dev_df['vel_x'], 'b-', label='Device', alpha=0.8, linewidth=1)
+    ax.plot(t_pc, pc_df['vel_x'], 'r-', label='PC', alpha=0.8, linewidth=1)
     ax.set_ylabel('Velocity X [m/s]')
     ax.set_title('Velocity X Comparison')
     ax.legend()
     ax.grid(True, alpha=0.3)
 
     ax = axes[2, 1]
-    ax.plot(t_dev, dev_df['vel_y'], 'g-', label='Device', alpha=0.8)
-    ax.plot(t_pc, pc_df['vel_y'], 'g--', label='PC', alpha=0.8)
+    ax.plot(t_dev, dev_df['vel_y'], 'b-', label='Device', alpha=0.8, linewidth=1)
+    ax.plot(t_pc, pc_df['vel_y'], 'r-', label='PC', alpha=0.8, linewidth=1)
     ax.set_ylabel('Velocity Y [m/s]')
     ax.set_title('Velocity Y Comparison')
     ax.legend()
     ax.grid(True, alpha=0.3)
 
     ax = axes[2, 2]
-    ax.plot(t_dev, dev_df['vel_z'], 'b-', label='Device', alpha=0.8)
-    ax.plot(t_pc, pc_df['vel_z'], 'b--', label='PC', alpha=0.8)
+    ax.plot(t_dev, dev_df['vel_z'], 'b-', label='Device', alpha=0.8, linewidth=1)
+    ax.plot(t_pc, pc_df['vel_z'], 'r-', label='PC', alpha=0.8, linewidth=1)
     ax.set_ylabel('Velocity Z [m/s]')
     ax.set_title('Velocity Z Comparison')
     ax.legend()

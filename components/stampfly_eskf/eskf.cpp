@@ -4,6 +4,9 @@
  *
  * Error-State Kalman Filter (ESKF) による統合推定器
  * 15状態: [位置(3), 速度(3), 姿勢誤差(3), ジャイロバイアス(3), 加速度バイアス(3)]
+ *
+ * Note: This file is synchronized with tools/eskf_debug/eskf_pc.cpp
+ * Any changes should be made to both files.
  */
 
 #include "eskf.hpp"
@@ -77,8 +80,6 @@ void ESKF::reset()
     // ジャイロバイアス
     P_(BG_X, BG_X) = bg_var;
     P_(BG_Y, BG_Y) = bg_var;
-    // 地磁気無効時も初期共分散は設定（特異性回避）
-    // バイアスZ更新のスキップはinjectErrorStateで行う
     P_(BG_Z, BG_Z) = bg_var;
     // 加速度バイアス
     P_(BA_X, BA_X) = ba_var;
@@ -91,6 +92,11 @@ void ESKF::setGyroBias(const Vector3& bias)
     state_.gyro_bias = bias;
 }
 
+void ESKF::setMagReference(const Vector3& mag_ref)
+{
+    config_.mag_ref = mag_ref;
+}
+
 void ESKF::predict(const Vector3& accel, const Vector3& gyro, float dt)
 {
     if (!initialized_ || dt <= 0) return;
@@ -99,21 +105,15 @@ void ESKF::predict(const Vector3& accel, const Vector3& gyro, float dt)
     Vector3 gyro_corrected = gyro - state_.gyro_bias;
     Vector3 accel_corrected = accel - state_.accel_bias;
 
-    // Yaw固定モード: Yawレートを0に強制（地磁気無効時のテスト用）
-    if (!config_.mag_enabled) {
-        gyro_corrected.z = 0.0f;
-    }
-
     // 回転行列
     Matrix<3, 3> R = quaternionToRotationMatrix(state_.orientation);
 
-    // ワールド座標系での加速度（重力補償）
-    // 加速度計は比力(specific force)を測定: f = a - g
-    // 静止時: f = (0,0,-g) （上向きの見かけの力）
-    // 実際の加速度: a = f + g
-    // NED座標系で重力は (0,0,+g)
+    // ワールド座標系での加速度（重力補正）
+    // 加速度計は比力(specific force)を測定: a_sensor = a_actual - g
+    // NEDフレーム: g = (0, 0, +9.81) (下向き正)
+    // 静止時: a_sensor = (0, 0, -9.81), a_actual = a_sensor + g = (0, 0, 0)
     Vector3 accel_world = toVector3(R * toMatrix(accel_corrected));
-    accel_world.z += config_.gravity;
+    accel_world.z += config_.gravity;  // 重力を足して実加速度を得る
 
     // 名目状態の更新
     // 位置: p = p + v*dt + 0.5*a*dt^2
@@ -130,12 +130,6 @@ void ESKF::predict(const Vector3& accel, const Vector3& gyro, float dt)
 
     // オイラー角更新
     state_.orientation.toEuler(state_.roll, state_.pitch, state_.yaw);
-
-    // Yaw固定モード: Yawを0にリセット
-    if (!config_.mag_enabled) {
-        state_.yaw = 0.0f;
-        state_.orientation = Quaternion::fromEuler(state_.roll, state_.pitch, 0.0f);
-    }
 
     // 共分散の予測更新（メンバ変数を使用してスタック使用量を削減）
     // 状態遷移行列 F (離散化)
@@ -187,16 +181,15 @@ void ESKF::predict(const Vector3& accel, const Vector3& gyro, float dt)
     // バイアスノイズ
     Q_(BG_X, BG_X) = bg_var;
     Q_(BG_Y, BG_Y) = bg_var;
-    // 地磁気無効時: バイアスZのプロセスノイズを0に（初期キャリブレーション値を維持）
-    Q_(BG_Z, BG_Z) = config_.mag_enabled ? bg_var : 0.0f;
+    Q_(BG_Z, BG_Z) = bg_var;
     Q_(BA_X, BA_X) = ba_var;
     Q_(BA_Y, BA_Y) = ba_var;
     Q_(BA_Z, BA_Z) = ba_var;
 
-    // P = F * P * F' + Q
-    Matrix<15, 15> FP = F_ * P_;
-    Matrix<15, 15> FPFT = FP * F_.transpose();
-    P_ = FPFT + Q_;
+    // P = F * P * F' + Q （一時行列もメンバ変数使用）
+    temp1_ = F_ * P_;
+    temp2_ = temp1_ * F_.transpose();
+    P_ = temp2_ + Q_;
 }
 
 void ESKF::updateBaro(float altitude)
@@ -205,6 +198,7 @@ void ESKF::updateBaro(float altitude)
 
     // 観測モデル: z = -altitude (上昇=プラスの高度をNED変換)
     // 引数altitudeは相対高度（起動時0、上昇=プラス）を期待
+    // ESKF内部でNED変換する（上昇=マイナス）
     Matrix<1, 1> z;
     z(0, 0) = -altitude;  // NED: 上昇=マイナス
 
@@ -229,7 +223,7 @@ void ESKF::updateToF(float distance)
     // 傾きが大きい場合はToF更新をスキップ（誤測定防止）
     float tilt = std::sqrt(state_.roll * state_.roll + state_.pitch * state_.pitch);
     if (tilt > config_.tof_tilt_threshold) {
-        return;
+        return;  // 傾き閾値超過、ToF測定は信頼できない
     }
 
     // 姿勢に基づく地上距離への変換
@@ -237,8 +231,7 @@ void ESKF::updateToF(float distance)
     float cos_pitch = std::cos(state_.pitch);
     float height = distance * cos_roll * cos_pitch;
 
-    // 観測モデル: z = -height (ToFは上向き正、NEDは下向き正なので符号反転)
-    // 引数distanceは正の値（ToFからの距離）を期待
+    // 観測モデル: z = -p_z (NEDなので下向きが正)
     Matrix<1, 1> z;
     z(0, 0) = -height;
 
@@ -260,9 +253,25 @@ void ESKF::updateMag(const Vector3& mag)
 {
     if (!initialized_) return;
 
-    // 参照ベクトル（NED）をボディ座標系に変換
-    Matrix<3, 3> R = quaternionToRotationMatrix(state_.orientation);
-    Vector3 mag_expected = toVector3(R.transpose() * toMatrix(config_.mag_ref));
+    // mag_refはボディ座標系で保存されている（初回測定値）
+    // 現在の姿勢に基づいて期待されるMag値を計算
+    //
+    // 初回時: mag_ref = mag_body_0, orientation = identity (yaw=0)
+    // 現在: mag_body = R_body_ned * mag_ned
+    //
+    // mag_refはYaw=0の時のボディ座標系での値なので、
+    // 現在のYaw回転を適用した期待値と比較する
+    //
+    // mag_expected = R_z(yaw) * mag_ref
+    // ただしRoll/Pitchは小さいと仮定してYaw回転のみ考慮
+    float cos_yaw = std::cos(state_.yaw);
+    float sin_yaw = std::sin(state_.yaw);
+
+    // Yaw回転を適用した期待値（Z軸周り回転）
+    Vector3 mag_expected;
+    mag_expected.x = cos_yaw * config_.mag_ref.x - sin_yaw * config_.mag_ref.y;
+    mag_expected.y = sin_yaw * config_.mag_ref.x + cos_yaw * config_.mag_ref.y;
+    mag_expected.z = config_.mag_ref.z;
 
     // 水平面での方位角のみ使用（ヨー補正）
     float yaw_meas = std::atan2(mag.y, mag.x);
@@ -290,27 +299,30 @@ void ESKF::updateMag(const Vector3& mag)
     measurementUpdate<1>(z, h, H, R_mat);
 }
 
-void ESKF::updateFlow(float flow_x, float flow_y, float distance)
+void ESKF::updateFlow(float flow_x, float flow_y, float height)
 {
-    // 後方互換: ジャイロなしバージョン
-    updateFlowWithGyro(flow_x, flow_y, distance, 0.0f, 0.0f);
+    // 後方互換: ジャイロなしバージョン（Body→NED変換のみ）
+    updateFlowWithGyro(flow_x, flow_y, height, 0.0f, 0.0f);
 }
 
-void ESKF::updateFlowWithGyro(float flow_x, float flow_y, float distance,
+void ESKF::updateFlowWithGyro(float flow_x, float flow_y, float height,
                                float gyro_x, float gyro_y)
 {
-    if (!initialized_ || distance < config_.flow_min_height) return;
+    if (!initialized_ || height < config_.flow_min_height) return;
 
     // ============================================================
     // 1. ジャイロ補償（回転成分の除去）
     // ============================================================
+    // オプティカルフローは回転+並進の両方を検出する
+    // 純粋な並進速度を得るため、回転成分を除去する
+    //
     // 回帰分析で得た補償係数（counts/[rad/s]単位）:
     //   flow_dx = 1.35×gyro_x + 9.30×gyro_y + offset
     //   flow_dy = -2.65×gyro_x + 0×gyro_y + offset
     //
     // flow_x/flow_yはrad単位で渡される（counts * flow_scale）
     // 補償もrad単位に変換: k * flow_scale * gyro
-    constexpr float flow_scale = 0.08f;  // rad/count (calibrated)
+    constexpr float flow_scale = 0.08f;  // rad/count (replay.cppと同じ)
     constexpr float k_xx = 1.35f * flow_scale;   // gyro_x → flow_x [rad]
     constexpr float k_xy = 9.30f * flow_scale;   // gyro_y → flow_x [rad]
     constexpr float k_yx = -2.65f * flow_scale;  // gyro_x → flow_y [rad]
@@ -326,11 +338,11 @@ void ESKF::updateFlowWithGyro(float flow_x, float flow_y, float distance,
     float flow_y_comp = flow_y - k_yx * gyro_x - k_yy * gyro_y - flow_dy_offset;
 
     // ============================================================
-    // 2. ボディ座標系での速度計算（第2段階の軸変換）
+    // 2. ボディ座標系での速度計算
     // ============================================================
-    // 入力: main.cppで第1段階の変換済み
-    //   flow_x = (-sensor_delta_y) * scale
-    //   flow_y = (+sensor_delta_x) * scale
+    // バイナリログの座標系（main.cppで変換済み）:
+    //   flow_x = -sensor_delta_y (機体X方向に対応)
+    //   flow_y =  sensor_delta_x (機体Y方向に対応)
     //
     // NED座標系 (Yaw=0):
     //   前方移動 → +X (North)
@@ -338,13 +350,14 @@ void ESKF::updateFlowWithGyro(float flow_x, float flow_y, float distance,
     //   右移動   → +Y (East)
     //   左移動   → -Y (West)
     //
-    // 速度変換（PC版と同一）
-    float vx_body = -flow_y_comp * distance;  // 前方速度
-    float vy_body = -flow_x_comp * distance;  // 右方速度
+    // 速度変換
+    float vx_body = -flow_y_comp * height;  // 前方速度
+    float vy_body = -flow_x_comp * height;  // 右方速度
 
     // ============================================================
     // 3. Body座標系 → NED座標系への変換
     // ============================================================
+    // Yaw回転のみ適用（Roll/Pitchは小さいと仮定）
     float cos_yaw = std::cos(state_.yaw);
     float sin_yaw = std::sin(state_.yaw);
 
@@ -380,23 +393,23 @@ void ESKF::updateAccelAttitude(const Vector3& accel)
     if (!initialized_) return;
 
     // 加速度ノルムをチェック（静止時は重力のみ）
-    float accel_norm = accel.norm();
+    float accel_norm = std::sqrt(accel.x*accel.x + accel.y*accel.y + accel.z*accel.z);
     float gravity_diff = std::abs(accel_norm - config_.gravity);
 
-    // モーション閾値を超えている場合はスキップ
+    // モーション閾値を超えている場合はスキップ (default: 1.0 m/s²)
     if (gravity_diff > config_.accel_motion_threshold) {
         return;
     }
 
-    // 加速度から期待される重力方向（ボディ座標系）
-    // 加速度計は比力を測定: f = a - g
-    // 静止時: f_body = R^T * [0, 0, -g]^T （上向きの見かけの力）
+    // 静止時の加速度計出力の期待値（ボディ座標系）
+    // 加速度計は比力を測定: a_sensor = a_actual - g = 0 - g = -g
+    // NEDフレーム: g = (0, 0, +9.81), よって a_sensor = (0, 0, -9.81)
+    // ボディ座標系への変換: a_expected = R^T * a_sensor_world = R^T * (0, 0, -g)
     Matrix<3, 3> R = quaternionToRotationMatrix(state_.orientation);
-    Vector3 g_world(0.0f, 0.0f, -config_.gravity);  // 比力は -g
-    Vector3 g_expected = toVector3(R.transpose() * toMatrix(g_world));
+    Vector3 neg_g_world(0.0f, 0.0f, -config_.gravity);  // 静止時の比力 = -g
+    Vector3 g_expected = toVector3(R.transpose() * toMatrix(neg_g_world));
 
-    // イノベーション: 測定加速度 - 期待加速度
-    // Roll/Pitchのみ補正するため、XY成分のみ使用
+    // Roll/Pitchのみ補正（XY成分）
     Matrix<2, 1> z;
     z(0, 0) = accel.x;
     z(1, 0) = accel.y;
@@ -405,14 +418,14 @@ void ESKF::updateAccelAttitude(const Vector3& accel)
     h(0, 0) = g_expected.x;
     h(1, 0) = g_expected.y;
 
-    // ヤコビアン: dh/dθ (姿勢誤差に対する観測の感度)
-    // g_body = R^T * g_world
-    // dg_body/dθ ≈ [g_world]× * R (近似)
-    // 符号は -g に対応
+    // ヤコビアン (小角近似)
+    // a_expected = R^T * (0, 0, -g) where g = 9.81
+    // 小角近似: R ≈ I + [θ]×, R^T ≈ I - [θ]×
+    // a_expected_x ≈ +g * pitch,  a_expected_y ≈ -g * roll
+    // ∂ax/∂pitch = +g,  ∂ay/∂roll = -g
     Matrix<2, 15> H;
-    // Roll (θ_x) に対する感度: g_z affects y
-    H(0, ATT_Y) = config_.gravity;   // dax/dpitch (符号反転)
-    H(1, ATT_X) = -config_.gravity;  // day/droll (符号反転)
+    H(0, ATT_Y) = config_.gravity;   // ∂ax/∂pitch = +g
+    H(1, ATT_X) = -config_.gravity;  // ∂ay/∂roll = -g
 
     // 観測ノイズ
     Matrix<2, 2> R_mat;
@@ -443,19 +456,10 @@ void ESKF::injectErrorState(const Matrix<15, 1>& dx)
     // オイラー角更新
     state_.orientation.toEuler(state_.roll, state_.pitch, state_.yaw);
 
-    // Yaw固定モード: 観測更新後もYawを0にリセット
-    if (!config_.mag_enabled) {
-        state_.yaw = 0.0f;
-        state_.orientation = Quaternion::fromEuler(state_.roll, state_.pitch, 0.0f);
-    }
-
     // ジャイロバイアス
     state_.gyro_bias.x += dx(BG_X, 0);
     state_.gyro_bias.y += dx(BG_Y, 0);
-    // 地磁気無効時: バイアスZを更新しない（初期キャリブレーション値を維持）
-    if (config_.mag_enabled) {
-        state_.gyro_bias.z += dx(BG_Z, 0);
-    }
+    state_.gyro_bias.z += dx(BG_Z, 0);
 
     // 加速度バイアス
     state_.accel_bias.x += dx(BA_X, 0);
@@ -496,19 +500,6 @@ bool ESKF::measurementUpdate(const Matrix<M, 1>& z,
     Matrix<15, M> KR = K * R;
     Q_ = KR * K.transpose();
     P_ = F_ + Q_;
-
-    // 地磁気無効時: BG_Zの共分散を小さな値に固定（発散防止）
-    if (!config_.mag_enabled) {
-        // BG_Z行・列のオフ対角成分をゼロにする
-        for (int i = 0; i < 15; i++) {
-            if (i != BG_Z) {
-                P_(BG_Z, i) = 0.0f;
-                P_(i, BG_Z) = 0.0f;
-            }
-        }
-        // 対角成分は小さな値を維持（完全に0だと数値的問題）
-        P_(BG_Z, BG_Z) = 1e-10f;
-    }
 
     return true;
 }
@@ -629,24 +620,18 @@ void AltitudeEstimator::predict(float accel_z, float dt)
 {
     if (!initialized_ || dt <= 0) return;
 
-    // 状態予測
-    // x = [altitude, velocity]'
-    // x_new = F * x + B * u
     state_.altitude += state_.velocity * dt + 0.5f * accel_z * dt * dt;
     state_.velocity += accel_z * dt;
 
-    // 共分散予測 P = F * P * F' + Q
     float F[2][2] = {{1, dt}, {0, 1}};
     float FP[2][2];
     float FPFt[2][2];
 
-    // FP = F * P
     FP[0][0] = F[0][0] * P_[0][0] + F[0][1] * P_[1][0];
     FP[0][1] = F[0][0] * P_[0][1] + F[0][1] * P_[1][1];
     FP[1][0] = F[1][0] * P_[0][0] + F[1][1] * P_[1][0];
     FP[1][1] = F[1][0] * P_[0][1] + F[1][1] * P_[1][1];
 
-    // FPFt = FP * F'
     FPFt[0][0] = FP[0][0] * F[0][0] + FP[0][1] * F[0][1];
     FPFt[0][1] = FP[0][0] * F[1][0] + FP[0][1] * F[1][1];
     FPFt[1][0] = FP[1][0] * F[0][0] + FP[1][1] * F[0][1];
@@ -662,20 +647,13 @@ void AltitudeEstimator::updateBaro(float altitude)
 {
     if (!initialized_) return;
 
-    // 観測モデル: z = H * x, H = [1, 0]
     float y = altitude - state_.altitude;
-
-    // S = H * P * H' + R = P[0][0] + R
     float S = P_[0][0] + config_.measurement_noise_baro;
-
-    // K = P * H' / S
     float K[2] = {P_[0][0] / S, P_[1][0] / S};
 
-    // 状態更新
     state_.altitude += K[0] * y;
     state_.velocity += K[1] * y;
 
-    // 共分散更新 P = (I - K*H) * P
     float I_KH[2][2] = {{1 - K[0], 0}, {-K[1], 1}};
     float P_new[2][2];
     P_new[0][0] = I_KH[0][0] * P_[0][0] + I_KH[0][1] * P_[1][0];
@@ -693,25 +671,17 @@ void AltitudeEstimator::updateToF(float distance, float pitch, float roll)
 {
     if (!initialized_) return;
 
-    // 傾き補正
     float cos_roll = std::cos(roll);
     float cos_pitch = std::cos(pitch);
     float height = distance * cos_roll * cos_pitch;
 
-    // 観測モデル: z = H * x, H = [1, 0]
     float y = height - state_.altitude;
-
-    // S = H * P * H' + R
     float S = P_[0][0] + config_.measurement_noise_tof;
-
-    // K = P * H' / S
     float K[2] = {P_[0][0] / S, P_[1][0] / S};
 
-    // 状態更新
     state_.altitude += K[0] * y;
     state_.velocity += K[1] * y;
 
-    // 共分散更新
     float I_KH[2][2] = {{1 - K[0], 0}, {-K[1], 1}};
     float P_new[2][2];
     P_new[0][0] = I_KH[0][0] * P_[0][0] + I_KH[0][1] * P_[1][0];
@@ -754,12 +724,9 @@ void VelocityEstimator::updateFlow(float flow_x, float flow_y, float height, flo
 {
     if (!initialized_ || height < 0.1f) return;
 
-    // ジャイロ補正済みオプティカルフロー
-    // フローはカメラの動きと逆方向
-    float flow_x_comp = flow_x - gyro_y;  // ピッチ角速度による補正
-    float flow_y_comp = flow_y + gyro_x;  // ロール角速度による補正
+    float flow_x_comp = flow_x - gyro_y;
+    float flow_y_comp = flow_y + gyro_x;
 
-    // 速度計算 (簡略モデル)
     state_.vx = flow_y_comp * height * config_.flow_scale;
     state_.vy = -flow_x_comp * height * config_.flow_scale;
 }
