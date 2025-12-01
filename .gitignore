@@ -32,3 +32,6 @@ tools/scripts/archive/
 tools/scripts/*.bin
 tools/scripts/*.csv
 tools/scripts/*.png
+tools/eskf_debug/*.bin
+tools/eskf_debug/*.csv
+tools/eskf_debug/*.png

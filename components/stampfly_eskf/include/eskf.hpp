@@ -83,7 +83,7 @@ public:
             cfg.baro_noise = 0.1f;             // m (推定値: 0.099m)
             cfg.tof_noise = 0.002f;            // m (推定値: 0.001m、静止時)
             cfg.mag_noise = 0.3f;              // uT
-            cfg.flow_noise = 0.5f;             // m/s (Mahalanobis棄却を緩和するため大きめに)
+            cfg.flow_noise = 0.1f;             // m/s (PCデバッグ済み: フローを信頼)
             cfg.accel_att_noise = 1.0f;        // m/s² (姿勢補正の影響を弱める)
 
             // 初期共分散

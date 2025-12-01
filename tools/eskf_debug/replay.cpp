@@ -465,7 +465,7 @@ int main(int argc, char* argv[])
 
         // Flow update (100Hz)
         if (i % flow_rate == 0 && pkt.flow_squal >= flow_squal_min) {
-            float flow_scale = 0.08f;
+            float flow_scale = 0.16f;  // 実測から2倍に修正
             float flow_x = pkt.flow_dx * flow_scale;
             float flow_y = pkt.flow_dy * flow_scale;
             float height = std::max(pkt.tof_bottom, 0.02f);

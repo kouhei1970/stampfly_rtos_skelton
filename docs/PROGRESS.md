@@ -1277,10 +1277,96 @@ constexpr float flow_dy_offset = 0.0f;
 
 ---
 
+## 動的四角形移動テスト ✅ 修正完了 (2025-12-01)
+
+### 実施内容
+
+30cm高度で20cm四辺の四角形を時計回りに移動するテストを実施。
+
+### 発見した問題と修正
+
+#### 1. フロー軸マッピングの誤り
+
+**問題**: ユーザーが「右」に動かしたが、ESKFは「後方(-X)」を検出
+
+**原因**: フローセンサーの軸マッピングが入れ替わっていた + 符号が逆
+
+```cpp
+// 修正前（誤り）
+vx_body = -flow_y_comp * height;
+vy_body = -flow_x_comp * height;
+
+// 修正後（正しい）
+vx_body = flow_x_comp * height;
+vy_body = flow_y_comp * height;
+```
+
+**検証結果**:
+- 最初の動き: Right (+Y) ✓ 正しく検出
+- 2番目の動き: Back (-X) ✓ 正しく検出
+- 時計回りパターン: Right → Back → Left → Front ✓ 正しい順序
+
+#### 2. 速度収束の遅延（Device）
+
+**問題**: PCは速度が速やかに0に収束するが、Deviceは遅い
+
+**原因**: flow_noiseパラメータの不一致
+- PC (replay.cpp): `flow_noise = 0.1f`
+- Device (eskf.hpp default): `flow_noise = 0.5f`
+
+**修正**: デバイスのデフォルト値を0.1に変更
+
+```cpp
+// components/stampfly_eskf/include/eskf.hpp
+cfg.flow_noise = 0.1f;  // m/s (PCデバッグ済み: フローを信頼)
+```
+
+**結果**:
+- Device最終速度: 12 cm/s → **1.2 cm/s** (90%改善)
+- PC vs Device誤差: **2.2 cm** ✓ 良好な一致
+
+#### 3. 軌跡スケールが実際の半分
+
+**問題**: 検出された四角形の辺が実際の約半分
+
+**修正**: flow_scaleを2倍に変更（0.08 → 0.16）
+
+```cpp
+// 全ファイルで修正
+constexpr float flow_scale = 0.16f;  // 実測から2倍に修正
+```
+
+### 変更ファイル
+
+| ファイル | 変更内容 |
+|---------|---------|
+| `components/stampfly_eskf/eskf.cpp` | 軸マッピング修正、flow_scale=0.16 |
+| `components/stampfly_eskf/include/eskf.hpp` | flow_noise=0.1 |
+| `tools/eskf_debug/eskf_pc.cpp` | 軸マッピング修正、flow_scale=0.16 |
+| `tools/eskf_debug/replay.cpp` | flow_scale=0.16 |
+| `main/main.cpp` | flow_scale=0.16 |
+
+### テスト結果サマリー
+
+| 項目 | 修正前 | 修正後 |
+|------|--------|--------|
+| 軸方向 | XY入れ替わり + 符号逆 | ✓ 正しい |
+| PC vs Device誤差 | - | 2.2 cm |
+| Device速度収束 | 12 cm/s残留 | 1.2 cm/s |
+| 軌跡スケール | 約50% | 調整中 (flow_scale=0.16) |
+
+### 次のステップ
+
+- [ ] flow_scale=0.16でのテスト（軌跡スケール検証）
+- [ ] 地磁気有効化でのYaw推定検証
+
+---
+
 ## 変更履歴
 
 | 日付 | 内容 |
 |------|------|
+| 2025-12-01 | 動的四角形テスト: 軸マッピング修正(XY入替+符号)、flow_noise=0.1、flow_scale=0.16 |
 | 2025-12-01 | フローオフセット除去: flow_dx/dy_offset=0に設定、静止ドリフト2.2cm→0.2cm (90%改善) |
 | 2025-12-01 | PC vs Device ESKFデバッグ: レースコンディション対策(data_readyフラグ)、tof_noise調整、PC版reset()/setGyroBias()追加 |
 | 2025-12-01 | ESKF設計指針追加: Baro NED変換方式、メンバ変数による行列管理、PC/デバイス版同期 |

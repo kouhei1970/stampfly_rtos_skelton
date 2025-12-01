@@ -364,7 +364,7 @@ static void IMUTask(void* pvParameters)
                                     float distance = tof_bottom;
                                     if (distance < 0.02f) distance = 0.02f;
                                     if (distance > 0.02f) {
-                                        constexpr float flow_scale = 0.08f;
+                                        constexpr float flow_scale = 0.16f;  // 実測から2倍に修正
                                         float flow_x_rad = flow_dx * flow_scale;
                                         float flow_y_rad = flow_dy * flow_scale;
                                         g_eskf.updateFlowWithGyro(flow_x_rad, flow_y_rad, distance, g_avg.x, g_avg.y);

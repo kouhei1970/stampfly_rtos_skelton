@@ -273,7 +273,7 @@ void ESKF::updateFlowWithGyro(float flow_x, float flow_y, float height,
     if (!initialized_ || height < config_.flow_min_height) return;
 
     // ジャイロ補償係数（回帰分析で取得）
-    constexpr float flow_scale = 0.08f;
+    constexpr float flow_scale = 0.16f;  // 実測から2倍に修正
     constexpr float k_xx = 1.35f * flow_scale;
     constexpr float k_xy = 9.30f * flow_scale;
     constexpr float k_yx = -2.65f * flow_scale;
@@ -287,8 +287,11 @@ void ESKF::updateFlowWithGyro(float flow_x, float flow_y, float height,
     float flow_y_comp = flow_y - k_yx * gyro_x - k_yy * gyro_y - flow_dy_offset;
 
     // ボディ座標系での速度
-    float vx_body = -flow_y_comp * height;
-    float vy_body = -flow_x_comp * height;
+    // フローセンサー軸マッピング（実測から）:
+    //   右移動(+Y) → flow_dy > 0
+    //   前方移動(+X) → flow_dx > 0
+    float vx_body = flow_x_comp * height;
+    float vy_body = flow_y_comp * height;
 
     // Body→NED変換
     float cos_yaw = std::cos(state_.yaw);

@@ -329,7 +329,7 @@ void ESKF::updateFlowWithGyro(float flow_x, float flow_y, float height,
     //
     // flow_x/flow_yはrad単位で渡される（counts * flow_scale）
     // 補償もrad単位に変換: k * flow_scale * gyro
-    constexpr float flow_scale = 0.08f;  // rad/count (replay.cppと同じ)
+    constexpr float flow_scale = 0.16f;  // rad/count 実測から2倍に修正
     constexpr float k_xx = 1.35f * flow_scale;   // gyro_x → flow_x [rad]
     constexpr float k_xy = 9.30f * flow_scale;   // gyro_y → flow_x [rad]
     constexpr float k_yx = -2.65f * flow_scale;  // gyro_x → flow_y [rad]
@@ -345,19 +345,13 @@ void ESKF::updateFlowWithGyro(float flow_x, float flow_y, float height,
     // ============================================================
     // 2. ボディ座標系での速度計算
     // ============================================================
-    // バイナリログの座標系（main.cppで変換済み）:
-    //   flow_x = -sensor_delta_y (機体X方向に対応)
-    //   flow_y =  sensor_delta_x (機体Y方向に対応)
+    // フローセンサー軸マッピング（実測から）:
+    //   右移動(+Y) → flow_dy > 0
+    //   前方移動(+X) → flow_dx > 0 (推定)
     //
-    // NED座標系 (Yaw=0):
-    //   前方移動 → +X (North)
-    //   後方移動 → -X (South)
-    //   右移動   → +Y (East)
-    //   左移動   → -Y (West)
-    //
-    // 速度変換
-    float vx_body = -flow_y_comp * height;  // 前方速度
-    float vy_body = -flow_x_comp * height;  // 右方速度
+    // 速度変換（フローと速度が同方向）
+    float vx_body = flow_x_comp * height;  // 前方速度
+    float vy_body = flow_y_comp * height;  // 右方速度
 
     // ============================================================
     // 3. Body座標系 → NED座標系への変換
