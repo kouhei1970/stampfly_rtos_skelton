@@ -28,9 +28,7 @@ __pycache__/
 *.pyc
 
 # ESKF debug test data and results
+tools/scripts/archive/
 tools/scripts/*.bin
 tools/scripts/*.csv
-tools/scripts/*_result/
-tools/scripts/plots/
 tools/scripts/*.png
-tools/scripts/*.bin

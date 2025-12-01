@@ -133,6 +133,10 @@ public:
     void setESKFInitialized(bool initialized);
     bool isESKFInitialized() const;
 
+    // Barometer reference altitude (for binlog)
+    void setBaroReferenceAltitude(float altitude);
+    float getBaroReferenceAltitude() const;
+
     // Control input
     void getControlInput(float& throttle, float& roll, float& pitch, float& yaw) const;
     void updateControlInput(uint16_t throttle, uint16_t roll, uint16_t pitch, uint16_t yaw);
@@ -170,6 +174,9 @@ private:
     StateVector3 gyro_bias_ = {};     // [rad/s]
     StateVector3 accel_bias_ = {};    // [m/s²]
     bool eskf_initialized_ = false;
+
+    // Barometer reference altitude [m] (set at boot)
+    float baro_reference_altitude_ = 0.0f;
 
     // Attitude
     float roll_ = 0;

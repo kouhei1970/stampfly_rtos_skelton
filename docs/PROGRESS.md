@@ -1,6 +1,6 @@
 # StampFly RTOS Skeleton 実装進捗
 
-## 最終更新: 2025-11-30
+## 最終更新: 2025-12-01
 
 ---
 
@@ -92,7 +92,9 @@ main.cppに以下を統合:
 | `status` | システム状態表示 |
 | `sensor [imu\|mag\|baro\|tof\|flow\|power\|all]` | センサ値表示（実データ） |
 | `teleplot [on\|off]` | Teleplotストリーミング開始/停止 |
-| `binlog [on\|off]` | バイナリログ出力開始/停止（100Hz、64バイトパケット） |
+| `binlog [on\|off]` | バイナリログ出力開始/停止（100Hz、128Bパケット） |
+| `loglevel [level] [tag]` | ESP_LOGレベル設定（none/error/warn/info/debug/verbose） |
+| `magcal [start\|stop\|status\|save\|clear]` | 地磁気キャリブレーション |
 | `calib [gyro\|accel\|mag]` | キャリブレーション（stub） |
 | `motor [arm\|disarm\|test <id> <throttle>]` | モーター制御（stub） |
 | `pair` | ペアリングモード開始 |
@@ -341,7 +343,7 @@ config.tof_tilt_threshold = 0.35f;  // 20° - 傾き時のToF誤測定防止
 - [x] main.cppでupdateFlowWithGyro()を呼び出すように変更 ✅
 - [x] フローオフセット補正を実機コードに適用 ✅
 - [x] デフォルトQ/Rパラメータをチューニング済み値に更新 ✅
-- [ ] 磁力計キャリブレーション実装（Yaw精度向上）
+- [x] 磁力計キャリブレーション実装（Yaw精度向上） ✅ 2025-12-01
 - [ ] 実機でESKFチューニング結果を検証
 - [ ] **フローオフセットキャリブレーション** - 静止ホバリングデータでflow_dx/dy_offsetを決定
   - 現在の推定値: flow_dx_offset=0.29, flow_dy_offset=0.29 counts (閉ループテストから逆算)
@@ -628,7 +630,208 @@ if (!config_.mag_enabled) {
 
 ---
 
+## 地磁気キャリブレーション ✅ 完了 (2025-12-01)
+
+### 実装内容
+
+`components/stampfly_mag/` に地磁気キャリブレーション機能を追加。
+
+**キャリブレーションモデル:**
+```
+mag_calibrated = soft_iron * (mag_raw - hard_iron)
+```
+
+- **Hard Iron**: 定常的なオフセット（ハードウェアによる磁場歪み）
+- **Soft Iron**: スケール係数（各軸の感度差を補正）
+
+### ファイル構成
+
+```
+components/stampfly_mag/
+├── include/
+│   ├── bmm150.hpp
+│   └── mag_calibration.hpp   # 新規追加
+├── bmm150.cpp
+└── mag_calibration.cpp       # 新規追加
+```
+
+### CLIコマンド
+
+```
+> magcal start    # キャリブレーション開始（デバイスを8の字に回転）
+> magcal stop     # キャリブレーション終了・計算
+> magcal status   # 現在の状態・校正値表示
+> magcal save     # NVSに保存
+> magcal clear    # NVSから削除
+```
+
+### キャリブレーションアルゴリズム
+
+1. **Hard Iron推定**: 球体フィッティング（最小二乗法）
+   - 収集したサンプルから中心点（オフセット）を推定
+2. **Soft Iron推定**: 楕円体→球体正規化
+   - 各軸の範囲から正規化スケールを計算
+3. **品質評価**: フィットネス値（校正後のnormの標準偏差）
+
+### 検証結果
+
+| テスト | Center (X, Y) | 評価 |
+|-------|---------------|------|
+| mag_plane_test.png | (2.0, -1.2) | ✓ 原点近傍 |
+| mag_plane_test2.png | (18.0, 1.4) | △ 環境依存（校正場所≠テスト場所）|
+
+**注意**: 校正は実際の飛行環境で行う必要あり。
+
+### ESKF連携
+
+- `magcal save` 後にデバイスをリセットすると、ESKFの `mag_enabled` が自動的に `true` に設定
+- main.cpp の `initEstimators()` で NVS から校正データをロード
+
+---
+
+## デバッグツール整理 ✅ 完了 (2025-12-01)
+
+### 変更内容
+
+1. **可視化ツール統合**: 複数の可視化スクリプトを `visualize_device_log.py` に統合
+2. **V2フォーマット標準化**: V1(64B)を廃止、V2(128B)をデフォルトに
+3. **アーカイブ整理**: 過去のログ・解析結果を `archive/` に移動
+
+### ツール構成（整理後）
+
+```
+tools/scripts/
+├── README.md                 # ドキュメント
+├── log_capture.py            # ログキャプチャ・変換
+├── visualize_device_log.py   # 統合可視化ツール
+├── plot_mag_xy.py            # 磁気キャリブレーション確認
+├── estimate_qr.py            # Q/Rパラメータ推定
+├── requirements.txt          # Python依存関係
+└── archive/                  # 過去のログ・解析結果（gitignore）
+```
+
+### バイナリログ形式（V2、128バイト）
+
+| オフセット | サイズ | 内容 |
+|-----------|-------|------|
+| 0-1 | 2 | ヘッダ (0xAA 0x56) |
+| 2-5 | 4 | タイムスタンプ (ms) |
+| 6-29 | 24 | IMU (accel xyz, gyro xyz) |
+| 30-41 | 12 | 磁気 (xyz) |
+| 42-49 | 8 | 気圧 (pressure, alt) |
+| 50-57 | 8 | ToF (bottom, front) |
+| 58-62 | 5 | OptFlow (dx, dy, squal) |
+| 63-74 | 12 | Position (xyz) |
+| 75-86 | 12 | Velocity (xyz) |
+| 87-98 | 12 | Attitude (roll, pitch, yaw) |
+| 99-110 | 12 | Bias (gyro_z, accel_x, accel_y) |
+| 111 | 1 | ESKF status |
+| 112-126 | 15 | Reserved |
+| 127 | 1 | XORチェックサム |
+
+### 可視化モード
+
+```bash
+# デバイスログのみ
+python visualize_device_log.py sensor.bin
+
+# PC版ESKFのみ
+python visualize_device_log.py --pc eskf.csv --mode pc
+
+# デバイス vs PC 比較
+python visualize_device_log.py sensor.bin --pc eskf.csv --mode both
+
+# 磁気XYプロット
+python visualize_device_log.py sensor.bin --mag-xy
+```
+
+---
+
+## センサデータ整合性検証 ✅ 完了 (2025-12-01)
+
+### 検証目的
+
+バイナリログに記録されるセンサデータが、デバイスESKFとPC版ESKFで同一に使用されているか確認。
+
+### 検証結果
+
+| センサ | 単位 | 座標変換 | 整合性 |
+|--------|------|---------|--------|
+| IMU (加速度) | [m/s²] | NED変換済み | ✅ |
+| IMU (ジャイロ) | [rad/s] | NED変換済み | ✅ |
+| 磁気 | [µT] | NED+キャリブ済み | ✅ |
+| 気圧 | [Pa], [m] | 絶対高度 | ✅ (基準高度追加で改善) |
+| ToF | [m] | そのまま | ✅ |
+| OptFlow | counts | 第1段階変換済み | ✅ |
+
+### 発見・修正した不整合
+
+#### 1. センサ更新レートの不一致
+| センサ | デバイス | PC (修正前) | PC (修正後) |
+|--------|---------|------------|------------|
+| Flow | 100Hz | 20Hz | **100Hz** |
+| AccelAtt | 50Hz | 10Hz | **50Hz** |
+
+**修正**: `replay.cpp` の更新レートをデバイスに合わせた
+
+#### 2. 気圧高度の基準点不一致
+
+- **問題**: デバイスは起動時の気圧高度を基準、PCはログ最初のパケットを基準
+- **修正**: V2パケットに `baro_ref_alt` フィールドを追加
+
+**V2パケット構造変更**:
+```cpp
+// Status + metadata (17 bytes)
+uint8_t eskf_status;
+float baro_ref_alt;     // [m] 気圧基準高度（新規）
+uint8_t reserved[11];   // 15→11に縮小
+uint8_t checksum;
+```
+
+### 変更ファイル
+
+| ファイル | 変更内容 |
+|---------|---------|
+| `stampfly_state.hpp/cpp` | `baro_reference_altitude_` 追加、getter/setter |
+| `main.cpp` | 基準高度をStateに保存 |
+| `cli.hpp` | V2パケットに `baro_ref_alt` 追加 |
+| `cli.cpp` | パケットに基準高度を記録 |
+| `replay.cpp` | 更新レート修正、基準高度をログから使用 |
+
+---
+
 ## 次のステップ
+
+### ESKFデバッグ（地磁気有効化） 📋 次の作業
+
+地磁気キャリブレーション完了により、以下の検証が可能:
+
+1. **デバイスで地磁気校正実施**
+   ```
+   > magcal start
+   > (デバイスを回転)
+   > magcal stop
+   > magcal save
+   > reset
+   ```
+
+2. **四角形移動テスト（30cm高度）**
+   ```bash
+   python log_capture.py capture -p /dev/tty.usbmodem* -o flight.bin -d 60
+   ```
+
+3. **PC版ESKFでリプレイ・比較**
+   ```bash
+   ./eskf_replay flight.bin flight_pc.csv
+   python visualize_device_log.py flight.bin --pc flight_pc.csv --mode both
+   ```
+
+4. **デバイス vs PC 結果が一致するまで検証**
+   - Yawドリフト
+   - 位置推定精度
+   - 閉ループエラー
+
+---
 
 ### 自動キャリブレーションフレームワーク 📋 設計完了
 
@@ -796,6 +999,9 @@ idf.py -p /dev/tty.usbmodem* flash monitor
 
 | 日付 | 内容 |
 |------|------|
+| 2025-12-01 | センサデータ整合性検証: 更新レート修正(Flow/AccelAtt)、V2パケットにbaro_ref_alt追加 |
+| 2025-12-01 | デバッグツール整理: visualize_device_log.pyに統合、V2デフォルト化、archive/移動 |
+| 2025-12-01 | 地磁気キャリブレーション実装: Hard Iron/Soft Iron補正、CLIコマンド(magcal)、NVS保存 |
 | 2025-12-01 | 実機ESKFデバッグ: mag_enabled処理修正、Yaw固定モード実装、test_v17でPosition安定化達成 |
 | 2025-11-30 | PCデバッグ済みESKFパラメータを実機コードに完全反映（オフセット、Q/R、updateFlowWithGyro） |
 | 2025-11-30 | 自動キャリブレーションフレームワーク設計完了（docs/auto_calibration_design.md） |

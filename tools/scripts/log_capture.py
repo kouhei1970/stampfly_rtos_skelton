@@ -3,17 +3,17 @@
 log_capture.py - StampFly Binary Log Capture Tool
 
 Captures binary sensor log packets from StampFly via USB serial and saves to file.
-Automatically sends 'binlog on/off' or 'binlog v2' commands to control the device.
+Automatically sends 'binlog on/off' commands to control the device.
 
-Supports two packet formats:
-- V1 (64 bytes): Sensor data only (Header: 0xAA 0x55)
-- V2 (128 bytes): Sensor data + ESKF estimates (Header: 0xAA 0x56)
+Packet format (128 bytes): Header 0xAA 0x56
+Contains: IMU, Mag, Baro, ToF, Flow, ESKF estimates
 
 Usage:
     python log_capture.py capture --port /dev/tty.usbmodem* --output sensor_log.bin --duration 60
-    python log_capture.py capture --port /dev/tty.usbmodem* --output eskf_log.bin --duration 60 --v2
     python log_capture.py convert --input sensor_log.bin --output sensor_log.csv
     python log_capture.py info sensor_log.bin
+
+Note: V1 format (64 bytes) is deprecated but still supported for reading old logs.
 """
 
 import argparse
@@ -240,16 +240,13 @@ def send_command(ser: serial.Serial, command: str, wait_response: bool = True, d
     return response.decode('utf-8', errors='ignore')
 
 
-def find_sync(ser: serial.Serial, timeout: float = 5.0, debug: bool = False, v2: bool = False) -> tuple[bool, int]:
-    """Find packet sync header (0xAA 0x55 for V1, 0xAA 0x56 for V2)
+def find_sync(ser: serial.Serial, timeout: float = 5.0, debug: bool = False) -> tuple[bool, int]:
+    """Find packet sync header (0xAA 0x56 for current format, 0xAA 0x55 for legacy V1)
     Returns: (success, version)
     """
     start_time = time.time()
     buffer = bytearray()
     bytes_seen = 0
-
-    target_header = HEADER_V2 if v2 else HEADER_V1
-    expected_version = 2 if v2 else 1
 
     while time.time() - start_time < timeout:
         if ser.in_waiting > 0:
@@ -266,11 +263,17 @@ def find_sync(ser: serial.Serial, timeout: float = 5.0, debug: bool = False, v2:
             if len(buffer) > 2:
                 buffer.pop(0)
 
-            # Check for headers (support both V1 and V2)
-            if bytes(buffer) == target_header:
+            # Check for V2 header (current format)
+            if bytes(buffer) == HEADER_V2:
                 if debug:
-                    print(f"\n[DEBUG] Found V{expected_version} sync after {bytes_seen} bytes")
-                return True, expected_version
+                    print(f"\n[DEBUG] Found V2 sync after {bytes_seen} bytes")
+                return True, 2
+
+            # Check for V1 header (legacy format)
+            if bytes(buffer) == HEADER_V1:
+                if debug:
+                    print(f"\n[DEBUG] Found V1 (legacy) sync after {bytes_seen} bytes")
+                return True, 1
 
     if debug:
         print(f"\n[DEBUG] No sync found, saw {bytes_seen} bytes total")
@@ -290,7 +293,7 @@ def signal_handler(signum, frame):
 
 
 def capture_log(port: str, output: str, duration: float, baudrate: int = 115200,
-                show_live: bool = False, auto_control: bool = True, debug: bool = False, v2: bool = False):
+                show_live: bool = False, auto_control: bool = True, debug: bool = False):
     """
     Capture binary log from serial port and save to file
 
@@ -302,17 +305,12 @@ def capture_log(port: str, output: str, duration: float, baudrate: int = 115200,
         show_live: Show live packet data
         auto_control: Automatically send binlog on/off commands
         debug: Enable debug output
-        v2: Use V2 packet format (with ESKF estimates)
     """
     global _capture_running, _serial_port
     _capture_running = True
 
-    packet_size = PACKET_SIZE_V2 if v2 else PACKET_SIZE_V1
-    target_header = HEADER_V2 if v2 else HEADER_V1
-    version_str = "V2" if v2 else "V1"
-
     print(f"Opening serial port: {port} @ {baudrate} baud")
-    print(f"Packet format: {version_str} ({packet_size} bytes)")
+    print(f"Packet format: 128 bytes (sensor + ESKF)")
 
     try:
         ser = serial.Serial(port, baudrate, timeout=0.1)
@@ -334,7 +332,7 @@ def capture_log(port: str, output: str, duration: float, baudrate: int = 115200,
         time.sleep(0.1)
 
     if auto_control:
-        cmd = "binlog v2" if v2 else "binlog on"
+        cmd = "binlog on"
         print(f"Sending '{cmd}' command...")
         response = send_command(ser, cmd, wait_response=True, debug=debug)
         # Filter out binary data (non-printable chars) from response for display
@@ -346,10 +344,9 @@ def capture_log(port: str, output: str, duration: float, baudrate: int = 115200,
         # Wait for ESP_LOG to be suppressed and binary stream to start
         time.sleep(0.3)
 
-    header_str = f"0x{target_header[0]:02X} 0x{target_header[1]:02X}"
-    print(f"Waiting for sync header ({header_str})...")
+    print("Waiting for sync header (0xAA 0x56)...")
 
-    found, version = find_sync(ser, timeout=10.0, debug=debug, v2=v2)
+    found, version = find_sync(ser, timeout=10.0, debug=debug)
     if not found:
         print("Timeout waiting for sync header.")
         if auto_control:
@@ -358,7 +355,18 @@ def capture_log(port: str, output: str, duration: float, baudrate: int = 115200,
         ser.close()
         sys.exit(1)
 
-    print(f"Sync found ({version_str})! Starting capture for {duration} seconds...")
+    # Determine packet parameters based on detected version
+    if version == 1:
+        print("Warning: Detected legacy V1 format. Device may need firmware update.")
+        packet_size = PACKET_SIZE_V1
+        target_header = HEADER_V1
+        packet_class = BinaryLogPacketV1
+    else:
+        packet_size = PACKET_SIZE_V2
+        target_header = HEADER_V2
+        packet_class = BinaryLogPacketV2
+
+    print(f"Sync found (V{version})! Starting capture for {duration} seconds...")
     print(f"Output file: {output}")
     print("Press Ctrl+C to stop early\n")
 
@@ -381,7 +389,7 @@ def capture_log(port: str, output: str, duration: float, baudrate: int = 115200,
 
                 if need_header:
                     # Read header first
-                    found, _ = find_sync(ser, timeout=0.5, debug=False, v2=v2)
+                    found, _ = find_sync(ser, timeout=0.5, debug=False)
                     if not found:
                         continue
                     # Header consumed by find_sync, start with header bytes
@@ -404,10 +412,7 @@ def capture_log(port: str, output: str, duration: float, baudrate: int = 115200,
                     continue
 
                 try:
-                    if v2:
-                        pkt = BinaryLogPacketV2(bytes(data))
-                    else:
-                        pkt = BinaryLogPacketV1(bytes(data))
+                    pkt = packet_class(bytes(data))
                 except Exception:
                     continue
 
@@ -452,7 +457,7 @@ def capture_log(port: str, output: str, duration: float, baudrate: int = 115200,
 
     actual_duration = time.time() - start_time
     print(f"\nCapture complete!")
-    print(f"  Packet format: {version_str}")
+    print(f"  Packet format: V{version} ({packet_size} bytes)")
     print(f"  Total packets: {packet_count}")
     print(f"  Checksum errors: {error_count}")
     print(f"  Error rate: {error_count / (packet_count + error_count) * 100:.2f}%" if packet_count + error_count > 0 else "  Error rate: N/A")
@@ -565,8 +570,6 @@ def main():
                                 help='Do not auto-send binlog on/off commands')
     capture_parser.add_argument('--debug', action='store_true',
                                 help='Enable debug output')
-    capture_parser.add_argument('--v2', action='store_true',
-                                help='Use V2 packet format (128B with ESKF estimates)')
 
     # Convert command
     convert_parser = subparsers.add_parser('convert', help='Convert binary log to CSV')
@@ -581,7 +584,7 @@ def main():
 
     if args.command == 'capture':
         capture_log(args.port, args.output, args.duration, args.baudrate,
-                    args.live, auto_control=not args.no_auto, debug=args.debug, v2=args.v2)
+                    args.live, auto_control=not args.no_auto, debug=args.debug)
 
     elif args.command == 'convert':
         convert_to_csv(args.input, args.output)

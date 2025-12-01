@@ -18,6 +18,7 @@
 // Sensor drivers
 #include "bmi270_wrapper.hpp"
 #include "bmm150.hpp"
+#include "mag_calibration.hpp"
 #include "bmp280.hpp"
 #include "vl53l3cx_wrapper.hpp"
 #include "pmw3901_wrapper.hpp"
@@ -107,10 +108,14 @@ static constexpr uint32_t STACK_SIZE_CLI = 4096;
 // Global Component Instances
 // =============================================================================
 
+// Global magnetometer calibrator (accessible from CLI)
+stampfly::MagCalibrator* g_mag_calibrator = nullptr;
+
 namespace {
     // Sensors
     stampfly::BMI270Wrapper g_imu;
     stampfly::BMM150 g_mag;
+    stampfly::MagCalibrator g_mag_cal;  // Magnetometer calibrator instance
     stampfly::BMP280 g_baro;
     stampfly::VL53L3CXWrapper g_tof_bottom;
     stampfly::VL53L3CXWrapper g_tof_front;
@@ -432,18 +437,37 @@ static void MagTask(void* pvParameters)
                 float mag_body_y = mag.x;   // 右正
                 float mag_body_z = mag.z;   // 下正 (NED)
 
-                // Update state (no outlier filter for now - needs calibration first)
-                state.updateMag(mag_body_x, mag_body_y, mag_body_z);
+                // キャリブレーションデータ収集中の場合
+                if (g_mag_cal.getState() == stampfly::MagCalibrator::State::COLLECTING) {
+                    g_mag_cal.addSample(mag_body_x, mag_body_y, mag_body_z);
+                }
 
-                // 地磁気によるYaw補正（ESKF）- 現在無効
-                // eskf_update_counter++;
-                // if (eskf_update_counter >= ESKF_UPDATE_DIVISOR) {
-                //     eskf_update_counter = 0;
-                //     stampfly::math::Vector3 m(mag_body_x, mag_body_y, mag_body_z);
-                //     if (g_eskf.isInitialized()) {
-                //         g_eskf.updateMag(m);
-                //     }
-                // }
+                // キャリブレーション適用
+                float cal_mag_x, cal_mag_y, cal_mag_z;
+                if (g_mag_cal.isCalibrated()) {
+                    g_mag_cal.applyCalibration(mag_body_x, mag_body_y, mag_body_z,
+                                                cal_mag_x, cal_mag_y, cal_mag_z);
+                } else {
+                    // キャリブレーション未実施の場合は生データをそのまま使用
+                    cal_mag_x = mag_body_x;
+                    cal_mag_y = mag_body_y;
+                    cal_mag_z = mag_body_z;
+                }
+
+                // Update state with calibrated data
+                state.updateMag(cal_mag_x, cal_mag_y, cal_mag_z);
+
+                // 地磁気によるYaw補正（ESKF）- キャリブレーション済みの場合のみ有効化
+                if (g_mag_cal.isCalibrated()) {
+                    eskf_update_counter++;
+                    if (eskf_update_counter >= ESKF_UPDATE_DIVISOR) {
+                        eskf_update_counter = 0;
+                        stampfly::math::Vector3 m(cal_mag_x, cal_mag_y, cal_mag_z);
+                        if (g_eskf.isInitialized()) {
+                            g_eskf.updateMag(m);
+                        }
+                    }
+                }
             }
         }
 
@@ -478,6 +502,7 @@ static void BaroTask(void* pvParameters)
                     if (!g_baro_reference_set) {
                         g_baro_reference_altitude = baro.altitude_m;
                         g_baro_reference_set = true;
+                        state.setBaroReferenceAltitude(g_baro_reference_altitude);
                         ESP_LOGI(TAG, "Baro reference set: %.3f m", g_baro_reference_altitude);
                     }
                     // 相対高度を計算（上昇=プラス）
@@ -1132,11 +1157,21 @@ static esp_err_t initEstimators()
         g_gyro_lpf[i].init(400.0f, 100.0f);   // 400Hz sampling, 100Hz cutoff
     }
 
+    // Initialize magnetometer calibrator and load from NVS
+    g_mag_calibrator = &g_mag_cal;  // Set global pointer for CLI access
+    if (g_mag_cal.loadFromNVS() == ESP_OK) {
+        ESP_LOGI(TAG, "Magnetometer calibration loaded from NVS");
+    } else {
+        ESP_LOGW(TAG, "No magnetometer calibration found in NVS");
+    }
+
     // ESKF (15-state Error-State Kalman Filter)
     {
         auto& state = stampfly::StampFlyState::getInstance();
         auto cfg = stampfly::ESKF::Config::defaultConfig();
-        cfg.mag_enabled = false;  // 地磁気無効（安定性優先）
+        // 地磁気はキャリブレーション済みの場合のみ有効化
+        cfg.mag_enabled = g_mag_cal.isCalibrated();
+        ESP_LOGI(TAG, "ESKF mag_enabled: %s", cfg.mag_enabled ? "true" : "false");
         esp_err_t ret = g_eskf.init(cfg);
         if (ret != ESP_OK) {
             ESP_LOGW(TAG, "ESKF init failed: %s", esp_err_to_name(ret));

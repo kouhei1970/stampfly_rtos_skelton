@@ -14,6 +14,7 @@
 
 #include "cli.hpp"
 #include "stampfly_state.hpp"
+#include "mag_calibration.hpp"
 #include "esp_log.h"
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
@@ -27,6 +28,9 @@
 
 static const char* TAG = "CLI";
 
+// External reference to magnetometer calibrator (defined in main.cpp)
+extern stampfly::MagCalibrator* g_mag_calibrator;
+
 namespace stampfly {
 
 // Forward declarations for command handlers
@@ -36,7 +40,9 @@ static void cmd_sensor(int argc, char** argv, void* context);
 static void cmd_teleplot(int argc, char** argv, void* context);
 static void cmd_log(int argc, char** argv, void* context);
 static void cmd_binlog(int argc, char** argv, void* context);
+static void cmd_loglevel(int argc, char** argv, void* context);
 static void cmd_calib(int argc, char** argv, void* context);
+static void cmd_magcal(int argc, char** argv, void* context);
 static void cmd_motor(int argc, char** argv, void* context);
 static void cmd_pair(int argc, char** argv, void* context);
 static void cmd_unpair(int argc, char** argv, void* context);
@@ -190,8 +196,10 @@ void CLI::registerDefaultCommands()
     registerCommand("sensor", cmd_sensor, "Show sensor data", this);
     registerCommand("teleplot", cmd_teleplot, "Teleplot stream [on|off]", this);
     registerCommand("log", cmd_log, "CSV log [on|off|header]", this);
-    registerCommand("binlog", cmd_binlog, "Binary log [on|off] @100Hz", this);
+    registerCommand("binlog", cmd_binlog, "Binary log [on|off] @100Hz (128B)", this);
+    registerCommand("loglevel", cmd_loglevel, "Set ESP_LOG level [none|error|warn|info|debug|verbose]", this);
     registerCommand("calib", cmd_calib, "Run calibration", this);
+    registerCommand("magcal", cmd_magcal, "Mag calibration [start|stop|status|save|clear]", this);
     registerCommand("motor", cmd_motor, "Motor control", this);
     registerCommand("pair", cmd_pair, "Enter pairing mode", this);
     registerCommand("unpair", cmd_unpair, "Clear pairing", this);
@@ -335,31 +343,22 @@ static void cmd_binlog(int argc, char** argv, void* context)
     CLI* cli = static_cast<CLI*>(context);
 
     if (argc < 2) {
-        cli->print("Usage: binlog [on|off|v2]\r\n");
-        cli->print("  on  - Start V1 binary logging (100Hz, 64B/pkt, sensor only)\r\n");
-        cli->print("  v2  - Start V2 binary logging (100Hz, 128B/pkt, sensor + ESKF)\r\n");
+        cli->print("Usage: binlog [on|off]\r\n");
+        cli->print("  on  - Start binary logging (100Hz, 128B/pkt, sensor + ESKF)\r\n");
         cli->print("  off - Stop binary logging\r\n");
-        cli->print("Current: %s%s, samples: %lu\r\n",
-                   cli->isBinlogEnabled() ? "V1" : (cli->isBinlogV2Enabled() ? "V2" : "off"),
-                   (cli->isBinlogEnabled() || cli->isBinlogV2Enabled()) ? " on" : "",
+        cli->print("Current: %s, samples: %lu\r\n",
+                   cli->isBinlogV2Enabled() ? "on" : "off",
                    (unsigned long)cli->getBinlogCounter());
-        cli->print("\r\nV1 Packet format (64 bytes): Header 0xAA 0x55\r\n");
-        cli->print("V2 Packet format (128 bytes): Header 0xAA 0x56 + ESKF estimates\r\n");
+        cli->print("\r\nPacket format (128 bytes): Header 0xAA 0x56\r\n");
+        cli->print("Contains: IMU, Mag, Baro, ToF, Flow, ESKF estimates\r\n");
         return;
     }
 
     if (strcmp(argv[1], "on") == 0) {
         cli->resetBinlogCounter();
-        cli->setBinlogV2Enabled(false);
+        cli->setBinlogEnabled(false);  // Ensure V1 is off
         esp_log_level_set("*", ESP_LOG_NONE);
-        cli->print("Binary logging V1 ON (100Hz, 64B) - ESP_LOG suppressed\r\n");
-        vTaskDelay(pdMS_TO_TICKS(100));
-        cli->setBinlogEnabled(true);
-    } else if (strcmp(argv[1], "v2") == 0) {
-        cli->resetBinlogCounter();
-        cli->setBinlogEnabled(false);
-        esp_log_level_set("*", ESP_LOG_NONE);
-        cli->print("Binary logging V2 ON (100Hz, 128B) - ESP_LOG suppressed\r\n");
+        cli->print("Binary logging ON (100Hz, 128B) - ESP_LOG suppressed\r\n");
         vTaskDelay(pdMS_TO_TICKS(100));
         cli->setBinlogV2Enabled(true);
     } else if (strcmp(argv[1], "off") == 0) {
@@ -369,8 +368,56 @@ static void cmd_binlog(int argc, char** argv, void* context)
         cli->print("Binary logging OFF, total samples: %lu\r\n",
                    (unsigned long)cli->getBinlogCounter());
     } else {
-        cli->print("Usage: binlog [on|off|v2]\r\n");
+        cli->print("Usage: binlog [on|off]\r\n");
     }
+}
+
+static void cmd_loglevel(int argc, char** argv, void* context)
+{
+    CLI* cli = static_cast<CLI*>(context);
+
+    // Current log level names
+    static const char* level_names[] = {
+        "none", "error", "warn", "info", "debug", "verbose"
+    };
+
+    if (argc < 2) {
+        cli->print("Usage: loglevel [none|error|warn|info|debug|verbose] [tag]\r\n");
+        cli->print("  none    - No log output\r\n");
+        cli->print("  error   - Errors only\r\n");
+        cli->print("  warn    - Warnings and errors\r\n");
+        cli->print("  info    - Info, warnings, errors (default)\r\n");
+        cli->print("  debug   - Debug and above\r\n");
+        cli->print("  verbose - All messages\r\n");
+        cli->print("  [tag]   - Optional: specific component (e.g., 'main', 'ESKF')\r\n");
+        cli->print("            If omitted, applies to all components ('*')\r\n");
+        return;
+    }
+
+    const char* level_str = argv[1];
+    const char* tag = (argc >= 3) ? argv[2] : "*";  // Default to all tags
+
+    esp_log_level_t level;
+    if (strcmp(level_str, "none") == 0) {
+        level = ESP_LOG_NONE;
+    } else if (strcmp(level_str, "error") == 0) {
+        level = ESP_LOG_ERROR;
+    } else if (strcmp(level_str, "warn") == 0) {
+        level = ESP_LOG_WARN;
+    } else if (strcmp(level_str, "info") == 0) {
+        level = ESP_LOG_INFO;
+    } else if (strcmp(level_str, "debug") == 0) {
+        level = ESP_LOG_DEBUG;
+    } else if (strcmp(level_str, "verbose") == 0) {
+        level = ESP_LOG_VERBOSE;
+    } else {
+        cli->print("Unknown log level: %s\r\n", level_str);
+        cli->print("Available: none, error, warn, info, debug, verbose\r\n");
+        return;
+    }
+
+    esp_log_level_set(tag, level);
+    cli->print("Log level set to '%s' for tag '%s'\r\n", level_names[level], tag);
 }
 
 static void cmd_calib(int argc, char** argv, void* context)
@@ -403,6 +450,153 @@ static void cmd_calib(int argc, char** argv, void* context)
     }
     else {
         cli->print("Unknown calibration type: %s\r\n", type);
+    }
+}
+
+// Global CLI pointer for magcal log callback
+static CLI* g_magcal_cli = nullptr;
+
+// Callback function for magnetometer calibration log messages
+static void magcal_log_callback(const char* message)
+{
+    if (g_magcal_cli) {
+        g_magcal_cli->print("%s\r\n", message);
+    }
+}
+
+static void cmd_magcal(int argc, char** argv, void* context)
+{
+    CLI* cli = static_cast<CLI*>(context);
+    g_magcal_cli = cli;  // Set global for callback
+
+    if (g_mag_calibrator == nullptr) {
+        cli->print("Magnetometer calibrator not available\r\n");
+        return;
+    }
+
+    // Set log callback so calibration messages appear on CLI regardless of ESP_LOG level
+    g_mag_calibrator->setLogCallback(magcal_log_callback);
+
+    if (argc < 2) {
+        cli->print("Usage: magcal [start|stop|status|save|clear]\r\n");
+        cli->print("  start  - Start calibration (rotate device in figure-8)\r\n");
+        cli->print("  stop   - Stop calibration and compute result\r\n");
+        cli->print("  status - Show calibration status\r\n");
+        cli->print("  save   - Save calibration to NVS\r\n");
+        cli->print("  clear  - Clear saved calibration\r\n");
+        return;
+    }
+
+    const char* cmd = argv[1];
+
+    if (strcmp(cmd, "start") == 0) {
+        if (g_mag_calibrator->getState() == MagCalibrator::State::COLLECTING) {
+            cli->print("Calibration already in progress\r\n");
+            return;
+        }
+        if (g_mag_calibrator->startCalibration() == ESP_OK) {
+            cli->print("Magnetometer calibration started\r\n");
+            cli->print("Slowly rotate device in all directions (figure-8 pattern)\r\n");
+            cli->print("Need at least %d samples. Use 'magcal status' to check progress.\r\n",
+                       MagCalibrator::MIN_SAMPLES);
+            cli->print("Use 'magcal stop' when done.\r\n");
+        } else {
+            cli->print("Failed to start calibration\r\n");
+        }
+    }
+    else if (strcmp(cmd, "stop") == 0) {
+        auto state = g_mag_calibrator->getState();
+        if (state != MagCalibrator::State::COLLECTING) {
+            cli->print("No calibration in progress\r\n");
+            return;
+        }
+
+        cli->print("Computing calibration from %d samples...\r\n",
+                   g_mag_calibrator->getSampleCount());
+
+        if (g_mag_calibrator->computeCalibration() == ESP_OK) {
+            auto& cal = g_mag_calibrator->getCalibration();
+            cli->print("\r\n=== Calibration Result ===\r\n");
+            cli->print("Hard Iron Offset:\r\n");
+            cli->print("  X: %.2f uT\r\n", cal.offset_x);
+            cli->print("  Y: %.2f uT\r\n", cal.offset_y);
+            cli->print("  Z: %.2f uT\r\n", cal.offset_z);
+            cli->print("Soft Iron Scale:\r\n");
+            cli->print("  X: %.3f\r\n", cal.scale_x);
+            cli->print("  Y: %.3f\r\n", cal.scale_y);
+            cli->print("  Z: %.3f\r\n", cal.scale_z);
+            cli->print("Sphere Radius: %.2f uT\r\n", cal.sphere_radius);
+            cli->print("Fitness: %.2f (higher is better)\r\n", cal.fitness);
+            cli->print("\r\nUse 'magcal save' to persist to NVS\r\n");
+        } else {
+            cli->print("Calibration failed. Try again with more samples and better coverage.\r\n");
+        }
+    }
+    else if (strcmp(cmd, "status") == 0) {
+        auto state = g_mag_calibrator->getState();
+        const char* state_str = "Unknown";
+        switch (state) {
+            case MagCalibrator::State::IDLE: state_str = "Idle"; break;
+            case MagCalibrator::State::COLLECTING: state_str = "Collecting"; break;
+            case MagCalibrator::State::COMPUTING: state_str = "Computing"; break;
+            case MagCalibrator::State::DONE: state_str = "Done"; break;
+            case MagCalibrator::State::ERROR: state_str = "Error"; break;
+        }
+        cli->print("State: %s\r\n", state_str);
+        cli->print("Samples: %d / %d\r\n",
+                   g_mag_calibrator->getSampleCount(),
+                   MagCalibrator::MIN_SAMPLES);
+        cli->print("Progress: %.0f%%\r\n", g_mag_calibrator->getProgress() * 100.0f);
+
+        if (g_mag_calibrator->isCalibrated()) {
+            auto& cal = g_mag_calibrator->getCalibration();
+            cli->print("Calibrated: Yes\r\n");
+            cli->print("  Offset: [%.2f, %.2f, %.2f] uT\r\n",
+                       cal.offset_x, cal.offset_y, cal.offset_z);
+            cli->print("  Scale:  [%.3f, %.3f, %.3f]\r\n",
+                       cal.scale_x, cal.scale_y, cal.scale_z);
+        } else {
+            cli->print("Calibrated: No\r\n");
+        }
+
+        // Show current mag reading
+        // Note: StampFlyState stores calibrated data (if calibration is active)
+        auto& mstate = StampFlyState::getInstance();
+        Vec3 mag;
+        mstate.getMagData(mag);
+
+        if (g_mag_calibrator->isCalibrated()) {
+            // Data in state is already calibrated
+            cli->print("Calibrated Mag: [%.1f, %.1f, %.1f] uT, norm=%.1f\r\n",
+                       mag.x, mag.y, mag.z,
+                       sqrtf(mag.x*mag.x + mag.y*mag.y + mag.z*mag.z));
+        } else {
+            cli->print("Raw Mag: [%.1f, %.1f, %.1f] uT, norm=%.1f\r\n",
+                       mag.x, mag.y, mag.z,
+                       sqrtf(mag.x*mag.x + mag.y*mag.y + mag.z*mag.z));
+        }
+    }
+    else if (strcmp(cmd, "save") == 0) {
+        if (!g_mag_calibrator->isCalibrated()) {
+            cli->print("No valid calibration to save\r\n");
+            return;
+        }
+        if (g_mag_calibrator->saveToNVS() == ESP_OK) {
+            cli->print("Calibration saved to NVS\r\n");
+        } else {
+            cli->print("Failed to save calibration\r\n");
+        }
+    }
+    else if (strcmp(cmd, "clear") == 0) {
+        if (g_mag_calibrator->clearNVS() == ESP_OK) {
+            cli->print("Calibration cleared from NVS\r\n");
+        } else {
+            cli->print("Failed to clear calibration\r\n");
+        }
+    }
+    else {
+        cli->print("Unknown subcommand: %s\r\n", cmd);
+        cli->print("Usage: magcal [start|stop|status|save|clear]\r\n");
     }
 }
 
@@ -748,8 +942,9 @@ void CLI::outputBinaryLogV2()
     pkt.accel_bias_x = accel_bias.x;
     pkt.accel_bias_y = accel_bias.y;
 
-    // Status
+    // Status and metadata
     pkt.eskf_status = state.isESKFInitialized() ? 1 : 0;
+    pkt.baro_ref_alt = state.getBaroReferenceAltitude();
     memset(pkt.reserved, 0, sizeof(pkt.reserved));
 
     // Calculate checksum (XOR of bytes 2-126)

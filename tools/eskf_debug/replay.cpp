@@ -21,9 +21,9 @@
 using namespace stampfly;
 using namespace stampfly::math;
 
-// Binary log packet structure (must match cli.hpp)
+// Binary log packet structure V1 (must match cli.hpp)
 #pragma pack(push, 1)
-struct BinaryLogPacket {
+struct BinaryLogPacketV1 {
     uint8_t header[2];      // 0xAA, 0x55
     uint32_t timestamp_ms;
     float accel_x, accel_y, accel_z;
@@ -40,9 +40,76 @@ struct BinaryLogPacket {
 };
 #pragma pack(pop)
 
-static_assert(sizeof(BinaryLogPacket) == 64, "Packet size mismatch");
+static_assert(sizeof(BinaryLogPacketV1) == 64, "V1 Packet size mismatch");
 
-bool verify_checksum(const BinaryLogPacket& pkt)
+// Binary log packet structure V2 (must match cli.hpp)
+#pragma pack(push, 1)
+struct BinaryLogPacketV2 {
+    // Header (2 bytes)
+    uint8_t header[2];      // 0xAA, 0x56 (V2)
+
+    // Timestamp (4 bytes)
+    uint32_t timestamp_ms;
+
+    // IMU data (24 bytes)
+    float accel_x, accel_y, accel_z;
+    float gyro_x, gyro_y, gyro_z;
+
+    // Magnetometer (12 bytes)
+    float mag_x, mag_y, mag_z;
+
+    // Barometer (8 bytes)
+    float pressure;
+    float baro_alt;
+
+    // ToF (8 bytes)
+    float tof_bottom;
+    float tof_front;
+
+    // Optical Flow (5 bytes)
+    int16_t flow_dx;
+    int16_t flow_dy;
+    uint8_t flow_squal;
+
+    // === ESKF Estimates from device (52 bytes) ===
+    float pos_x, pos_y, pos_z;
+    float vel_x, vel_y, vel_z;
+    float roll, pitch, yaw;
+    float gyro_bias_z;
+    float accel_bias_x, accel_bias_y;
+
+    // Status + metadata (17 bytes)
+    uint8_t eskf_status;
+    float baro_ref_alt;     // [m] barometer reference altitude
+    uint8_t reserved[11];
+    uint8_t checksum;
+};
+#pragma pack(pop)
+
+static_assert(sizeof(BinaryLogPacketV2) == 128, "V2 Packet size mismatch");
+
+// Common packet data for ESKF processing
+struct SensorData {
+    uint32_t timestamp_ms;
+    float accel_x, accel_y, accel_z;
+    float gyro_x, gyro_y, gyro_z;
+    float mag_x, mag_y, mag_z;
+    float pressure;
+    float baro_alt;
+    float baro_ref_alt;     // Reference altitude from device
+    float tof_bottom;
+    float tof_front;
+    int16_t flow_dx;
+    int16_t flow_dy;
+    uint8_t flow_squal;
+    // Device ESKF estimates (for comparison, V2 only)
+    float dev_pos_x, dev_pos_y, dev_pos_z;
+    float dev_vel_x, dev_vel_y, dev_vel_z;
+    float dev_roll, dev_pitch, dev_yaw;
+    bool has_device_eskf;
+};
+
+bool verify_checksum_v1(const BinaryLogPacketV1& pkt)
 {
     const uint8_t* data = reinterpret_cast<const uint8_t*>(&pkt);
     uint8_t checksum = 0;
@@ -52,9 +119,43 @@ bool verify_checksum(const BinaryLogPacket& pkt)
     return checksum == pkt.checksum;
 }
 
-std::vector<BinaryLogPacket> load_log_file(const char* filename)
+bool verify_checksum_v2(const BinaryLogPacketV2& pkt)
 {
-    std::vector<BinaryLogPacket> packets;
+    const uint8_t* data = reinterpret_cast<const uint8_t*>(&pkt);
+    uint8_t checksum = 0;
+    for (int i = 2; i < 127; i++) {
+        checksum ^= data[i];
+    }
+    return checksum == pkt.checksum;
+}
+
+// Detect log format and return version (1 or 2, 0 if unknown)
+int detect_log_format(const char* filename)
+{
+    FILE* f = fopen(filename, "rb");
+    if (!f) return 0;
+
+    uint8_t header[2];
+    if (fread(header, 1, 2, f) != 2) {
+        fclose(f);
+        return 0;
+    }
+    fclose(f);
+
+    if (header[0] == 0xAA && header[1] == 0x55) return 1;
+    if (header[0] == 0xAA && header[1] == 0x56) return 2;
+    return 0;
+}
+
+std::vector<SensorData> load_log_file(const char* filename, int& version)
+{
+    std::vector<SensorData> packets;
+
+    version = detect_log_format(filename);
+    if (version == 0) {
+        fprintf(stderr, "Error: Unknown log format in %s\n", filename);
+        return packets;
+    }
 
     FILE* f = fopen(filename, "rb");
     if (!f) {
@@ -62,19 +163,91 @@ std::vector<BinaryLogPacket> load_log_file(const char* filename)
         return packets;
     }
 
-    BinaryLogPacket pkt;
-    while (fread(&pkt, sizeof(pkt), 1, f) == 1) {
-        if (pkt.header[0] == 0xAA && pkt.header[1] == 0x55) {
-            if (verify_checksum(pkt)) {
-                packets.push_back(pkt);
-            } else {
-                fprintf(stderr, "Warning: Checksum error at packet %zu\n", packets.size());
+    printf("Detected log format: V%d (%d bytes/packet)\n", version, version == 1 ? 64 : 128);
+
+    int checksum_errors = 0;
+
+    if (version == 1) {
+        BinaryLogPacketV1 pkt;
+        while (fread(&pkt, sizeof(pkt), 1, f) == 1) {
+            if (pkt.header[0] == 0xAA && pkt.header[1] == 0x55) {
+                if (verify_checksum_v1(pkt)) {
+                    SensorData data = {};
+                    data.timestamp_ms = pkt.timestamp_ms;
+                    data.accel_x = pkt.accel_x;
+                    data.accel_y = pkt.accel_y;
+                    data.accel_z = pkt.accel_z;
+                    data.gyro_x = pkt.gyro_x;
+                    data.gyro_y = pkt.gyro_y;
+                    data.gyro_z = pkt.gyro_z;
+                    data.mag_x = pkt.mag_x;
+                    data.mag_y = pkt.mag_y;
+                    data.mag_z = pkt.mag_z;
+                    data.pressure = pkt.pressure;
+                    data.baro_alt = pkt.baro_alt;
+                    data.baro_ref_alt = 0.0f;  // V1 has no reference, will use first packet
+                    data.tof_bottom = pkt.tof_bottom;
+                    data.tof_front = pkt.tof_front;
+                    data.flow_dx = pkt.flow_dx;
+                    data.flow_dy = pkt.flow_dy;
+                    data.flow_squal = pkt.flow_squal;
+                    data.has_device_eskf = false;
+                    packets.push_back(data);
+                } else {
+                    checksum_errors++;
+                }
+            }
+        }
+    } else {
+        BinaryLogPacketV2 pkt;
+        while (fread(&pkt, sizeof(pkt), 1, f) == 1) {
+            if (pkt.header[0] == 0xAA && pkt.header[1] == 0x56) {
+                if (verify_checksum_v2(pkt)) {
+                    SensorData data = {};
+                    data.timestamp_ms = pkt.timestamp_ms;
+                    data.accel_x = pkt.accel_x;
+                    data.accel_y = pkt.accel_y;
+                    data.accel_z = pkt.accel_z;
+                    data.gyro_x = pkt.gyro_x;
+                    data.gyro_y = pkt.gyro_y;
+                    data.gyro_z = pkt.gyro_z;
+                    data.mag_x = pkt.mag_x;
+                    data.mag_y = pkt.mag_y;
+                    data.mag_z = pkt.mag_z;
+                    data.pressure = pkt.pressure;
+                    data.baro_alt = pkt.baro_alt;
+                    data.baro_ref_alt = pkt.baro_ref_alt;
+                    data.tof_bottom = pkt.tof_bottom;
+                    data.tof_front = pkt.tof_front;
+                    data.flow_dx = pkt.flow_dx;
+                    data.flow_dy = pkt.flow_dy;
+                    data.flow_squal = pkt.flow_squal;
+                    // Device ESKF estimates
+                    data.dev_pos_x = pkt.pos_x;
+                    data.dev_pos_y = pkt.pos_y;
+                    data.dev_pos_z = pkt.pos_z;
+                    data.dev_vel_x = pkt.vel_x;
+                    data.dev_vel_y = pkt.vel_y;
+                    data.dev_vel_z = pkt.vel_z;
+                    data.dev_roll = pkt.roll;
+                    data.dev_pitch = pkt.pitch;
+                    data.dev_yaw = pkt.yaw;
+                    data.has_device_eskf = (pkt.eskf_status != 0);
+                    packets.push_back(data);
+                } else {
+                    checksum_errors++;
+                }
             }
         }
     }
 
     fclose(f);
-    printf("Loaded %zu packets from %s\n", packets.size(), filename);
+    printf("Loaded %zu packets from %s", packets.size(), filename);
+    if (checksum_errors > 0) {
+        printf(" (%d checksum errors)\n", checksum_errors);
+    } else {
+        printf("\n");
+    }
 
     return packets;
 }
@@ -102,10 +275,11 @@ int main(int argc, char* argv[])
     const char* output_file = argv[2];
 
     // Default update rates (as divisor of 100Hz base rate)
+    // Match device rates for accurate comparison
     int baro_rate = 2;    // 50Hz
     int tof_rate = 3;     // 33Hz
     int mag_rate = 10;    // 10Hz
-    int flow_rate = 5;    // 20Hz
+    int flow_rate = 1;    // 100Hz (device: 100Hz)
     int flow_squal_min = 30;
     bool verbose = false;
 
@@ -133,11 +307,13 @@ int main(int argc, char* argv[])
            100 / baro_rate, 100 / tof_rate, 100 / mag_rate, 100 / flow_rate);
 
     // Load log file
-    auto packets = load_log_file(input_file);
+    int log_version = 0;
+    auto packets = load_log_file(input_file, log_version);
     if (packets.empty()) {
         fprintf(stderr, "No valid packets found\n");
         return 1;
     }
+    bool has_device_eskf = (log_version == 2);
 
     // Initialize ESKF
     ESKF eskf;
@@ -181,11 +357,32 @@ int main(int argc, char* argv[])
     fprintf(out, "raw_accel_x,raw_accel_y,raw_accel_z,");
     fprintf(out, "raw_gyro_x,raw_gyro_y,raw_gyro_z,");
     fprintf(out, "raw_baro_alt,raw_tof,raw_flow_squal,");
-    fprintf(out, "raw_flow_dx,raw_flow_dy\n");
+    fprintf(out, "raw_flow_dx,raw_flow_dy");
+    if (has_device_eskf) {
+        // Add device ESKF columns for comparison
+        fprintf(out, ",dev_pos_x,dev_pos_y,dev_pos_z,");
+        fprintf(out, "dev_vel_x,dev_vel_y,dev_vel_z,");
+        fprintf(out, "dev_roll_deg,dev_pitch_deg,dev_yaw_deg");
+    }
+    fprintf(out, "\n");
 
     // Process packets
     uint32_t last_timestamp = packets[0].timestamp_ms;
     int packet_count = 0;
+
+    // Get baro reference altitude from device (V2) or use first packet (V1)
+    float baro_alt_reference = packets[0].baro_ref_alt;
+    if (std::abs(baro_alt_reference) < 0.001f) {
+        // V1 or invalid reference: use first packet's baro_alt as reference
+        baro_alt_reference = packets[0].baro_alt;
+        if (std::abs(baro_alt_reference) < 0.001f && packets[0].pressure > 80000.0f) {
+            constexpr float P0 = 101325.0f;
+            baro_alt_reference = 44330.0f * (1.0f - std::pow(packets[0].pressure / P0, 0.1903f));
+        }
+        printf("Baro reference (from first packet): %.3f m\n", baro_alt_reference);
+    } else {
+        printf("Baro reference (from device): %.3f m\n", baro_alt_reference);
+    }
 
     for (size_t i = 0; i < packets.size(); i++) {
         const auto& pkt = packets[i];
@@ -210,9 +407,9 @@ int main(int argc, char* argv[])
         eskf.predict(accel, gyro, dt);
 
         // Accel attitude update (uses gravity vector for roll/pitch correction)
-        // Run at 10Hz to avoid over-correction
+        // Run at 50Hz to match device (device: 100Hz/2 = 50Hz)
         static int accel_att_counter = 0;
-        if (++accel_att_counter >= 10) {
+        if (++accel_att_counter >= 2) {
             accel_att_counter = 0;
             eskf.updateAccelAttitude(accel);
         }
@@ -221,14 +418,17 @@ int main(int argc, char* argv[])
         #if 1
         // Measurement updates at lower rates
         // Note: If baro_alt is 0, calculate from pressure using barometric formula
+        // Use relative altitude from initial value
         float baro_alt = pkt.baro_alt;
         if (std::abs(baro_alt) < 0.001f && pkt.pressure > 80000.0f) {
             // Calculate altitude from pressure: h = 44330 * (1 - (P/P0)^0.1903)
             constexpr float P0 = 101325.0f;  // Sea level pressure [Pa]
             baro_alt = 44330.0f * (1.0f - std::pow(pkt.pressure / P0, 0.1903f));
         }
-        if (i % baro_rate == 0 && std::abs(baro_alt) > 0.001f) {
-            eskf.updateBaro(baro_alt);
+        // Convert to relative altitude (NED: down is positive, so negate)
+        float baro_alt_relative = -(baro_alt - baro_alt_reference);
+        if (i % baro_rate == 0) {
+            eskf.updateBaro(baro_alt_relative);
         }
 
         if (i % tof_rate == 0 && pkt.tof_bottom > 0.01f && pkt.tof_bottom < 4.0f) {
@@ -285,8 +485,20 @@ int main(int argc, char* argv[])
                 pkt.gyro_x, pkt.gyro_y, pkt.gyro_z);
         fprintf(out, "%.4f,%.4f,%d,",
                 pkt.baro_alt, pkt.tof_bottom, pkt.flow_squal);
-        fprintf(out, "%d,%d\n",
+        fprintf(out, "%d,%d",
                 pkt.flow_dx, pkt.flow_dy);
+        if (has_device_eskf) {
+            // Output device ESKF estimates for comparison
+            fprintf(out, ",%.6f,%.6f,%.6f,",
+                    pkt.dev_pos_x, pkt.dev_pos_y, pkt.dev_pos_z);
+            fprintf(out, "%.6f,%.6f,%.6f,",
+                    pkt.dev_vel_x, pkt.dev_vel_y, pkt.dev_vel_z);
+            fprintf(out, "%.4f,%.4f,%.4f",
+                    pkt.dev_roll * 180.0f / M_PI,
+                    pkt.dev_pitch * 180.0f / M_PI,
+                    pkt.dev_yaw * 180.0f / M_PI);
+        }
+        fprintf(out, "\n");
 
         packet_count++;
 
@@ -300,11 +512,13 @@ int main(int argc, char* argv[])
 
     // Final summary
     auto final_state = eskf.getState();
+    const auto& last_pkt = packets.back();
     printf("\n=== Replay Complete ===\n");
+    printf("Log format: V%d\n", log_version);
     printf("Processed %d packets\n", packet_count);
     printf("Duration: %.2f seconds\n",
            (packets.back().timestamp_ms - packets.front().timestamp_ms) / 1000.0f);
-    printf("\nFinal state:\n");
+    printf("\nPC ESKF Final state:\n");
     printf("  Position: [%.3f, %.3f, %.3f] m\n",
            final_state.position.x, final_state.position.y, final_state.position.z);
     printf("  Velocity: [%.3f, %.3f, %.3f] m/s\n",
@@ -315,6 +529,26 @@ int main(int argc, char* argv[])
            final_state.yaw * 180.0f / M_PI);
     printf("  Gyro bias: [%.6f, %.6f, %.6f] rad/s\n",
            final_state.gyro_bias.x, final_state.gyro_bias.y, final_state.gyro_bias.z);
+
+    if (has_device_eskf) {
+        printf("\nDevice ESKF Final state (from log):\n");
+        printf("  Position: [%.3f, %.3f, %.3f] m\n",
+               last_pkt.dev_pos_x, last_pkt.dev_pos_y, last_pkt.dev_pos_z);
+        printf("  Velocity: [%.3f, %.3f, %.3f] m/s\n",
+               last_pkt.dev_vel_x, last_pkt.dev_vel_y, last_pkt.dev_vel_z);
+        printf("  Attitude: roll=%.2f° pitch=%.2f° yaw=%.2f°\n",
+               last_pkt.dev_roll * 180.0f / M_PI,
+               last_pkt.dev_pitch * 180.0f / M_PI,
+               last_pkt.dev_yaw * 180.0f / M_PI);
+
+        // Calculate position error
+        float pos_err = std::sqrt(
+            std::pow(final_state.position.x - last_pkt.dev_pos_x, 2) +
+            std::pow(final_state.position.y - last_pkt.dev_pos_y, 2) +
+            std::pow(final_state.position.z - last_pkt.dev_pos_z, 2));
+        printf("\nPC vs Device position error: %.3f m\n", pos_err);
+    }
+
     printf("\nOutput written to: %s\n", output_file);
 
     return 0;

@@ -108,9 +108,10 @@ struct BinaryLogPacketV2 {
     float accel_bias_x;     // [m/s²]
     float accel_bias_y;
 
-    // Status + padding (17 bytes total to reach 128)
+    // Status + metadata (17 bytes total to reach 128)
     uint8_t eskf_status;    // 0=not initialized, 1=running
-    uint8_t reserved[15];   // padding to reach 128 bytes
+    float baro_ref_alt;     // [m] barometer reference altitude (for PC replay)
+    uint8_t reserved[11];   // padding to reach 128 bytes
     uint8_t checksum;       // XOR of bytes 2-126
 };
 #pragma pack(pop)

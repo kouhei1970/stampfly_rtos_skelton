@@ -369,6 +369,21 @@ bool StampFlyState::isESKFInitialized() const
     return init;
 }
 
+void StampFlyState::setBaroReferenceAltitude(float altitude)
+{
+    xSemaphoreTake(mutex_, portMAX_DELAY);
+    baro_reference_altitude_ = altitude;
+    xSemaphoreGive(mutex_);
+}
+
+float StampFlyState::getBaroReferenceAltitude() const
+{
+    xSemaphoreTake(mutex_, portMAX_DELAY);
+    float alt = baro_reference_altitude_;
+    xSemaphoreGive(mutex_);
+    return alt;
+}
+
 void StampFlyState::getControlInput(float& throttle, float& roll, float& pitch, float& yaw) const
 {
     xSemaphoreTake(mutex_, portMAX_DELAY);
