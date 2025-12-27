@@ -130,20 +130,22 @@ stampfly_opticalflow/
 
 These are set via `pmw3901_get_default_config()` and should not be changed unless using different hardware.
 
-### Velocity Calculation Methods
+### Velocity Estimation
 
-The driver implements two distinct velocity calculation approaches:
+**Note:** Velocity calculation functions have been removed from this driver.
+For proper velocity estimation, use `ESKF::updateFlowRaw()` which provides:
 
-1. **StampFly式 (Direct)**: `pmw3901_calculate_velocity_direct()`
-   - Directly calculates ground velocity: `velocity = -(0.0254 * delta * altitude / 11.914) / interval`
-   - Requires altitude from external sensor
-   - Best for simple position control
-   - Used in example code
+- **Physically correct calculation**: Converts pixel displacement to angular velocity using sensor FOV
+- **Gyro compensation**: Removes rotation component to extract pure translation
+- **Camera-to-body transformation**: Handles axis mapping between sensor and aircraft frame
+- **Kalman filter integration**: Fuses with other sensor data for robust estimation
 
-2. **PX4式 (Angular Flow)**: `pmw3901_calculate_flow_rate()` + `pmw3901_flow_rate_to_velocity()`
-   - First calculates angular flow rate: `flow_rate = delta / 385.0`
-   - Then converts to velocity: `velocity = flow_rate * altitude`
-   - Best for navigation systems with attitude correction and Kalman filtering
+See: `components/stampfly_eskf/include/eskf.hpp`
+
+```cpp
+// Example: ESKF receives raw flow data
+eskf.updateFlowRaw(flow_dx, flow_dy, distance, dt, gyro_x, gyro_y);
+```
 
 ### Data Quality Filtering
 
@@ -223,8 +225,9 @@ try {
 
     auto motion = sensor.readMotion();
     auto burst = sensor.readMotionBurst();
-    auto velocity = sensor.calculateVelocityDirect(
-        burst.delta_x, burst.delta_y, altitude, interval);
+
+    // Use ESKF for velocity estimation (not this driver)
+    // eskf.updateFlowRaw(burst.delta_x, burst.delta_y, distance, dt, gyro_x, gyro_y);
 
     // Auto cleanup on scope exit
 } catch (const stampfly::PMW3901Exception& e) {
@@ -235,7 +238,7 @@ try {
 **Key C++ advantages:**
 - RAII: Automatic resource management, no need to call deinit()
 - Exception handling: Clear error propagation with try-catch
-- Type safety: Structured return types (MotionData, Velocity, etc.)
+- Type safety: Structured return types (MotionData, MotionBurst)
 - Move semantics: Efficient resource transfer
 
 ## ESP-IDF Version

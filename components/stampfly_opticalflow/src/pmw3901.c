@@ -709,48 +709,7 @@ esp_err_t pmw3901_read_frame(pmw3901_t *dev, uint8_t *image)
     return ESP_OK;
 }
 
-void pmw3901_calculate_velocity_direct(int16_t delta_x, int16_t delta_y,
-                                       float altitude, float interval,
-                                       float *velocity_x, float *velocity_y)
-{
-    if (velocity_x == NULL || velocity_y == NULL || interval <= 0.0f) {
-        return;
-    }
-
-    // StampFly velocity calculation formula
-    // velocity = -(0.0254 * delta * altitude / 11.914) / interval
-    const float scale_factor = 0.0254f / 11.914f;
-
-    *velocity_x = -(scale_factor * (float)delta_x * altitude) / interval;
-    *velocity_y = -(scale_factor * (float)delta_y * altitude) / interval;
-}
-
-void pmw3901_calculate_flow_rate(int16_t delta_x, int16_t delta_y,
-                                 float interval,
-                                 float *flow_rate_x, float *flow_rate_y)
-{
-    if (flow_rate_x == NULL || flow_rate_y == NULL || interval <= 0.0f) {
-        return;
-    }
-
-    // PX4 optical flow rate calculation
-    // flow_rate = delta / 385.0 [rad/s]
-    const float flow_conversion = 385.0f;
-
-    *flow_rate_x = (float)delta_x / flow_conversion;
-    *flow_rate_y = (float)delta_y / flow_conversion;
-}
-
-void pmw3901_flow_rate_to_velocity(float flow_rate_x, float flow_rate_y,
-                                   float altitude,
-                                   float *velocity_x, float *velocity_y)
-{
-    if (velocity_x == NULL || velocity_y == NULL) {
-        return;
-    }
-
-    // Convert angular flow rate to linear velocity
-    // velocity = flow_rate * altitude
-    *velocity_x = flow_rate_x * altitude;
-    *velocity_y = flow_rate_y * altitude;
-}
+/* Velocity calculation functions removed.
+ * Use ESKF::updateFlowRaw() for proper velocity estimation.
+ * See: components/stampfly_eskf/eskf.cpp
+ */

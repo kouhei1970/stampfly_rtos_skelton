@@ -85,13 +85,6 @@ public:
         uint8_t min_raw_data;   ///< Minimum raw data
     };
 
-    /**
-     * @brief Velocity data structure (m/s)
-     */
-    struct Velocity {
-        float x;  ///< X velocity (m/s)
-        float y;  ///< Y velocity (m/s)
-    };
 
     /**
      * @brief Construct and initialize PMW3901 sensor
@@ -173,45 +166,10 @@ public:
      */
     bool isMotionDetected();
 
-    /**
-     * @brief Calculate velocity using direct method (StampFly式)
-     *
-     * Formula: velocity = -(0.0254 * delta * altitude / 11.914) / interval
-     * Best for simple position control systems.
-     *
-     * @param delta_x X displacement from sensor (pixels)
-     * @param delta_y Y displacement from sensor (pixels)
-     * @param altitude Altitude above ground (meters)
-     * @param interval Sampling interval (seconds)
-     * @return Velocity X and Y velocity (m/s)
+    /* Note: Velocity calculation methods have been removed.
+     * Use ESKF::updateFlowRaw() for proper velocity estimation.
+     * See: components/stampfly_eskf/include/eskf.hpp
      */
-    Velocity calculateVelocityDirect(int16_t delta_x, int16_t delta_y,
-                                     float altitude, float interval) const;
-
-    /**
-     * @brief Calculate optical flow rate (PX4式)
-     *
-     * Formula: flow_rate = delta / 385.0 (rad/s)
-     * Best for advanced navigation systems with sensor fusion.
-     *
-     * @param delta_x X displacement from sensor (pixels)
-     * @param delta_y Y displacement from sensor (pixels)
-     * @param interval Sampling interval (seconds)
-     * @return Velocity Flow rate in X and Y (rad/s)
-     */
-    Velocity calculateFlowRate(int16_t delta_x, int16_t delta_y,
-                               float interval) const;
-
-    /**
-     * @brief Convert flow rate to velocity
-     *
-     * Formula: velocity = flow_rate * altitude
-     *
-     * @param flow_rate Flow rate in X and Y (rad/s)
-     * @param altitude Altitude above ground (meters)
-     * @return Velocity X and Y velocity (m/s)
-     */
-    Velocity flowRateToVelocity(const Velocity& flow_rate, float altitude) const;
 
     /**
      * @brief Enable frame capture mode

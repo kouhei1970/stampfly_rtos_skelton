@@ -278,50 +278,88 @@ void ESKF::updateMag(const Vector3& mag)
 {
     if (!initialized_) return;
 
-    // mag_refはボディ座標系で保存されている（初回測定値）
-    // 現在の姿勢に基づいて期待されるMag値を計算
+    // 地磁気ベクトルのノルムチェック（異常値除去）
+    float mag_norm = std::sqrt(mag.x*mag.x + mag.y*mag.y + mag.z*mag.z);
+    if (mag_norm < 10.0f || mag_norm > 100.0f) {
+        return;  // 異常な地磁気読み取り
+    }
+
+    // 現在の姿勢から期待される地磁気ベクトル（ボディ座標系）
+    // mag_ref はNED座標系での参照地磁気ベクトル（初期化時に取得）
+    // mag_expected = R^T * mag_ref (NEDからボディへ変換)
+    Matrix<3, 3> R = quaternionToRotationMatrix(state_.orientation);
+    Matrix<3, 1> mag_ref_mat = toMatrix(config_.mag_ref);
+    Matrix<3, 1> mag_expected_mat = R.transpose() * mag_ref_mat;
+
+    // 観測: 地磁気ベクトル全3成分
+    // ピッチが90度に近い場合もZ成分が必要
+    Matrix<3, 1> z;
+    z(0, 0) = mag.x;
+    z(1, 0) = mag.y;
+    z(2, 0) = mag.z;
+
+    Matrix<3, 1> h;
+    h(0, 0) = mag_expected_mat(0, 0);
+    h(1, 0) = mag_expected_mat(1, 0);
+    h(2, 0) = mag_expected_mat(2, 0);
+
+    // ヤコビアン: ∂h/∂(roll, pitch, yaw)
+    // h = R^T * mag_ref where R = R_z(yaw) * R_y(pitch) * R_x(roll)
+    // ∂h/∂θ = ∂(R^T)/∂θ * mag_ref = -R^T * [e_θ]× * mag_ref (for small angle approximation)
+    // where [e_θ]× is the skew-symmetric matrix of the rotation axis
     //
-    // 初回時: mag_ref = mag_body_0, orientation = identity (yaw=0)
-    // 現在: mag_body = R_body_ned * mag_ned
+    // より正確には数値微分またはスキュー対称行列を使用
+    // ∂h/∂roll:  R^T * [1,0,0]× * R * h_current (近似)
+    // ∂h/∂pitch: R^T * [0,1,0]× * R * h_current
+    // ∂h/∂yaw:   R^T * [0,0,1]× * R * h_current
     //
-    // mag_refはYaw=0の時のボディ座標系での値なので、
-    // 現在のYaw回転を適用した期待値と比較する
-    //
-    // mag_expected = R_z(yaw) * mag_ref
-    // ただしRoll/Pitchは小さいと仮定してYaw回転のみ考慮
-    float cos_yaw = std::cos(state_.yaw);
-    float sin_yaw = std::sin(state_.yaw);
+    // 簡略化: h = R^T * m, ∂h/∂θ = -[R^T * e_θ]× * m = [m]× * R^T * e_θ
+    // ここで [v]× はスキュー対称行列
 
-    // Yaw回転を適用した期待値（Z軸周り回転）
-    Vector3 mag_expected;
-    mag_expected.x = cos_yaw * config_.mag_ref.x - sin_yaw * config_.mag_ref.y;
-    mag_expected.y = sin_yaw * config_.mag_ref.x + cos_yaw * config_.mag_ref.y;
-    mag_expected.z = config_.mag_ref.z;
+    float mx = config_.mag_ref.x;
+    float my = config_.mag_ref.y;
+    float mz = config_.mag_ref.z;
 
-    // 水平面での方位角のみ使用（ヨー補正）
-    float yaw_meas = std::atan2(mag.y, mag.x);
-    float yaw_pred = std::atan2(mag_expected.y, mag_expected.x);
+    // R^T の各列を取得
+    float r00 = R(0,0), r01 = R(0,1), r02 = R(0,2);
+    float r10 = R(1,0), r11 = R(1,1), r12 = R(1,2);
+    float r20 = R(2,0), r21 = R(2,1), r22 = R(2,2);
 
-    // イノベーション（角度差を-π〜πに正規化）
-    float yaw_err = yaw_meas - yaw_pred;
-    while (yaw_err > M_PI) yaw_err -= 2.0f * M_PI;
-    while (yaw_err < -M_PI) yaw_err += 2.0f * M_PI;
+    // mag_expected = R^T * mag_ref
+    float hx = r00*mx + r10*my + r20*mz;
+    float hy = r01*mx + r11*my + r21*mz;
+    float hz = r02*mx + r12*my + r22*mz;
 
-    // 観測更新（1次元）
-    Matrix<1, 1> z;
-    z(0, 0) = yaw_err;
+    // ∂h/∂θ = -[h]× (ESKFの誤差状態での微分)
+    // [h]× = [  0  -hz   hy ]
+    //        [ hz   0   -hx ]
+    //        [-hy  hx    0  ]
+    // ∂h/∂roll (∂h/∂θx):  -[h]× * [1,0,0]^T = [0, hz, -hy]^T
+    // ∂h/∂pitch (∂h/∂θy): -[h]× * [0,1,0]^T = [-hz, 0, hx]^T
+    // ∂h/∂yaw (∂h/∂θz):   -[h]× * [0,0,1]^T = [hy, -hx, 0]^T
 
-    Matrix<1, 1> h;
-    h(0, 0) = 0.0f;
+    Matrix<3, 15> H;
+    // Roll (ATT_X)
+    H(0, ATT_X) = 0.0f;
+    H(1, ATT_X) = hz;
+    H(2, ATT_X) = -hy;
+    // Pitch (ATT_Y)
+    H(0, ATT_Y) = -hz;
+    H(1, ATT_Y) = 0.0f;
+    H(2, ATT_Y) = hx;
+    // Yaw (ATT_Z)
+    H(0, ATT_Z) = hy;
+    H(1, ATT_Z) = -hx;
+    H(2, ATT_Z) = 0.0f;
 
-    // ヤコビアン: ヨーに対する感度
-    Matrix<1, 15> H;
-    H(0, ATT_Z) = 1.0f;
+    // 観測ノイズ
+    Matrix<3, 3> R_mat;
+    float noise_sq = config_.mag_noise * config_.mag_noise;
+    R_mat(0, 0) = noise_sq;
+    R_mat(1, 1) = noise_sq;
+    R_mat(2, 2) = noise_sq;
 
-    Matrix<1, 1> R_mat;
-    R_mat(0, 0) = config_.mag_noise * config_.mag_noise;
-
-    measurementUpdate<1>(z, h, H, R_mat);
+    measurementUpdate<3>(z, h, H, R_mat);
 }
 
 void ESKF::updateFlow(float flow_x, float flow_y, float height)
@@ -334,6 +372,10 @@ void ESKF::updateFlowWithGyro(float flow_x, float flow_y, float height,
                                float gyro_x, float gyro_y)
 {
     if (!initialized_ || height < config_.flow_min_height) return;
+
+    // ジャイロバイアス補正（predict()と同様）
+    float gyro_x_corrected = gyro_x - state_.gyro_bias.x;
+    float gyro_y_corrected = gyro_y - state_.gyro_bias.y;
 
     // ============================================================
     // 1. ジャイロ補償（回転成分の除去）
@@ -357,8 +399,8 @@ void ESKF::updateFlowWithGyro(float flow_x, float flow_y, float height,
     constexpr float flow_dx_offset = 0.0f;
     constexpr float flow_dy_offset = 0.0f;
 
-    float flow_x_comp = flow_x - k_xx * gyro_x - k_xy * gyro_y - flow_dx_offset;
-    float flow_y_comp = flow_y - k_yx * gyro_x - k_yy * gyro_y - flow_dy_offset;
+    float flow_x_comp = flow_x - k_xx * gyro_x_corrected - k_xy * gyro_y_corrected - flow_dx_offset;
+    float flow_y_comp = flow_y - k_yx * gyro_x_corrected - k_yy * gyro_y_corrected - flow_dy_offset;
 
     // ============================================================
     // 2. ボディ座標系での速度計算
@@ -384,6 +426,86 @@ void ESKF::updateFlowWithGyro(float flow_x, float flow_y, float height,
     // ============================================================
     // 4. カルマンフィルタ観測更新
     // ============================================================
+    Matrix<2, 1> z;
+    z(0, 0) = vx_ned;
+    z(1, 0) = vy_ned;
+
+    Matrix<2, 1> h;
+    h(0, 0) = state_.velocity.x;
+    h(1, 0) = state_.velocity.y;
+
+    // ヤコビアン
+    Matrix<2, 15> H;
+    H(0, VEL_X) = 1.0f;
+    H(1, VEL_Y) = 1.0f;
+
+    // 観測ノイズ
+    Matrix<2, 2> R;
+    R(0, 0) = config_.flow_noise * config_.flow_noise;
+    R(1, 1) = config_.flow_noise * config_.flow_noise;
+
+    measurementUpdate<2>(z, h, H, R);
+}
+
+void ESKF::updateFlowRaw(int16_t flow_dx, int16_t flow_dy, float distance,
+                          float dt, float gyro_x, float gyro_y)
+{
+    if (!initialized_ || distance < config_.flow_min_height || dt <= 0) return;
+
+    // ================================================================
+    // 1. ピクセル変化 → ピクセル角速度 [rad/s]
+    // ================================================================
+    // PMW3901: FOV=42°, 35pixels → 0.0209 rad/pixel
+    float flow_x_cam = static_cast<float>(flow_dx) * config_.flow_rad_per_pixel / dt;
+    float flow_y_cam = static_cast<float>(flow_dy) * config_.flow_rad_per_pixel / dt;
+
+    // ================================================================
+    // 2. カメラ座標系 → 機体座標系
+    // ================================================================
+    // [flow_body_x]   [c2b_xx c2b_xy] [flow_cam_x]
+    // [flow_body_y] = [c2b_yx c2b_yy] [flow_cam_y]
+    float flow_x_body = config_.flow_cam_to_body[0] * flow_x_cam
+                      + config_.flow_cam_to_body[1] * flow_y_cam;
+    float flow_y_body = config_.flow_cam_to_body[2] * flow_x_cam
+                      + config_.flow_cam_to_body[3] * flow_y_cam;
+
+    // ================================================================
+    // 3. 回転成分除去 → 並進由来の角速度
+    // ================================================================
+    // ジャイロバイアス補正（predict()と同様）
+    float gyro_x_corrected = gyro_x - state_.gyro_bias.x;
+    float gyro_y_corrected = gyro_y - state_.gyro_bias.y;
+
+    // 機体角速度 → カメラ角速度（カメラは下向き固定）
+    // 機体がroll方向に回転 → カメラはY軸周りに回転 → flow_x変化
+    // 機体がpitch方向に回転 → カメラはX軸周りに回転 → flow_y変化
+    // flow_rotation_x = gyro_y (pitch回転がflow_xに影響)
+    // flow_rotation_y = -gyro_x (roll回転がflow_yに影響、符号反転)
+    float flow_rotation_x = gyro_y_corrected;   // pitch → flow_x
+    float flow_rotation_y = -gyro_x_corrected;  // roll → flow_y (符号反転)
+
+    float flow_trans_x = flow_x_body - flow_rotation_x;
+    float flow_trans_y = flow_y_body - flow_rotation_y;
+
+    // ================================================================
+    // 4. 並進速度算出 [m/s]
+    // ================================================================
+    // v = ω × distance
+    float vx_body = flow_trans_x * distance;
+    float vy_body = flow_trans_y * distance;
+
+    // ================================================================
+    // 5. Body→NED変換
+    // ================================================================
+    float cos_yaw = std::cos(state_.yaw);
+    float sin_yaw = std::sin(state_.yaw);
+
+    float vx_ned = cos_yaw * vx_body - sin_yaw * vy_body;
+    float vy_ned = sin_yaw * vx_body + cos_yaw * vy_body;
+
+    // ================================================================
+    // 6. カルマンフィルタ観測更新
+    // ================================================================
     Matrix<2, 1> z;
     z(0, 0) = vx_ned;
     z(1, 0) = vy_ned;
@@ -757,8 +879,12 @@ void VelocityEstimator::updateFlow(float flow_x, float flow_y, float height, flo
 {
     if (!initialized_ || height < 0.1f) return;
 
-    float flow_x_comp = flow_x - gyro_y;
-    float flow_y_comp = flow_y + gyro_x;
+    // ジャイロバイアス補正
+    float gyro_x_corrected = gyro_x - gyro_bias_x_;
+    float gyro_y_corrected = gyro_y - gyro_bias_y_;
+
+    float flow_x_comp = flow_x - gyro_y_corrected;
+    float flow_y_comp = flow_y + gyro_x_corrected;
 
     state_.vx = flow_y_comp * height * config_.flow_scale;
     state_.vy = -flow_x_comp * height * config_.flow_scale;

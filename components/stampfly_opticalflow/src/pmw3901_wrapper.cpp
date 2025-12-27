@@ -183,34 +183,9 @@ bool PMW3901::isMotionDetected()
     return motion_detected;
 }
 
-// Calculate velocity (direct method)
-PMW3901::Velocity PMW3901::calculateVelocityDirect(
-    int16_t delta_x, int16_t delta_y,
-    float altitude, float interval) const
-{
-    float vx, vy;
-    pmw3901_calculate_velocity_direct(delta_x, delta_y, altitude, interval, &vx, &vy);
-    return Velocity{vx, vy};
-}
-
-// Calculate flow rate
-PMW3901::Velocity PMW3901::calculateFlowRate(
-    int16_t delta_x, int16_t delta_y,
-    float interval) const
-{
-    float flow_x, flow_y;
-    pmw3901_calculate_flow_rate(delta_x, delta_y, interval, &flow_x, &flow_y);
-    return Velocity{flow_x, flow_y};
-}
-
-// Convert flow rate to velocity
-PMW3901::Velocity PMW3901::flowRateToVelocity(
-    const Velocity& flow_rate, float altitude) const
-{
-    float vx, vy;
-    pmw3901_flow_rate_to_velocity(flow_rate.x, flow_rate.y, altitude, &vx, &vy);
-    return Velocity{vx, vy};
-}
+/* Velocity calculation methods removed.
+ * Use ESKF::updateFlowRaw() for proper velocity estimation.
+ */
 
 // Enable frame capture
 void PMW3901::enableFrameCapture()

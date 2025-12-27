@@ -235,63 +235,13 @@ esp_err_t pmw3901_enable_frame_capture(pmw3901_t *dev);
  */
 esp_err_t pmw3901_read_frame(pmw3901_t *dev, uint8_t *image);
 
-/**
- * @brief Calculate velocity from motion data (Direct method - StampFly式)
- *
- * This method directly calculates ground velocity using altitude information.
- * Formula: velocity = -(0.0254 * delta * altitude / 11.914) / interval
- *
- * Best for: Simple position control systems
- * Pros: Direct velocity output, easy to implement
- * Cons: Requires altitude sensor, assumes flat ground
- *
- * @param delta_x X displacement from sensor (pixels)
- * @param delta_y Y displacement from sensor (pixels)
- * @param altitude Altitude above ground in meters
- * @param interval Sampling interval in seconds
- * @param velocity_x Pointer to store X velocity (m/s)
- * @param velocity_y Pointer to store Y velocity (m/s)
+/* Note: Velocity calculation functions have been removed.
+ * Use ESKF::updateFlowRaw() for proper velocity estimation with:
+ * - Gyro compensation (rotation removal)
+ * - Camera-to-body coordinate transformation
+ * - Physically correct angular velocity calculation
+ * See: components/stampfly_eskf/include/eskf.hpp
  */
-void pmw3901_calculate_velocity_direct(int16_t delta_x, int16_t delta_y,
-                                       float altitude, float interval,
-                                       float *velocity_x, float *velocity_y);
-
-/**
- * @brief Calculate optical flow rate (Angular velocity method - PX4式)
- *
- * This method calculates angular flow rate which can be later converted to velocity.
- * Formula: flow_rate = delta / 385.0  (rad/s)
- * To get velocity: velocity = flow_rate * altitude
- *
- * Best for: Advanced navigation systems, sensor fusion
- * Pros: Easy attitude correction, Kalman filter integration
- * Cons: Requires additional processing for velocity
- *
- * @param delta_x X displacement from sensor (pixels)
- * @param delta_y Y displacement from sensor (pixels)
- * @param interval Sampling interval in seconds
- * @param flow_rate_x Pointer to store X flow rate (rad/s)
- * @param flow_rate_y Pointer to store Y flow rate (rad/s)
- */
-void pmw3901_calculate_flow_rate(int16_t delta_x, int16_t delta_y,
-                                 float interval,
-                                 float *flow_rate_x, float *flow_rate_y);
-
-/**
- * @brief Convert flow rate to velocity
- *
- * Helper function to convert angular flow rate to linear velocity.
- * velocity = flow_rate * altitude
- *
- * @param flow_rate_x X flow rate (rad/s)
- * @param flow_rate_y Y flow rate (rad/s)
- * @param altitude Altitude above ground in meters
- * @param velocity_x Pointer to store X velocity (m/s)
- * @param velocity_y Pointer to store Y velocity (m/s)
- */
-void pmw3901_flow_rate_to_velocity(float flow_rate_x, float flow_rate_y,
-                                   float altitude,
-                                   float *velocity_x, float *velocity_y);
 
 #ifdef __cplusplus
 }

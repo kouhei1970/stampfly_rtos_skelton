@@ -2,11 +2,10 @@
  * @file replay.cpp
  * @brief ESKF Replay Tool - Run ESKF on recorded sensor data
  *
- * Usage:
- *   ./eskf_replay <input.bin> <output.csv> [options]
+ * デバイスコード（main.cpp + eskf.cpp）準拠の再実装版
  *
- * Reads binary log file from StampFly, runs ESKF on each packet,
- * and outputs state estimates to CSV for comparison with device.
+ * Usage:
+ *   ./eskf_replay <input.bin> <output.csv> [--verbose]
  */
 
 #include <cstdio>
@@ -21,7 +20,10 @@
 using namespace stampfly;
 using namespace stampfly::math;
 
-// Binary log packet structure V1 (must match cli.hpp)
+// ============================================================================
+// Binary Log Packet Structures (must match cli.hpp)
+// ============================================================================
+
 #pragma pack(push, 1)
 struct BinaryLogPacketV1 {
     uint8_t header[2];      // 0xAA, 0x55
@@ -42,7 +44,6 @@ struct BinaryLogPacketV1 {
 
 static_assert(sizeof(BinaryLogPacketV1) == 64, "V1 Packet size mismatch");
 
-// Binary log packet structure V2 (must match cli.hpp)
 #pragma pack(push, 1)
 struct BinaryLogPacketV2 {
     uint8_t header[2];      // 0xAA, 0x56 (V2)
@@ -73,17 +74,25 @@ struct BinaryLogPacketV2 {
 
 static_assert(sizeof(BinaryLogPacketV2) == 128, "V2 Packet size mismatch");
 
-// Common packet data for ESKF processing
+// ============================================================================
+// Sensor Data Structure
+// ============================================================================
+
 struct SensorData {
     uint32_t timestamp_ms;
+    // IMU (フィルタ済み、m/s² と rad/s)
     float accel_x, accel_y, accel_z;
     float gyro_x, gyro_y, gyro_z;
+    // Magnetometer (キャリブレーション済み、uT)
     float mag_x, mag_y, mag_z;
+    // Barometer
     float pressure;
     float baro_alt;
     float baro_ref_alt;
+    // ToF
     float tof_bottom;
     float tof_front;
+    // Optical Flow (raw counts)
     int16_t flow_dx;
     int16_t flow_dy;
     uint8_t flow_squal;
@@ -95,6 +104,10 @@ struct SensorData {
     float accel_bias_x, accel_bias_y;
     bool has_device_eskf;
 };
+
+// ============================================================================
+// Checksum Verification
+// ============================================================================
 
 bool verify_checksum_v1(const BinaryLogPacketV1& pkt)
 {
@@ -116,6 +129,10 @@ bool verify_checksum_v2(const BinaryLogPacketV2& pkt)
     return checksum == pkt.checksum;
 }
 
+// ============================================================================
+// Log File Loading
+// ============================================================================
+
 int detect_log_format(const char* filename)
 {
     FILE* f = fopen(filename, "rb");
@@ -133,7 +150,7 @@ int detect_log_format(const char* filename)
     return 0;
 }
 
-std::vector<SensorData> load_log_file(const char* filename, int& version)
+std::vector<SensorData> load_log_file(const char* filename, int& version, bool quiet = false)
 {
     std::vector<SensorData> packets;
 
@@ -149,7 +166,9 @@ std::vector<SensorData> load_log_file(const char* filename, int& version)
         return packets;
     }
 
-    printf("Detected log format: V%d (%d bytes/packet)\n", version, version == 1 ? 64 : 128);
+    if (!quiet) {
+        printf("Log format: V%d (%d bytes/packet)\n", version, version == 1 ? 64 : 128);
+    }
 
     int checksum_errors = 0;
 
@@ -177,7 +196,6 @@ std::vector<SensorData> load_log_file(const char* filename, int& version)
                     data.flow_dx = pkt.flow_dx;
                     data.flow_dy = pkt.flow_dy;
                     data.flow_squal = pkt.flow_squal;
-                    data.gyro_bias_z = 0.0f;
                     data.has_device_eskf = false;
                     packets.push_back(data);
                 } else {
@@ -231,32 +249,48 @@ std::vector<SensorData> load_log_file(const char* filename, int& version)
     }
 
     fclose(f);
-    printf("Loaded %zu packets from %s", packets.size(), filename);
-    if (checksum_errors > 0) {
-        printf(" (%d checksum errors)\n", checksum_errors);
-    } else {
+    if (!quiet) {
+        printf("Loaded %zu packets", packets.size());
+        if (checksum_errors > 0) {
+            printf(" (%d checksum errors)", checksum_errors);
+        }
         printf("\n");
     }
 
     return packets;
 }
 
+// ============================================================================
+// Main
+// ============================================================================
+
 void print_usage(const char* prog)
 {
     printf("Usage: %s <input.bin> <output.csv> [options]\n", prog);
+    printf("\nRuns ESKF on recorded sensor data.\n");
     printf("\nOptions:\n");
-    printf("  --baro-rate N    Baro update rate divisor (default: 2 = 50Hz)\n");
-    printf("  --tof-rate N     ToF update rate divisor (default: 3 = 33Hz)\n");
-    printf("  --mag-rate N     Mag update rate divisor (default: 10 = 10Hz)\n");
-    printf("  --flow-rate N    Flow update rate divisor (default: 1 = 100Hz)\n");
-    printf("  --flow-squal N   Min flow surface quality (default: 30)\n");
-    printf("  --flow-scale F   Flow scale for both axes (default: 0.16)\n");
-    printf("  --flow-scale-x F Flow scale for X axis (overrides --flow-scale)\n");
-    printf("  --flow-scale-y F Flow scale for Y axis (overrides --flow-scale)\n");
-    printf("  --yaw-fixed      Fix yaw at 0 (disable yaw estimation)\n");
-    printf("  --no-mag         Disable magnetometer updates\n");
-    printf("  --no-accel-att   Disable accelerometer attitude updates\n");
-    printf("  --verbose        Print progress\n");
+    printf("  --verbose           Print progress\n");
+    printf("  --quiet             Minimal output (for optimization)\n");
+    printf("  --gyro_noise=N      Gyro noise [rad/s/√Hz] (default: 0.001)\n");
+    printf("  --accel_noise=N     Accel noise [m/s²/√Hz] (default: 0.1)\n");
+    printf("  --flow_noise=N      Flow noise [m/s] (default: 0.1)\n");
+    printf("  --tof_noise=N       ToF noise [m] (default: 0.002)\n");
+    printf("  --baro_noise=N      Baro noise [m] (default: 0.1)\n");
+    printf("  --mag_noise=N       Mag noise [uT] (default: 0.3)\n");
+    printf("  --accel_att_noise=N Accel attitude noise [m/s²] (default: 1.0)\n");
+    printf("  --gyro_bias_noise=N Gyro bias RW noise (default: 0.00005)\n");
+    printf("  --accel_bias_noise=N Accel bias RW noise (default: 0.001)\n");
+    printf("  --flow_rad_per_pixel=N Flow calibration [rad/pixel] (default: 0.00205)\n");
+}
+
+// Helper to parse --key=value arguments
+float parse_float_arg(const char* arg, const char* prefix, float default_val)
+{
+    size_t prefix_len = strlen(prefix);
+    if (strncmp(arg, prefix, prefix_len) == 0) {
+        return std::atof(arg + prefix_len);
+    }
+    return default_val;
 }
 
 int main(int argc, char* argv[])
@@ -268,106 +302,177 @@ int main(int argc, char* argv[])
 
     const char* input_file = argv[1];
     const char* output_file = argv[2];
-
-    // Default update rates (divisor of 100Hz base rate)
-    int baro_rate = 2;    // 50Hz
-    int tof_rate = 3;     // 33Hz
-    int mag_rate = 10;    // 10Hz
-    int flow_rate = 1;    // 100Hz
-    int flow_squal_min = 30;
-    float flow_scale = 0.23f;  // キャリブレーション済み (2025-12-02)
-    float flow_scale_x = -1.0f;  // -1 means use flow_scale
-    float flow_scale_y = -1.0f;  // -1 means use flow_scale
     bool verbose = false;
-    bool yaw_fixed = false;
-    bool no_mag = false;
-    bool no_accel_att = false;
+    bool quiet = false;
 
-    // Parse options
+    // Default parameters from ESKF::Config::defaultConfig()
+    ESKF::Config default_cfg = ESKF::Config::defaultConfig();
+    float gyro_noise = default_cfg.gyro_noise;
+    float accel_noise = default_cfg.accel_noise;
+    float flow_noise = default_cfg.flow_noise;
+    float tof_noise = default_cfg.tof_noise;
+    float baro_noise = default_cfg.baro_noise;
+    float mag_noise = default_cfg.mag_noise;
+    float accel_att_noise = default_cfg.accel_att_noise;
+    float gyro_bias_noise = default_cfg.gyro_bias_noise;
+    float accel_bias_noise = default_cfg.accel_bias_noise;
+    float flow_rad_per_pixel = default_cfg.flow_rad_per_pixel;
+    float flow_scale_x = default_cfg.flow_cam_to_body[0];
+    float flow_scale_y = default_cfg.flow_cam_to_body[3];
+
     for (int i = 3; i < argc; i++) {
-        if (strcmp(argv[i], "--baro-rate") == 0 && i + 1 < argc) {
-            baro_rate = atoi(argv[++i]);
-        } else if (strcmp(argv[i], "--tof-rate") == 0 && i + 1 < argc) {
-            tof_rate = atoi(argv[++i]);
-        } else if (strcmp(argv[i], "--mag-rate") == 0 && i + 1 < argc) {
-            mag_rate = atoi(argv[++i]);
-        } else if (strcmp(argv[i], "--flow-rate") == 0 && i + 1 < argc) {
-            flow_rate = atoi(argv[++i]);
-        } else if (strcmp(argv[i], "--flow-squal") == 0 && i + 1 < argc) {
-            flow_squal_min = atoi(argv[++i]);
-        } else if (strcmp(argv[i], "--flow-scale") == 0 && i + 1 < argc) {
-            flow_scale = atof(argv[++i]);
-        } else if (strcmp(argv[i], "--flow-scale-x") == 0 && i + 1 < argc) {
-            flow_scale_x = atof(argv[++i]);
-        } else if (strcmp(argv[i], "--flow-scale-y") == 0 && i + 1 < argc) {
-            flow_scale_y = atof(argv[++i]);
-        } else if (strcmp(argv[i], "--verbose") == 0) {
+        if (strcmp(argv[i], "--verbose") == 0) {
             verbose = true;
-        } else if (strcmp(argv[i], "--yaw-fixed") == 0) {
-            yaw_fixed = true;
-        } else if (strcmp(argv[i], "--no-mag") == 0) {
-            no_mag = true;
-        } else if (strcmp(argv[i], "--no-accel-att") == 0) {
-            no_accel_att = true;
+        } else if (strcmp(argv[i], "--quiet") == 0) {
+            quiet = true;
+        } else if (strncmp(argv[i], "--gyro_noise=", 13) == 0) {
+            gyro_noise = std::atof(argv[i] + 13);
+        } else if (strncmp(argv[i], "--accel_noise=", 14) == 0) {
+            accel_noise = std::atof(argv[i] + 14);
+        } else if (strncmp(argv[i], "--flow_noise=", 13) == 0) {
+            flow_noise = std::atof(argv[i] + 13);
+        } else if (strncmp(argv[i], "--tof_noise=", 12) == 0) {
+            tof_noise = std::atof(argv[i] + 12);
+        } else if (strncmp(argv[i], "--baro_noise=", 13) == 0) {
+            baro_noise = std::atof(argv[i] + 13);
+        } else if (strncmp(argv[i], "--mag_noise=", 12) == 0) {
+            mag_noise = std::atof(argv[i] + 12);
+        } else if (strncmp(argv[i], "--accel_att_noise=", 18) == 0) {
+            accel_att_noise = std::atof(argv[i] + 18);
+        } else if (strncmp(argv[i], "--gyro_bias_noise=", 18) == 0) {
+            gyro_bias_noise = std::atof(argv[i] + 18);
+        } else if (strncmp(argv[i], "--accel_bias_noise=", 19) == 0) {
+            accel_bias_noise = std::atof(argv[i] + 19);
+        } else if (strncmp(argv[i], "--flow_rad_per_pixel=", 21) == 0) {
+            flow_rad_per_pixel = std::atof(argv[i] + 21);
+        } else if (strncmp(argv[i], "--flow_scale_x=", 15) == 0) {
+            flow_scale_x = std::atof(argv[i] + 15);
+        } else if (strncmp(argv[i], "--flow_scale_y=", 15) == 0) {
+            flow_scale_y = std::atof(argv[i] + 15);
         }
     }
 
-    // Apply default scale if not specified separately
-    if (flow_scale_x < 0) flow_scale_x = flow_scale;
-    if (flow_scale_y < 0) flow_scale_y = flow_scale;
+    if (!quiet) {
+        printf("=== ESKF Replay Tool ===\n");
+        printf("Input: %s\n", input_file);
+        printf("Output: %s\n", output_file);
+    }
 
-    printf("=== ESKF Replay Tool ===\n");
-    printf("Input: %s\n", input_file);
-    printf("Output: %s\n", output_file);
-    printf("Update rates: baro=%dHz, tof=%dHz, mag=%dHz, flow=%dHz\n",
-           100 / baro_rate, 100 / tof_rate, 100 / mag_rate, 100 / flow_rate);
-    printf("Flow scale: X=%.4f, Y=%.4f\n", flow_scale_x, flow_scale_y);
-    if (yaw_fixed) printf("Yaw fixed at 0\n");
-    if (no_mag) printf("Magnetometer disabled\n");
-    if (no_accel_att) printf("Accelerometer attitude updates disabled\n");
-
+    // ========================================================================
     // Load log file
+    // ========================================================================
     int log_version = 0;
-    auto packets = load_log_file(input_file, log_version);
+    auto packets = load_log_file(input_file, log_version, quiet);
     if (packets.empty()) {
         fprintf(stderr, "No valid packets found\n");
         return 1;
     }
     bool has_device_eskf = (log_version == 2);
 
-    // Initialize ESKF with device-matched parameters
+    // ========================================================================
+    // Initialize ESKF with custom parameters
+    // ========================================================================
     ESKF eskf;
     ESKF::Config config = ESKF::Config::defaultConfig();
-    config.flow_min_height = 0.02f;
-    config.flow_noise = 0.1f;  // Lower = trust flow more
-    config.tof_tilt_threshold = 0.35f;
-    config.mag_enabled = !no_mag;  // mag_enabled based on --no-mag option
+
+    // Apply command line parameters
+    config.gyro_noise = gyro_noise;
+    config.accel_noise = accel_noise;
+    config.flow_noise = flow_noise;
+    config.tof_noise = tof_noise;
+    config.baro_noise = baro_noise;
+    config.mag_noise = mag_noise;
+    config.accel_att_noise = accel_att_noise;
+    config.gyro_bias_noise = gyro_bias_noise;
+    config.accel_bias_noise = accel_bias_noise;
+    config.flow_rad_per_pixel = flow_rad_per_pixel;
+    config.flow_cam_to_body[0] = flow_scale_x;  // c2b_xx
+    config.flow_cam_to_body[3] = flow_scale_y;  // c2b_yy
+
+    // 地磁気更新を有効化
+    config.mag_enabled = true;
     eskf.init(config);
     eskf.reset();
 
+    // ========================================================================
     // Restore biases from device log (V2 only)
-    // NOTE: Don't restore gyro bias from log - it may be corrupted by ESKF estimation
-    // Instead, start with zero bias and let ESKF estimate it
+    // ========================================================================
     if (has_device_eskf && packets.size() > 0) {
-        // Vector3 initial_gyro_bias(0.0f, 0.0f, packets[0].gyro_bias_z);
-        // eskf.setGyroBias(initial_gyro_bias);
-        // printf("Gyro bias Z restored: %.6f rad/s\n", packets[0].gyro_bias_z);
-        printf("Gyro bias Z from log: %.6f rad/s (NOT used - starting from 0)\n", packets[0].gyro_bias_z);
+        // ジャイロバイアスを復元（デバイスと同じ初期状態にする）
+        Vector3 initial_gyro_bias(0.0f, 0.0f, packets[0].gyro_bias_z);
+        eskf.setGyroBias(initial_gyro_bias);
+        if (!quiet) {
+            printf("Gyro bias Z restored: %.6f rad/s\n", packets[0].gyro_bias_z);
+        }
 
+        // 加速度バイアスを復元
         Vector3 initial_accel_bias(packets[0].accel_bias_x, packets[0].accel_bias_y, 0.0f);
         eskf.setAccelBias(initial_accel_bias);
-        printf("Accel bias restored: (%.6f, %.6f) m/s²\n",
-               packets[0].accel_bias_x, packets[0].accel_bias_y);
+        if (!quiet) {
+            printf("Accel bias restored: (%.4f, %.4f) m/s²\n",
+                   packets[0].accel_bias_x, packets[0].accel_bias_y);
+        }
     }
 
+    // ========================================================================
+    // Baro reference altitude
+    // ========================================================================
+    float baro_alt_reference = 0.0f;
+    if (has_device_eskf && std::abs(packets[0].baro_ref_alt) > 0.001f) {
+        baro_alt_reference = packets[0].baro_ref_alt;
+        if (!quiet) {
+            printf("Baro reference (from device): %.3f m\n", baro_alt_reference);
+        }
+    } else {
+        // 最初のパケットから計算
+        baro_alt_reference = packets[0].baro_alt;
+        if (std::abs(baro_alt_reference) < 0.001f && packets[0].pressure > 80000.0f) {
+            constexpr float P0 = 101325.0f;
+            baro_alt_reference = 44330.0f * (1.0f - std::pow(packets[0].pressure / P0, 0.1903f));
+        }
+        if (!quiet) {
+            printf("Baro reference (calculated): %.3f m\n", baro_alt_reference);
+        }
+    }
+
+    // ========================================================================
+    // Mag reference initialization (device uses 100 samples = 1 second)
+    // ========================================================================
+    constexpr int MAG_REF_SAMPLES = 100;  // デバイスと同じ
+    {
+        Vector3 mag_sum = Vector3::zero();
+        int mag_sample_count = 0;
+        for (size_t i = 0; i < packets.size() && mag_sample_count < MAG_REF_SAMPLES; i++) {
+            const auto& pkt = packets[i];
+            Vector3 mag(pkt.mag_x, pkt.mag_y, pkt.mag_z);
+            float mag_norm = std::sqrt(mag.x*mag.x + mag.y*mag.y + mag.z*mag.z);
+            if (mag_norm > 10.0f) {
+                mag_sum += mag;
+                mag_sample_count++;
+            }
+        }
+        if (mag_sample_count > 0) {
+            Vector3 mag_avg = mag_sum * (1.0f / mag_sample_count);
+            eskf.setMagReference(mag_avg);
+            if (!quiet) {
+                printf("Mag reference (%d samples): (%.1f, %.1f, %.1f) uT\n",
+                       mag_sample_count, mag_avg.x, mag_avg.y, mag_avg.z);
+            }
+        } else if (!quiet) {
+            printf("Warning: No valid mag samples for reference\n");
+        }
+    }
+
+    // ========================================================================
     // Open output CSV
+    // ========================================================================
     FILE* out = fopen(output_file, "w");
     if (!out) {
         fprintf(stderr, "Error: Cannot create output file %s\n", output_file);
         return 1;
     }
 
-    // Write CSV header
+    // CSV header
     fprintf(out, "timestamp_ms,dt_ms,");
     fprintf(out, "pos_x,pos_y,pos_z,");
     fprintf(out, "vel_x,vel_y,vel_z,");
@@ -386,38 +491,28 @@ int main(int argc, char* argv[])
     }
     fprintf(out, "\n");
 
-    // Process packets
+    // ========================================================================
+    // Process packets (device-matched timing)
+    // ========================================================================
+    // デバイスの更新タイミング:
+    //   - IMU Predict: 100Hz (ログレートと同じ)
+    //   - AccelAtt: 50Hz (predict 2回に1回)
+    //   - Baro: 50Hz (data_ready制御)
+    //   - ToF: 30Hz (data_ready制御)
+    //   - Mag: 10Hz (data_ready制御)
+    //   - Flow: 100Hz
+    //
+    // PCでは固定間隔で近似:
+    //   - Baro: 2パケットに1回 (50Hz)
+    //   - ToF: 3パケットに1回 (33Hz ≈ 30Hz)
+    //   - Mag: 10パケットに1回 (10Hz)
+
+    // Device-matched parameters
+    constexpr float FLOW_SCALE = 0.16f;  // main.cpp:367と一致
+    constexpr int FLOW_SQUAL_MIN = 30;   // OutlierDetector::isFlowValid相当
+
     uint32_t last_timestamp = packets[0].timestamp_ms;
-    int packet_count = 0;
-
-    // No IMU averaging (device does 400Hz->4avg->100Hz, but log is already 100Hz)
-    constexpr int IMU_HISTORY_SIZE = 1;
-    Vector3 accel_history[IMU_HISTORY_SIZE];
-    Vector3 gyro_history[IMU_HISTORY_SIZE];
-    int imu_history_idx = 0;
-    for (int j = 0; j < IMU_HISTORY_SIZE; j++) {
-        accel_history[j] = Vector3::zero();
-        gyro_history[j] = Vector3::zero();
-    }
-
-    // Baro reference altitude
-    float baro_alt_reference = packets[0].baro_ref_alt;
-    if (std::abs(baro_alt_reference) < 0.001f) {
-        baro_alt_reference = packets[0].baro_alt;
-        if (std::abs(baro_alt_reference) < 0.001f && packets[0].pressure > 80000.0f) {
-            constexpr float P0 = 101325.0f;
-            baro_alt_reference = 44330.0f * (1.0f - std::pow(packets[0].pressure / P0, 0.1903f));
-        }
-        printf("Baro reference (from first packet): %.3f m\n", baro_alt_reference);
-    } else {
-        printf("Baro reference (from device): %.3f m\n", baro_alt_reference);
-    }
-
-    // Mag reference (accumulated from first 10 samples)
-    constexpr int MAG_REF_SAMPLES = 10;
-    Vector3 mag_sum = Vector3::zero();
-    int mag_sample_count = 0;
-    bool mag_ref_initialized = false;
+    int accel_att_counter = 0;
 
     for (size_t i = 0; i < packets.size(); i++) {
         const auto& pkt = packets[i];
@@ -425,95 +520,79 @@ int main(int argc, char* argv[])
         // Calculate dt
         float dt = (pkt.timestamp_ms - last_timestamp) / 1000.0f;
         if (dt <= 0 || dt > 0.1f) {
-            dt = 0.01f;
+            dt = 0.01f;  // 100Hz default
         }
         last_timestamp = pkt.timestamp_ms;
 
-        // IMU data (convert [g] to [m/s²] if needed)
-        constexpr float GRAVITY = 9.81f;
-        float accel_scale = (std::abs(pkt.accel_z) < 2.0f) ? GRAVITY : 1.0f;
-        Vector3 accel_raw(pkt.accel_x * accel_scale,
-                          pkt.accel_y * accel_scale,
-                          pkt.accel_z * accel_scale);
-        Vector3 gyro_raw(pkt.gyro_x, pkt.gyro_y, pkt.gyro_z);
+        // IMU data (ログは既にフィルタ済み、m/s²とrad/s)
+        Vector3 accel(pkt.accel_x, pkt.accel_y, pkt.accel_z);
+        Vector3 gyro(pkt.gyro_x, pkt.gyro_y, pkt.gyro_z);
 
-        // Update IMU history
-        accel_history[imu_history_idx] = accel_raw;
-        gyro_history[imu_history_idx] = gyro_raw;
-        imu_history_idx = (imu_history_idx + 1) % IMU_HISTORY_SIZE;
-
-        // Calculate smoothed IMU
-        Vector3 accel = Vector3::zero();
-        Vector3 gyro = Vector3::zero();
-        for (int j = 0; j < IMU_HISTORY_SIZE; j++) {
-            accel += accel_history[j];
-            gyro += gyro_history[j];
-        }
-        accel = accel * (1.0f / IMU_HISTORY_SIZE);
-        gyro = gyro * (1.0f / IMU_HISTORY_SIZE);
-
-        // ESKF predict (100Hz)
+        // ====================================================================
+        // ESKF Predict (100Hz)
+        // ====================================================================
         eskf.predict(accel, gyro, dt);
 
-        // Fix yaw at 0 if requested (for testing horizontal motion)
-        if (yaw_fixed) {
-            eskf.setYaw(0.0f);
-        }
-
-        // Accel attitude update (50Hz)
-        static int accel_att_counter = 0;
-        if (!no_accel_att && ++accel_att_counter >= 2) {
+        // ====================================================================
+        // Accel Attitude Update (50Hz = every 2nd predict)
+        // ====================================================================
+        accel_att_counter++;
+        if (accel_att_counter >= 2) {
             accel_att_counter = 0;
             eskf.updateAccelAttitude(accel);
         }
 
-        // Baro update
-        float baro_alt = pkt.baro_alt;
-        if (std::abs(baro_alt) < 0.001f && pkt.pressure > 80000.0f) {
-            constexpr float P0 = 101325.0f;
-            baro_alt = 44330.0f * (1.0f - std::pow(pkt.pressure / P0, 0.1903f));
-        }
-        float baro_alt_relative = baro_alt - baro_alt_reference;
-        if (i % baro_rate == 0) {
+        // ====================================================================
+        // Baro Update (50Hz = every 2nd packet)
+        // ====================================================================
+        if (i % 2 == 0) {
+            float baro_alt = pkt.baro_alt;
+            if (std::abs(baro_alt) < 0.001f && pkt.pressure > 80000.0f) {
+                constexpr float P0 = 101325.0f;
+                baro_alt = 44330.0f * (1.0f - std::pow(pkt.pressure / P0, 0.1903f));
+            }
+            float baro_alt_relative = baro_alt - baro_alt_reference;
             eskf.updateBaro(baro_alt_relative);
         }
 
-        // ToF update
-        if (i % tof_rate == 0 && pkt.tof_bottom > 0.01f && pkt.tof_bottom < 4.0f) {
-            eskf.updateToF(pkt.tof_bottom);
-        }
-
-        // Mag update (device uses mag when calibration data exists in NVS)
-        if (!no_mag && i % mag_rate == 0) {
-            Vector3 mag(pkt.mag_x, pkt.mag_y, pkt.mag_z);
-            float mag_norm = std::sqrt(mag.x*mag.x + mag.y*mag.y + mag.z*mag.z);
-            if (mag_norm > 10.0f) {
-                if (!mag_ref_initialized) {
-                    mag_sum += mag;
-                    mag_sample_count++;
-                    if (mag_sample_count >= MAG_REF_SAMPLES) {
-                        Vector3 mag_avg = mag_sum * (1.0f / mag_sample_count);
-                        eskf.setMagReference(mag_avg);
-                        mag_ref_initialized = true;
-                        printf("Mag reference set from %d samples: (%.1f, %.1f, %.1f) uT\n",
-                               mag_sample_count, mag_avg.x, mag_avg.y, mag_avg.z);
-                    }
-                }
-                if (mag_ref_initialized) {
-                    eskf.updateMag(mag);
-                }
+        // ====================================================================
+        // ToF Update (33Hz ≈ 30Hz = every 3rd packet)
+        // ====================================================================
+        if (i % 3 == 0) {
+            if (pkt.tof_bottom > 0.01f && pkt.tof_bottom < 4.0f) {
+                eskf.updateToF(pkt.tof_bottom);
             }
         }
 
-        // Flow update (100Hz)
-        if (i % flow_rate == 0 && pkt.flow_squal >= flow_squal_min) {
-            float flow_x = pkt.flow_dx * flow_scale_x;
-            float flow_y = pkt.flow_dy * flow_scale_y;
-            float height = std::max(pkt.tof_bottom, 0.02f);
-            eskf.updateFlowWithGyro(flow_x, flow_y, height, gyro.x, gyro.y);
+        // ====================================================================
+        // Mag Update (10Hz = every 10th packet)
+        // mag_ref計算に使用した最初の100サンプルはスキップ
+        // (初期yawと参照の不一致によるバイアス推定汚染を防止)
+        // ====================================================================
+        if (i >= MAG_REF_SAMPLES && i % 10 == 0) {
+            Vector3 mag(pkt.mag_x, pkt.mag_y, pkt.mag_z);
+            float mag_norm = std::sqrt(mag.x*mag.x + mag.y*mag.y + mag.z*mag.z);
+            if (mag_norm > 10.0f) {
+                eskf.updateMag(mag);
+            }
         }
 
-        // Get state and write to CSV
+        // ====================================================================
+        // Flow Update (100Hz, physical conversion)
+        // ====================================================================
+        if (pkt.flow_squal >= FLOW_SQUAL_MIN) {
+            float distance = pkt.tof_bottom;
+            if (distance < 0.02f) distance = 0.02f;
+            if (distance > 0.02f) {
+                // 新API: 生カウントとdt、機体ジャイロを渡す
+                // ESKF内部で物理的に正しい変換を行う
+                eskf.updateFlowRaw(pkt.flow_dx, pkt.flow_dy, distance, dt, gyro.x, gyro.y);
+            }
+        }
+
+        // ====================================================================
+        // Write to CSV
+        // ====================================================================
         auto state = eskf.getState();
 
         fprintf(out, "%u,%.1f,", pkt.timestamp_ms, dt * 1000.0f);
@@ -550,55 +629,108 @@ int main(int argc, char* argv[])
         }
         fprintf(out, "\n");
 
-        packet_count++;
-
-        if (verbose && packet_count % 1000 == 0) {
-            printf("Processed %d packets (t=%.2fs)\n",
-                   packet_count, pkt.timestamp_ms / 1000.0f);
+        if (verbose && (i + 1) % 1000 == 0) {
+            printf("Processed %zu packets (t=%.2fs)\n",
+                   i + 1, pkt.timestamp_ms / 1000.0f);
         }
     }
 
     fclose(out);
 
-    // Final summary
+    // ========================================================================
+    // Final Summary
+    // ========================================================================
     auto final_state = eskf.getState();
     const auto& last_pkt = packets.back();
-    printf("\n=== Replay Complete ===\n");
-    printf("Log format: V%d\n", log_version);
-    printf("Processed %d packets\n", packet_count);
-    printf("Duration: %.2f seconds\n",
-           (packets.back().timestamp_ms - packets.front().timestamp_ms) / 1000.0f);
-    printf("\nPC ESKF Final state:\n");
-    printf("  Position: [%.3f, %.3f, %.3f] m\n",
-           final_state.position.x, final_state.position.y, final_state.position.z);
-    printf("  Velocity: [%.3f, %.3f, %.3f] m/s\n",
-           final_state.velocity.x, final_state.velocity.y, final_state.velocity.z);
-    printf("  Attitude: roll=%.2f° pitch=%.2f° yaw=%.2f°\n",
-           final_state.roll * 180.0f / M_PI,
-           final_state.pitch * 180.0f / M_PI,
-           final_state.yaw * 180.0f / M_PI);
-    printf("  Gyro bias: [%.6f, %.6f, %.6f] rad/s\n",
-           final_state.gyro_bias.x, final_state.gyro_bias.y, final_state.gyro_bias.z);
 
-    if (has_device_eskf) {
-        printf("\nDevice ESKF Final state (from log):\n");
-        printf("  Position: [%.3f, %.3f, %.3f] m\n",
-               last_pkt.dev_pos_x, last_pkt.dev_pos_y, last_pkt.dev_pos_z);
-        printf("  Velocity: [%.3f, %.3f, %.3f] m/s\n",
-               last_pkt.dev_vel_x, last_pkt.dev_vel_y, last_pkt.dev_vel_z);
-        printf("  Attitude: roll=%.2f° pitch=%.2f° yaw=%.2f°\n",
-               last_pkt.dev_roll * 180.0f / M_PI,
-               last_pkt.dev_pitch * 180.0f / M_PI,
-               last_pkt.dev_yaw * 180.0f / M_PI);
-
-        float pos_err = std::sqrt(
-            std::pow(final_state.position.x - last_pkt.dev_pos_x, 2) +
-            std::pow(final_state.position.y - last_pkt.dev_pos_y, 2) +
-            std::pow(final_state.position.z - last_pkt.dev_pos_z, 2));
-        printf("\nPC vs Device position error: %.3f m\n", pos_err);
+    // Calculate position range for optimization metrics
+    float pos_x_min = 0, pos_x_max = 0, pos_y_min = 0, pos_y_max = 0;
+    {
+        FILE* csv = fopen(output_file, "r");
+        if (csv) {
+            char line[4096];
+            fgets(line, sizeof(line), csv);  // skip header
+            while (fgets(line, sizeof(line), csv)) {
+                float px, py, pz;
+                uint32_t ts;
+                float dt;
+                if (sscanf(line, "%u,%f,%f,%f,%f", &ts, &dt, &px, &py, &pz) >= 5) {
+                    if (px < pos_x_min) pos_x_min = px;
+                    if (px > pos_x_max) pos_x_max = px;
+                    if (py < pos_y_min) pos_y_min = py;
+                    if (py > pos_y_max) pos_y_max = py;
+                }
+            }
+            fclose(csv);
+        }
     }
+    float pos_x_range = pos_x_max - pos_x_min;
+    float pos_y_range = pos_y_max - pos_y_min;
 
-    printf("\nOutput written to: %s\n", output_file);
+    if (quiet) {
+        // JSON output for optimization script
+        printf("{\"pos_x\":%.6f,\"pos_y\":%.6f,\"pos_z\":%.6f,",
+               final_state.position.x, final_state.position.y, final_state.position.z);
+        printf("\"vel_x\":%.6f,\"vel_y\":%.6f,\"vel_z\":%.6f,",
+               final_state.velocity.x, final_state.velocity.y, final_state.velocity.z);
+        printf("\"roll\":%.4f,\"pitch\":%.4f,\"yaw\":%.4f,",
+               final_state.roll * 180.0f / M_PI,
+               final_state.pitch * 180.0f / M_PI,
+               final_state.yaw * 180.0f / M_PI);
+        printf("\"pos_x_range\":%.6f,\"pos_y_range\":%.6f,",
+               pos_x_range, pos_y_range);
+        printf("\"final_dist\":%.6f}\n",
+               std::sqrt(final_state.position.x * final_state.position.x +
+                         final_state.position.y * final_state.position.y));
+    } else {
+        printf("\n=== Replay Complete ===\n");
+        printf("Processed %zu packets (%.2f seconds)\n",
+               packets.size(),
+               (packets.back().timestamp_ms - packets.front().timestamp_ms) / 1000.0f);
+
+        printf("\nPC ESKF Final state:\n");
+        printf("  Position: [%.3f, %.3f, %.3f] m\n",
+               final_state.position.x, final_state.position.y, final_state.position.z);
+        printf("  Velocity: [%.3f, %.3f, %.3f] m/s\n",
+               final_state.velocity.x, final_state.velocity.y, final_state.velocity.z);
+        printf("  Attitude: roll=%.2f° pitch=%.2f° yaw=%.2f°\n",
+               final_state.roll * 180.0f / M_PI,
+               final_state.pitch * 180.0f / M_PI,
+               final_state.yaw * 180.0f / M_PI);
+        printf("  Gyro bias: [%.6f, %.6f, %.6f] rad/s\n",
+               final_state.gyro_bias.x, final_state.gyro_bias.y, final_state.gyro_bias.z);
+        printf("  Position range: X=[%.3f, %.3f] Y=[%.3f, %.3f] m\n",
+               pos_x_min, pos_x_max, pos_y_min, pos_y_max);
+
+        if (has_device_eskf) {
+            printf("\nDevice ESKF Final state:\n");
+            printf("  Position: [%.3f, %.3f, %.3f] m\n",
+                   last_pkt.dev_pos_x, last_pkt.dev_pos_y, last_pkt.dev_pos_z);
+            printf("  Velocity: [%.3f, %.3f, %.3f] m/s\n",
+                   last_pkt.dev_vel_x, last_pkt.dev_vel_y, last_pkt.dev_vel_z);
+            printf("  Attitude: roll=%.2f° pitch=%.2f° yaw=%.2f°\n",
+                   last_pkt.dev_roll * 180.0f / M_PI,
+                   last_pkt.dev_pitch * 180.0f / M_PI,
+                   last_pkt.dev_yaw * 180.0f / M_PI);
+
+            // Position error
+            float pos_err = std::sqrt(
+                std::pow(final_state.position.x - last_pkt.dev_pos_x, 2) +
+                std::pow(final_state.position.y - last_pkt.dev_pos_y, 2) +
+                std::pow(final_state.position.z - last_pkt.dev_pos_z, 2));
+
+            // Yaw error
+            float yaw_err = (final_state.yaw - last_pkt.dev_yaw) * 180.0f / M_PI;
+            while (yaw_err > 180.0f) yaw_err -= 360.0f;
+            while (yaw_err < -180.0f) yaw_err += 360.0f;
+
+            printf("\n=== PC vs Device Comparison ===\n");
+            printf("  Position error: %.3f m\n", pos_err);
+            printf("  Yaw error: %.2f°\n", yaw_err);
+        }
+
+        printf("\nOutput: %s\n", output_file);
+    }
 
     return 0;
 }

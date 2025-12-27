@@ -247,12 +247,13 @@ def visualize_device_only(dev_df: pd.DataFrame, output_file: str = None, show: b
         ax.grid(True, alpha=0.3)
 
         ax = axes[2, 2]
-        ax.plot(dev_df['pos_x'], dev_df['pos_y'], 'b-', alpha=0.8)
-        ax.plot(dev_df['pos_x'].iloc[0], dev_df['pos_y'].iloc[0], 'go', markersize=10, label='Start')
-        ax.plot(dev_df['pos_x'].iloc[-1], dev_df['pos_y'].iloc[-1], 'rx', markersize=10, label='End')
-        ax.set_xlabel('X [m]')
-        ax.set_ylabel('Y [m]')
-        ax.set_title('ESKF 2D Trajectory (NED)')
+        # NED座標系で上から見た図（北が上、東が右）
+        ax.plot(dev_df['pos_y'], dev_df['pos_x'], 'b-', alpha=0.8)
+        ax.plot(dev_df['pos_y'].iloc[0], dev_df['pos_x'].iloc[0], 'go', markersize=10, label='Start')
+        ax.plot(dev_df['pos_y'].iloc[-1], dev_df['pos_x'].iloc[-1], 'rx', markersize=10, label='End')
+        ax.set_xlabel('Y (East) [m]')
+        ax.set_ylabel('X (North) [m]')
+        ax.set_title('ESKF 2D Trajectory (Top View)')
         ax.legend()
         ax.grid(True, alpha=0.3)
         ax.set_aspect('equal', adjustable='datalim')
@@ -370,14 +371,14 @@ def visualize_pc_only(pc_df: pd.DataFrame, output_file: str = None, show: bool =
     ax.legend()
     ax.grid(True, alpha=0.3)
 
-    # Trajectory
+    # Trajectory - NED座標系で上から見た図（北が上、東が右）
     ax = axes[2, 0]
-    ax.plot(pc_df['pos_x'], pc_df['pos_y'], 'b-', alpha=0.8)
-    ax.plot(pc_df['pos_x'].iloc[0], pc_df['pos_y'].iloc[0], 'go', markersize=10, label='Start')
-    ax.plot(pc_df['pos_x'].iloc[-1], pc_df['pos_y'].iloc[-1], 'rx', markersize=10, label='End')
-    ax.set_xlabel('X [m]')
-    ax.set_ylabel('Y [m]')
-    ax.set_title('PC ESKF 2D Trajectory (NED)')
+    ax.plot(pc_df['pos_y'], pc_df['pos_x'], 'b-', alpha=0.8)
+    ax.plot(pc_df['pos_y'].iloc[0], pc_df['pos_x'].iloc[0], 'go', markersize=10, label='Start')
+    ax.plot(pc_df['pos_y'].iloc[-1], pc_df['pos_x'].iloc[-1], 'rx', markersize=10, label='End')
+    ax.set_xlabel('Y (East) [m]')
+    ax.set_ylabel('X (North) [m]')
+    ax.set_title('PC ESKF 2D Trajectory (Top View)')
     ax.legend()
     ax.grid(True, alpha=0.3)
     ax.set_aspect('equal', adjustable='datalim')
@@ -490,15 +491,16 @@ def visualize_comparison(dev_df: pd.DataFrame, pc_df: pd.DataFrame,
     ax.legend()
     ax.grid(True, alpha=0.3)
 
+    # NED座標系で上から見た図（北が上、東が右）
     ax = axes[1, 2]
-    ax.plot(dev_df['pos_x'], dev_df['pos_y'], 'b-', label='Device', alpha=0.8, linewidth=1.5)
-    ax.plot(pc_df['pos_x'], pc_df['pos_y'], 'r--', label='PC', alpha=0.8, linewidth=1.5)
-    ax.plot(dev_df['pos_x'].iloc[0], dev_df['pos_y'].iloc[0], 'go', markersize=10, label='Start')
-    ax.plot(dev_df['pos_x'].iloc[-1], dev_df['pos_y'].iloc[-1], 'bx', markersize=10, label='Dev End')
-    ax.plot(pc_df['pos_x'].iloc[-1], pc_df['pos_y'].iloc[-1], 'rx', markersize=10, label='PC End')
-    ax.set_xlabel('X [m]')
-    ax.set_ylabel('Y [m]')
-    ax.set_title('2D Trajectory Comparison')
+    ax.plot(dev_df['pos_y'], dev_df['pos_x'], 'b-', label='Device', alpha=0.8, linewidth=1.5)
+    ax.plot(pc_df['pos_y'], pc_df['pos_x'], 'r--', label='PC', alpha=0.8, linewidth=1.5)
+    ax.plot(dev_df['pos_y'].iloc[0], dev_df['pos_x'].iloc[0], 'go', markersize=10, label='Start')
+    ax.plot(dev_df['pos_y'].iloc[-1], dev_df['pos_x'].iloc[-1], 'bx', markersize=10, label='Dev End')
+    ax.plot(pc_df['pos_y'].iloc[-1], pc_df['pos_x'].iloc[-1], 'rx', markersize=10, label='PC End')
+    ax.set_xlabel('Y (East) [m]')
+    ax.set_ylabel('X (North) [m]')
+    ax.set_title('2D Trajectory Comparison (Top View)')
     ax.legend(loc='upper right', fontsize=8)
     ax.grid(True, alpha=0.3)
     ax.set_aspect('equal', adjustable='datalim')

@@ -1,6 +1,6 @@
 # StampFly RTOS Skeleton 実装進捗
 
-## 最終更新: 2025-12-01
+## 最終更新: 2025-12-28
 
 ---
 
@@ -1362,10 +1362,144 @@ constexpr float flow_scale = 0.16f;  // 実測から2倍に修正
 
 ---
 
+## ESKFパラメータ自動最適化 ✅ 完了 (2025-12-27)
+
+### 実施内容
+
+20cm四方移動テストの再現精度を最大化するため、ESKFパラメータの自動最適化システムを構築。
+
+### 作成したツール
+
+#### 1. optimize_params.py（新規作成）
+
+グリッドサーチによるパラメータ最適化ツール:
+
+```python
+# 使用方法
+python3 optimize_params.py <input.bin> [--target_range=0.20] [--extended]
+
+# 最適化パラメータ
+- flow_noise: フロー観測ノイズ
+- accel_noise: 加速度観測ノイズ
+- gyro_noise: ジャイロ観測ノイズ
+- tof_noise: ToF観測ノイズ
+- flow_rad_per_pixel: フロー校正係数
+```
+
+**コスト関数**:
+```python
+# 非対称ペナルティ: 20cm未達を3倍のペナルティ
+if x_range_err < 0:
+    x_range_cost = abs(x_range_err) * 3.0  # 未達に厳しい
+else:
+    x_range_cost = x_range_err
+
+total_cost = range_cost * 4.0 + return_cost * 2.0 + att_cost * 0.5
+```
+
+#### 2. replay.cpp 拡張
+
+コマンドライン引数でパラメータを動的に指定可能に:
+
+```bash
+./eskf_replay input.bin output.csv \
+    --flow_noise=0.05 \
+    --accel_noise=0.05 \
+    --gyro_noise=0.001 \
+    --tof_noise=0.007 \
+    --flow_rad_per_pixel=0.00222 \
+    --flow_scale_x=0.943 \
+    --flow_scale_y=1.015 \
+    --quiet  # JSON出力（自動化用）
+```
+
+**追加された出力メトリクス**:
+```json
+{
+  "pos_x_range": 0.202,
+  "pos_y_range": 0.200,
+  "final_dist": 0.023,
+  "roll": 0.5,
+  "pitch": -0.3,
+  "yaw": 2.1
+}
+```
+
+### 最適化結果
+
+#### 発見した問題: X/Y軸感度の非対称性
+
+同じ`flow_rad_per_pixel`でもX軸とY軸で検出範囲が異なる:
+
+| flow_rad_per_pixel | X範囲 | Y範囲 | 差 |
+|-------------------|-------|-------|-----|
+| 0.00205 (デフォルト) | 19.7cm | 18.3cm | 1.4cm |
+| 0.00222 | 21.3cm | 19.7cm | 1.6cm |
+
+**解決策**: 軸別スケーリングを導入
+
+```cpp
+// eskf.hpp
+cfg.flow_cam_to_body[0] = 0.943f;  // X軸スケール (c2b_xx)
+cfg.flow_cam_to_body[3] = 1.015f;  // Y軸スケール (c2b_yy)
+```
+
+#### 最終パラメータ
+
+```cpp
+// components/stampfly_eskf/include/eskf.hpp
+
+// 20cm四方移動テストで最適化済み (2025-12-27)
+cfg.gyro_noise = 0.001f;
+cfg.accel_noise = 0.05f;
+cfg.tof_noise = 0.007f;
+cfg.mag_noise = 0.1f;
+cfg.flow_noise = 0.05f;
+cfg.accel_att_noise = 0.7f;
+
+// フロー校正: 理論値(0.00205) × 1.083 = 0.00222
+cfg.flow_rad_per_pixel = 0.00222f;
+
+// 軸別スケーリング
+cfg.flow_cam_to_body[0] = 0.943f;  // X軸
+cfg.flow_cam_to_body[3] = 1.015f;  // Y軸
+```
+
+#### 検証結果
+
+| 項目 | デフォルト | 最適化後 | 改善 |
+|------|-----------|---------|------|
+| X範囲 | 19.7cm | **20.2cm** | 目標20cmに到達 |
+| Y範囲 | 18.3cm | **20.0cm** | 目標20cmに到達 |
+| 原点復帰誤差 | 5.0cm | **2.3cm** | 54%改善 |
+| 総軌跡距離 | - | 86.7cm | (目標80cm比 +8%) |
+
+### トレードオフ分析
+
+**軌跡総距離80cm vs 各辺20cm**:
+
+| 目標 | flow_rad_per_pixel | X範囲 | Y範囲 | 総距離 |
+|------|-------------------|-------|-------|--------|
+| 80cm総距離 | 0.00202 | 18.6cm | 18.4cm | 79.9cm |
+| **20cm各辺** | **0.00222** | **20.2cm** | **20.0cm** | **86.7cm** |
+
+→ ユーザー選択により「20cm各辺」を優先
+
+### 変更ファイル
+
+| ファイル | 変更内容 |
+|---------|---------|
+| `tools/eskf_debug/optimize_params.py` | 新規作成: グリッドサーチ最適化 |
+| `tools/eskf_debug/replay.cpp` | パラメータ引数追加、--quiet/JSON出力 |
+| `components/stampfly_eskf/include/eskf.hpp` | 最適化済みデフォルト値 |
+
+---
+
 ## 変更履歴
 
 | 日付 | 内容 |
 |------|------|
+| 2025-12-27 | ESKFパラメータ自動最適化: optimize_params.py作成、replay.cppパラメータ引数追加、flow_rad_per_pixel=0.00222、軸別スケーリング導入、X=20.2cm/Y=20.0cm達成 |
 | 2025-12-01 | 動的四角形テスト: 軸マッピング修正(XY入替+符号)、flow_noise=0.1、flow_scale=0.16 |
 | 2025-12-01 | フローオフセット除去: flow_dx/dy_offset=0に設定、静止ドリフト2.2cm→0.2cm (90%改善) |
 | 2025-12-01 | PC vs Device ESKFデバッグ: レースコンディション対策(data_readyフラグ)、tof_noise調整、PC版reset()/setGyroBias()追加 |

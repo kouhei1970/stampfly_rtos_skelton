@@ -65,26 +65,36 @@ public:
         float flow_min_height;
         float flow_max_height;
 
+        // オプティカルフローキャリブレーション
+        // PMW3901: FOV=42°, 35pixels → 0.0209 rad/pixel
+        float flow_rad_per_pixel;       // 1ピクセルあたりの角度 [rad/pixel]
+
+        // カメラ→機体座標変換行列 (2x2)
+        // [flow_body_x]   [c2b_xx c2b_xy] [flow_cam_x]
+        // [flow_body_y] = [c2b_yx c2b_yy] [flow_cam_y]
+        float flow_cam_to_body[4];      // {c2b_xx, c2b_xy, c2b_yx, c2b_yy}
+
         // 地磁気有効フラグ
         // false: 地磁気観測なし、ジャイロバイアスZは初期値から更新しない
         bool mag_enabled;
 
         // デフォルト設定
-        // PCデバッグ環境で検証済みのパラメータ (2025-11-30)
+        // 20cm四方移動テストで最適化済み (2025-12-27)
+        // 最適化結果: X=20.2cm, Y=20.0cm, 原点復帰誤差2.3cm
         static Config defaultConfig() {
             Config cfg;
-            // プロセスノイズ (Q) - デフォルト値維持（安定性重視）
+            // プロセスノイズ (Q) - 最適化済み
             cfg.gyro_noise = 0.001f;           // rad/s/√Hz
-            cfg.accel_noise = 0.1f;            // m/s²/√Hz
+            cfg.accel_noise = 0.05f;           // m/s²/√Hz
             cfg.gyro_bias_noise = 0.00005f;    // rad/s/√s
             cfg.accel_bias_noise = 0.001f;     // m/s²/√s
 
-            // 観測ノイズ (R) - PCデバッグで調整済み
-            cfg.baro_noise = 0.1f;             // m (推定値: 0.099m)
-            cfg.tof_noise = 0.002f;            // m (推定値: 0.001m、静止時)
-            cfg.mag_noise = 0.3f;              // uT
-            cfg.flow_noise = 0.1f;             // m/s (PCデバッグ済み: フローを信頼)
-            cfg.accel_att_noise = 1.0f;        // m/s² (姿勢補正の影響を弱める)
+            // 観測ノイズ (R) - 最適化済み
+            cfg.baro_noise = 0.1f;             // m
+            cfg.tof_noise = 0.007f;            // m
+            cfg.mag_noise = 0.1f;              // uT
+            cfg.flow_noise = 0.05f;            // m/s
+            cfg.accel_att_noise = 0.7f;        // m/s²
 
             // 初期共分散
             cfg.init_pos_std = 1.0f;
@@ -103,6 +113,19 @@ public:
             cfg.accel_motion_threshold = 0.3f; // m/s² (厳しくして動作中は補正スキップ)
             cfg.flow_min_height = 0.02f;       // m（机上テスト対応）
             cfg.flow_max_height = 4.0f;        // ToFの最大レンジ
+
+            // オプティカルフローキャリブレーション
+            // PMW3901: FOV≈42°, Npix=35, センサ出力は10倍値
+            // 20cm四方テストで範囲20cmに最適化: 0.00222 rad/pixel
+            cfg.flow_rad_per_pixel = 0.00222f;
+
+            // カメラ→機体座標変換（軸別スケーリング）
+            // 20cm四方テストで最適化: X軸0.943, Y軸1.015
+            cfg.flow_cam_to_body[0] = 0.943f;  // c2b_xx (X軸スケール)
+            cfg.flow_cam_to_body[1] = 0.0f;    // c2b_xy
+            cfg.flow_cam_to_body[2] = 0.0f;    // c2b_yx
+            cfg.flow_cam_to_body[3] = 1.015f;  // c2b_yy (Y軸スケール)
+
             cfg.mag_enabled = false;           // デフォルトは地磁気無効
             return cfg;
         }
@@ -163,18 +186,29 @@ public:
     void updateFlow(float flow_x, float flow_y, float distance);
 
     /**
-     * @brief オプティカルフロー更新 (ジャイロ補償付き)
-     * @param flow_x X方向フロー [rad/s]
-     * @param flow_y Y方向フロー [rad/s]
-     * @param distance ToFからの距離 [m]
-     * @param gyro_x X軸角速度 [rad/s] (回転成分除去用)
-     * @param gyro_y Y軸角速度 [rad/s] (回転成分除去用)
-     *
-     * ジャイロ補償: 回転によるフロー成分を除去
-     * Body→NED変換: Yaw角で座標変換
+     * @brief オプティカルフロー更新 (ジャイロ補償付き) [レガシーAPI]
+     * @deprecated updateFlowRaw()を使用してください
      */
     void updateFlowWithGyro(float flow_x, float flow_y, float distance,
                             float gyro_x, float gyro_y);
+
+    /**
+     * @brief オプティカルフロー更新 (生データ入力、物理的に正しい計算)
+     * @param flow_dx X方向ピクセル変位 [counts]
+     * @param flow_dy Y方向ピクセル変位 [counts]
+     * @param distance ToFからの距離 [m]
+     * @param dt サンプリング間隔 [s]
+     * @param gyro_x X軸角速度 [rad/s] (機体座標系)
+     * @param gyro_y Y軸角速度 [rad/s] (機体座標系)
+     *
+     * 計算フロー:
+     * 1. ピクセル変化 → ピクセル角速度 (rad_per_pixel / dt)
+     * 2. 機体角速度 → カメラ角速度 (flow_cam_to_body変換)
+     * 3. 回転成分除去 → 並進由来の角速度
+     * 4. 並進速度算出 (ω × distance)
+     */
+    void updateFlowRaw(int16_t flow_dx, int16_t flow_dy, float distance,
+                       float dt, float gyro_x, float gyro_y);
 
     /**
      * @brief 加速度計による姿勢補正 (Roll/Pitch)
@@ -365,12 +399,24 @@ public:
     State getState() const { return state_; }
     void reset();
 
+    /**
+     * @brief ジャイロバイアスを設定
+     * @param bias_x X軸ジャイロバイアス [rad/s]
+     * @param bias_y Y軸ジャイロバイアス [rad/s]
+     */
+    void setGyroBias(float bias_x, float bias_y) {
+        gyro_bias_x_ = bias_x;
+        gyro_bias_y_ = bias_y;
+    }
+
     bool isInitialized() const { return initialized_; }
 
 private:
     bool initialized_ = false;
     Config config_;
     State state_;
+    float gyro_bias_x_ = 0.0f;
+    float gyro_bias_y_ = 0.0f;
 };
 
 }  // namespace stampfly
