@@ -250,6 +250,12 @@ void print_usage(const char* prog)
     printf("  --mag-rate N     Mag update rate divisor (default: 10 = 10Hz)\n");
     printf("  --flow-rate N    Flow update rate divisor (default: 1 = 100Hz)\n");
     printf("  --flow-squal N   Min flow surface quality (default: 30)\n");
+    printf("  --flow-scale F   Flow scale for both axes (default: 0.16)\n");
+    printf("  --flow-scale-x F Flow scale for X axis (overrides --flow-scale)\n");
+    printf("  --flow-scale-y F Flow scale for Y axis (overrides --flow-scale)\n");
+    printf("  --yaw-fixed      Fix yaw at 0 (disable yaw estimation)\n");
+    printf("  --no-mag         Disable magnetometer updates\n");
+    printf("  --no-accel-att   Disable accelerometer attitude updates\n");
     printf("  --verbose        Print progress\n");
 }
 
@@ -269,7 +275,13 @@ int main(int argc, char* argv[])
     int mag_rate = 10;    // 10Hz
     int flow_rate = 1;    // 100Hz
     int flow_squal_min = 30;
+    float flow_scale = 0.23f;  // キャリブレーション済み (2025-12-02)
+    float flow_scale_x = -1.0f;  // -1 means use flow_scale
+    float flow_scale_y = -1.0f;  // -1 means use flow_scale
     bool verbose = false;
+    bool yaw_fixed = false;
+    bool no_mag = false;
+    bool no_accel_att = false;
 
     // Parse options
     for (int i = 3; i < argc; i++) {
@@ -283,16 +295,36 @@ int main(int argc, char* argv[])
             flow_rate = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--flow-squal") == 0 && i + 1 < argc) {
             flow_squal_min = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--flow-scale") == 0 && i + 1 < argc) {
+            flow_scale = atof(argv[++i]);
+        } else if (strcmp(argv[i], "--flow-scale-x") == 0 && i + 1 < argc) {
+            flow_scale_x = atof(argv[++i]);
+        } else if (strcmp(argv[i], "--flow-scale-y") == 0 && i + 1 < argc) {
+            flow_scale_y = atof(argv[++i]);
         } else if (strcmp(argv[i], "--verbose") == 0) {
             verbose = true;
+        } else if (strcmp(argv[i], "--yaw-fixed") == 0) {
+            yaw_fixed = true;
+        } else if (strcmp(argv[i], "--no-mag") == 0) {
+            no_mag = true;
+        } else if (strcmp(argv[i], "--no-accel-att") == 0) {
+            no_accel_att = true;
         }
     }
+
+    // Apply default scale if not specified separately
+    if (flow_scale_x < 0) flow_scale_x = flow_scale;
+    if (flow_scale_y < 0) flow_scale_y = flow_scale;
 
     printf("=== ESKF Replay Tool ===\n");
     printf("Input: %s\n", input_file);
     printf("Output: %s\n", output_file);
     printf("Update rates: baro=%dHz, tof=%dHz, mag=%dHz, flow=%dHz\n",
            100 / baro_rate, 100 / tof_rate, 100 / mag_rate, 100 / flow_rate);
+    printf("Flow scale: X=%.4f, Y=%.4f\n", flow_scale_x, flow_scale_y);
+    if (yaw_fixed) printf("Yaw fixed at 0\n");
+    if (no_mag) printf("Magnetometer disabled\n");
+    if (no_accel_att) printf("Accelerometer attitude updates disabled\n");
 
     // Load log file
     int log_version = 0;
@@ -309,14 +341,18 @@ int main(int argc, char* argv[])
     config.flow_min_height = 0.02f;
     config.flow_noise = 0.1f;  // Lower = trust flow more
     config.tof_tilt_threshold = 0.35f;
+    config.mag_enabled = !no_mag;  // mag_enabled based on --no-mag option
     eskf.init(config);
     eskf.reset();
 
     // Restore biases from device log (V2 only)
+    // NOTE: Don't restore gyro bias from log - it may be corrupted by ESKF estimation
+    // Instead, start with zero bias and let ESKF estimate it
     if (has_device_eskf && packets.size() > 0) {
-        Vector3 initial_gyro_bias(0.0f, 0.0f, packets[0].gyro_bias_z);
-        eskf.setGyroBias(initial_gyro_bias);
-        printf("Gyro bias Z restored: %.6f rad/s\n", packets[0].gyro_bias_z);
+        // Vector3 initial_gyro_bias(0.0f, 0.0f, packets[0].gyro_bias_z);
+        // eskf.setGyroBias(initial_gyro_bias);
+        // printf("Gyro bias Z restored: %.6f rad/s\n", packets[0].gyro_bias_z);
+        printf("Gyro bias Z from log: %.6f rad/s (NOT used - starting from 0)\n", packets[0].gyro_bias_z);
 
         Vector3 initial_accel_bias(packets[0].accel_bias_x, packets[0].accel_bias_y, 0.0f);
         eskf.setAccelBias(initial_accel_bias);
@@ -340,6 +376,7 @@ int main(int argc, char* argv[])
     fprintf(out, "accel_bias_x,accel_bias_y,accel_bias_z,");
     fprintf(out, "raw_accel_x,raw_accel_y,raw_accel_z,");
     fprintf(out, "raw_gyro_x,raw_gyro_y,raw_gyro_z,");
+    fprintf(out, "raw_mag_x,raw_mag_y,raw_mag_z,");
     fprintf(out, "raw_baro_alt,raw_tof,raw_flow_squal,");
     fprintf(out, "raw_flow_dx,raw_flow_dy");
     if (has_device_eskf) {
@@ -418,9 +455,14 @@ int main(int argc, char* argv[])
         // ESKF predict (100Hz)
         eskf.predict(accel, gyro, dt);
 
+        // Fix yaw at 0 if requested (for testing horizontal motion)
+        if (yaw_fixed) {
+            eskf.setYaw(0.0f);
+        }
+
         // Accel attitude update (50Hz)
         static int accel_att_counter = 0;
-        if (++accel_att_counter >= 2) {
+        if (!no_accel_att && ++accel_att_counter >= 2) {
             accel_att_counter = 0;
             eskf.updateAccelAttitude(accel);
         }
@@ -442,7 +484,7 @@ int main(int argc, char* argv[])
         }
 
         // Mag update (device uses mag when calibration data exists in NVS)
-        if (i % mag_rate == 0) {
+        if (!no_mag && i % mag_rate == 0) {
             Vector3 mag(pkt.mag_x, pkt.mag_y, pkt.mag_z);
             float mag_norm = std::sqrt(mag.x*mag.x + mag.y*mag.y + mag.z*mag.z);
             if (mag_norm > 10.0f) {
@@ -465,9 +507,8 @@ int main(int argc, char* argv[])
 
         // Flow update (100Hz)
         if (i % flow_rate == 0 && pkt.flow_squal >= flow_squal_min) {
-            float flow_scale = 0.16f;  // 実測から2倍に修正
-            float flow_x = pkt.flow_dx * flow_scale;
-            float flow_y = pkt.flow_dy * flow_scale;
+            float flow_x = pkt.flow_dx * flow_scale_x;
+            float flow_y = pkt.flow_dy * flow_scale_y;
             float height = std::max(pkt.tof_bottom, 0.02f);
             eskf.updateFlowWithGyro(flow_x, flow_y, height, gyro.x, gyro.y);
         }
@@ -492,6 +533,8 @@ int main(int argc, char* argv[])
                 pkt.accel_x, pkt.accel_y, pkt.accel_z);
         fprintf(out, "%.6f,%.6f,%.6f,",
                 pkt.gyro_x, pkt.gyro_y, pkt.gyro_z);
+        fprintf(out, "%.4f,%.4f,%.4f,",
+                pkt.mag_x, pkt.mag_y, pkt.mag_z);
         fprintf(out, "%.4f,%.4f,%d,",
                 pkt.baro_alt, pkt.tof_bottom, pkt.flow_squal);
         fprintf(out, "%d,%d", pkt.flow_dx, pkt.flow_dy);

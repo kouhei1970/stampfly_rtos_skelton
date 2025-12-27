@@ -218,6 +218,14 @@ public:
     void setMagReference(const Vector3& mag_ref);
 
     /**
+     * @brief Yaw角を強制的に設定
+     * @param yaw Yaw角 [rad]
+     *
+     * デバッグ用：Yawを固定値に設定する
+     */
+    void setYaw(float yaw);
+
+    /**
      * @brief 共分散行列取得 (デバッグ用)
      */
     const Matrix<15, 15>& getCovariance() const { return P_; }

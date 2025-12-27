@@ -91,6 +91,12 @@ void ESKF::setMagReference(const Vector3& mag_ref)
     config_.mag_ref = mag_ref;
 }
 
+void ESKF::setYaw(float yaw)
+{
+    state_.yaw = yaw;
+    state_.orientation = Quaternion::fromEuler(state_.roll, state_.pitch, yaw);
+}
+
 void ESKF::predict(const Vector3& accel, const Vector3& gyro, float dt)
 {
     if (!initialized_ || dt <= 0) return;
@@ -98,6 +104,11 @@ void ESKF::predict(const Vector3& accel, const Vector3& gyro, float dt)
     // バイアス補正
     Vector3 gyro_corrected = gyro - state_.gyro_bias;
     Vector3 accel_corrected = accel - state_.accel_bias;
+
+    // mag_enabled=false時はYawレートを0に固定（ドリフト防止）
+    if (!config_.mag_enabled) {
+        gyro_corrected.z = 0.0f;
+    }
 
     // 回転行列
     Matrix<3, 3> R = quaternionToRotationMatrix(state_.orientation);
@@ -117,6 +128,12 @@ void ESKF::predict(const Vector3& accel, const Vector3& gyro, float dt)
     state_.orientation = state_.orientation * dq;
     state_.orientation.normalize();
     state_.orientation.toEuler(state_.roll, state_.pitch, state_.yaw);
+
+    // mag_enabled=false時はYaw=0に固定
+    if (!config_.mag_enabled) {
+        state_.yaw = 0.0f;
+        state_.orientation = Quaternion::fromEuler(state_.roll, state_.pitch, 0.0f);
+    }
 
     // 共分散の予測更新
     F_ = Matrix<15, 15>::identity();
@@ -164,7 +181,8 @@ void ESKF::predict(const Vector3& accel, const Vector3& gyro, float dt)
 
     Q_(BG_X, BG_X) = bg_var;
     Q_(BG_Y, BG_Y) = bg_var;
-    Q_(BG_Z, BG_Z) = bg_var;
+    // mag_enabled=false時はGyro Bias Zの推定を抑制
+    Q_(BG_Z, BG_Z) = config_.mag_enabled ? bg_var : 0.0f;
     Q_(BA_X, BA_X) = ba_var;
     Q_(BA_Y, BA_Y) = ba_var;
     Q_(BA_Z, BA_Z) = ba_var;
@@ -273,7 +291,7 @@ void ESKF::updateFlowWithGyro(float flow_x, float flow_y, float height,
     if (!initialized_ || height < config_.flow_min_height) return;
 
     // ジャイロ補償係数（回帰分析で取得）
-    constexpr float flow_scale = 0.16f;  // 実測から2倍に修正
+    constexpr float flow_scale = 0.23f;  // 実測キャリブレーション (2024-12-02)
     constexpr float k_xx = 1.35f * flow_scale;
     constexpr float k_xy = 9.30f * flow_scale;
     constexpr float k_yx = -2.65f * flow_scale;
@@ -324,7 +342,7 @@ void ESKF::updateAccelAttitude(const Vector3& accel)
 {
     if (!initialized_) return;
 
-    // 加速度ノルムをチェック
+    // 加速度ノルムをチェック（垂直方向の大きな加速を検出）
     float accel_norm = std::sqrt(accel.x*accel.x + accel.y*accel.y + accel.z*accel.z);
     float gravity_diff = std::abs(accel_norm - config_.gravity);
 
@@ -350,9 +368,17 @@ void ESKF::updateAccelAttitude(const Vector3& accel)
     H(0, ATT_Y) = config_.gravity;
     H(1, ATT_X) = -config_.gravity;
 
+    // Adaptive R: 水平加速度が大きいほど観測ノイズを増加
+    // 水平方向の動的加速度があると、それを傾きと誤認するため
+    float horiz_accel_sq = accel.x * accel.x + accel.y * accel.y;
+    constexpr float k_adaptive = 100.0f;  // 調整パラメータ
+    float R_scale = 1.0f + k_adaptive * horiz_accel_sq;
+
+    // 観測ノイズ（動的にスケーリング）
     Matrix<2, 2> R_mat;
-    R_mat(0, 0) = config_.accel_att_noise * config_.accel_att_noise;
-    R_mat(1, 1) = config_.accel_att_noise * config_.accel_att_noise;
+    float base_noise_sq = config_.accel_att_noise * config_.accel_att_noise;
+    R_mat(0, 0) = base_noise_sq * R_scale;
+    R_mat(1, 1) = base_noise_sq * R_scale;
 
     measurementUpdate<2>(z, h, H, R_mat);
 }
@@ -373,9 +399,18 @@ void ESKF::injectErrorState(const Matrix<15, 1>& dx)
     state_.orientation.normalize();
     state_.orientation.toEuler(state_.roll, state_.pitch, state_.yaw);
 
+    // mag_enabled=false時はYaw=0に固定
+    if (!config_.mag_enabled) {
+        state_.yaw = 0.0f;
+        state_.orientation = Quaternion::fromEuler(state_.roll, state_.pitch, 0.0f);
+    }
+
     state_.gyro_bias.x += dx(BG_X, 0);
     state_.gyro_bias.y += dx(BG_Y, 0);
-    state_.gyro_bias.z += dx(BG_Z, 0);
+    // mag_enabled=false時はGyro Bias Zを更新しない
+    if (config_.mag_enabled) {
+        state_.gyro_bias.z += dx(BG_Z, 0);
+    }
 
     state_.accel_bias.x += dx(BA_X, 0);
     state_.accel_bias.y += dx(BA_Y, 0);
