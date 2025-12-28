@@ -110,17 +110,35 @@ void ESKF::predict(const Vector3& accel, const Vector3& gyro, float dt)
         gyro_corrected.z = 0.0f;
     }
 
-    // 回転行列
-    Matrix<3, 3> R = quaternionToRotationMatrix(state_.orientation);
+    // 回転行列要素を直接計算（3x3行列を避ける）
+    const Quaternion& q = state_.orientation;
+    float q0 = q.w, q1 = q.x, q2 = q.y, q3 = q.z;
 
-    // ワールド座標系での加速度（重力補正）
-    // NEDフレーム: g = (0, 0, +9.81)
-    Vector3 accel_world = toVector3(R * toMatrix(accel_corrected));
-    accel_world.z += config_.gravity;
+    // R = q.toRotationMatrix() の要素
+    float R00 = 1 - 2*(q2*q2 + q3*q3);
+    float R01 = 2*(q1*q2 - q0*q3);
+    float R02 = 2*(q1*q3 + q0*q2);
+    float R10 = 2*(q1*q2 + q0*q3);
+    float R11 = 1 - 2*(q1*q1 + q3*q3);
+    float R12 = 2*(q2*q3 - q0*q1);
+    float R20 = 2*(q1*q3 - q0*q2);
+    float R21 = 2*(q2*q3 + q0*q1);
+    float R22 = 1 - 2*(q1*q1 + q2*q2);
+
+    // ワールド座標系での加速度 = R * accel_corrected + gravity
+    float ax = accel_corrected.x, ay = accel_corrected.y, az = accel_corrected.z;
+    float accel_world_x = R00*ax + R01*ay + R02*az;
+    float accel_world_y = R10*ax + R11*ay + R12*az;
+    float accel_world_z = R20*ax + R21*ay + R22*az + config_.gravity;
 
     // 名目状態の更新
-    state_.position += state_.velocity * dt + accel_world * (0.5f * dt * dt);
-    state_.velocity += accel_world * dt;
+    float half_dt_sq = 0.5f * dt * dt;
+    state_.position.x += state_.velocity.x * dt + accel_world_x * half_dt_sq;
+    state_.position.y += state_.velocity.y * dt + accel_world_y * half_dt_sq;
+    state_.position.z += state_.velocity.z * dt + accel_world_z * half_dt_sq;
+    state_.velocity.x += accel_world_x * dt;
+    state_.velocity.y += accel_world_y * dt;
+    state_.velocity.z += accel_world_z * dt;
 
     // 姿勢: q = q ⊗ exp(ω*dt)
     Vector3 dtheta = gyro_corrected * dt;
@@ -135,82 +153,455 @@ void ESKF::predict(const Vector3& accel, const Vector3& gyro, float dt)
         state_.orientation = Quaternion::fromEuler(state_.roll, state_.pitch, 0.0f);
     }
 
-    // 共分散の予測更新
-    F_ = Matrix<15, 15>::identity();
+    // ========================================================================
+    // 疎行列展開による共分散更新: P' = F * P * F^T + Q
+    // ========================================================================
+    // F行列の非ゼロ要素:
+    //   対角: F[i][i] = 1
+    //   F[0][3] = F[1][4] = F[2][5] = dt          (dp/dv)
+    //   F[3..5][6..8] = D_va[3x3] = -R*skew(a)*dt (dv/dθ)
+    //   F[3..5][12..14] = D_vb[3x3] = -R*dt       (dv/db_a)
+    //   F[6][9] = F[7][10] = F[8][11] = -dt       (dθ/db_g)
+    // ========================================================================
 
-    // dp/dv = I*dt
-    F_(POS_X, VEL_X) = dt;
-    F_(POS_Y, VEL_Y) = dt;
-    F_(POS_Z, VEL_Z) = dt;
+    // D_va = -R * skew(a) * dt = R * skew(-a*dt)
+    // skew(-a*dt) = [  0   az*dt -ay*dt]
+    //               [-az*dt  0   ax*dt]
+    //               [ ay*dt -ax*dt  0 ]
+    float adt_x = ax * dt, adt_y = ay * dt, adt_z = az * dt;
 
-    // dv/dθ = -R*[a]×*dt
-    Matrix<3, 3> skew_a = skewSymmetric(accel_corrected);
-    Matrix<3, 3> dv_dtheta = (R * skew_a) * (-dt);
-    for (int i = 0; i < 3; i++) {
-        for (int j = 0; j < 3; j++) {
-            F_(VEL_X + i, ATT_X + j) = dv_dtheta(i, j);
-        }
-    }
+    // D_va = -R * skew(a) * dt の各要素を直接計算
+    float D_va00 = R01*adt_z - R02*adt_y;
+    float D_va01 = R02*adt_x - R00*adt_z;
+    float D_va02 = R00*adt_y - R01*adt_x;
+    float D_va10 = R11*adt_z - R12*adt_y;
+    float D_va11 = R12*adt_x - R10*adt_z;
+    float D_va12 = R10*adt_y - R11*adt_x;
+    float D_va20 = R21*adt_z - R22*adt_y;
+    float D_va21 = R22*adt_x - R20*adt_z;
+    float D_va22 = R20*adt_y - R21*adt_x;
 
-    // dv/db_a = -R*dt
-    for (int i = 0; i < 3; i++) {
-        for (int j = 0; j < 3; j++) {
-            F_(VEL_X + i, BA_X + j) = -R(i, j) * dt;
-        }
-    }
+    // D_vb = -R * dt
+    float D_vb00 = -R00*dt, D_vb01 = -R01*dt, D_vb02 = -R02*dt;
+    float D_vb10 = -R10*dt, D_vb11 = -R11*dt, D_vb12 = -R12*dt;
+    float D_vb20 = -R20*dt, D_vb21 = -R21*dt, D_vb22 = -R22*dt;
 
-    // dθ/db_g = -I*dt
-    F_(ATT_X, BG_X) = -dt;
-    F_(ATT_Y, BG_Y) = -dt;
-    F_(ATT_Z, BG_Z) = -dt;
+    float neg_dt = -dt;
 
-    // プロセスノイズ共分散 Q
-    Q_ = Matrix<15, 15>::zeros();
+    // プロセスノイズ（対角のみ）
     float gyro_var = config_.gyro_noise * config_.gyro_noise * dt;
     float accel_var = config_.accel_noise * config_.accel_noise * dt;
     float bg_var = config_.gyro_bias_noise * config_.gyro_bias_noise * dt;
     float ba_var = config_.accel_bias_noise * config_.accel_bias_noise * dt;
+    float bg_z_var = config_.mag_enabled ? bg_var : 0.0f;
 
-    Q_(ATT_X, ATT_X) = gyro_var;
-    Q_(ATT_Y, ATT_Y) = gyro_var;
-    Q_(ATT_Z, ATT_Z) = gyro_var;
+    // P行列の要素を直接参照するためのエイリアス
+    // Pは対称行列なのでP[i][j] = P[j][i]
 
+    // 一時変数: FP = F * P の必要な行を計算
+    // FP[i][j] = sum_k F[i][k] * P[k][j]
+    //
+    // ブロック構造を利用:
+    // pos行 (0-2): FP[i][j] = P[i][j] + dt * P[i+3][j]
+    // vel行 (3-5): FP[i][j] = P[i][j] + D_va[i-3][k] * P[6+k][j] + D_vb[i-3][k] * P[12+k][j]
+    // att行 (6-8): FP[i][j] = P[i][j] + neg_dt * P[i+3][j]
+    // bg行 (9-11): FP[i][j] = P[i][j]
+    // ba行 (12-14): FP[i][j] = P[i][j]
+
+    // P' = FP * F^T + Q を直接計算
+    // 対称性を利用して上三角のみ計算し、下三角にコピー
+
+    // 新しいP行列を temp1_ に構築（P_を直接更新すると途中で値が変わるため）
+
+    // ---- pos-pos ブロック (0-2, 0-2) ----
+    // P'[i][j] = (P[i][j] + dt*P[i+3][j]) + dt*(P[j][i+3] + dt*P[i+3][j+3])
+    //          = P[i][j] + dt*P[i+3][j] + dt*P[j][i+3] + dt^2*P[i+3][j+3]
+    // 対称性より P[i+3][j] = P[j][i+3]^T
+    float dt2 = dt * dt;
     for (int i = 0; i < 3; i++) {
-        Q_(VEL_X + i, VEL_X + i) = accel_var;
+        for (int j = i; j < 3; j++) {
+            float val = P_(i, j) + dt * (P_(i+3, j) + P_(i, j+3)) + dt2 * P_(i+3, j+3);
+            temp1_(i, j) = val;
+            temp1_(j, i) = val;
+        }
     }
 
-    Q_(BG_X, BG_X) = bg_var;
-    Q_(BG_Y, BG_Y) = bg_var;
-    // mag_enabled=false時はGyro Bias Zの推定を抑制
-    Q_(BG_Z, BG_Z) = config_.mag_enabled ? bg_var : 0.0f;
-    Q_(BA_X, BA_X) = ba_var;
-    Q_(BA_Y, BA_Y) = ba_var;
-    Q_(BA_Z, BA_Z) = ba_var;
+    // ---- pos-vel ブロック (0-2, 3-5) ----
+    // P'[i][j] = (P[i][k] + dt*P[i+3][k]) * F^T[k][j]
+    // F^T[k][j] は F[j][k] なので、j=3..5に対してF[j][j]=1, F[j][6..8]=D_va, F[j][12..14]=D_vb
+    for (int i = 0; i < 3; i++) {
+        for (int j = 0; j < 3; j++) {
+            int jj = j + 3;  // vel index
+            // FP[i][k] for k relevant to col jj
+            float fp_i_j3 = P_(i, jj) + dt * P_(i+3, jj);
+            // Add contributions from att and ba blocks
+            float fp_i_6 = P_(i, 6) + dt * P_(i+3, 6);
+            float fp_i_7 = P_(i, 7) + dt * P_(i+3, 7);
+            float fp_i_8 = P_(i, 8) + dt * P_(i+3, 8);
+            float fp_i_12 = P_(i, 12) + dt * P_(i+3, 12);
+            float fp_i_13 = P_(i, 13) + dt * P_(i+3, 13);
+            float fp_i_14 = P_(i, 14) + dt * P_(i+3, 14);
 
-    // P = F * P * F' + Q
-    temp1_ = F_ * P_;
-    temp2_ = temp1_ * F_.transpose();
-    P_ = temp2_ + Q_;
+            float D_va_j0, D_va_j1, D_va_j2, D_vb_j0, D_vb_j1, D_vb_j2;
+            if (j == 0) {
+                D_va_j0 = D_va00; D_va_j1 = D_va01; D_va_j2 = D_va02;
+                D_vb_j0 = D_vb00; D_vb_j1 = D_vb01; D_vb_j2 = D_vb02;
+            } else if (j == 1) {
+                D_va_j0 = D_va10; D_va_j1 = D_va11; D_va_j2 = D_va12;
+                D_vb_j0 = D_vb10; D_vb_j1 = D_vb11; D_vb_j2 = D_vb12;
+            } else {
+                D_va_j0 = D_va20; D_va_j1 = D_va21; D_va_j2 = D_va22;
+                D_vb_j0 = D_vb20; D_vb_j1 = D_vb21; D_vb_j2 = D_vb22;
+            }
+
+            float val = fp_i_j3 + fp_i_6*D_va_j0 + fp_i_7*D_va_j1 + fp_i_8*D_va_j2
+                                + fp_i_12*D_vb_j0 + fp_i_13*D_vb_j1 + fp_i_14*D_vb_j2;
+            temp1_(i, jj) = val;
+            temp1_(jj, i) = val;
+        }
+    }
+
+    // ---- pos-att ブロック (0-2, 6-8) ----
+    for (int i = 0; i < 3; i++) {
+        for (int j = 0; j < 3; j++) {
+            int jj = j + 6;
+            float fp_i_j6 = P_(i, jj) + dt * P_(i+3, jj);
+            float fp_i_9 = P_(i, 9+j) + dt * P_(i+3, 9+j);  // bg対角
+            float val = fp_i_j6 + fp_i_9 * neg_dt;
+            temp1_(i, jj) = val;
+            temp1_(jj, i) = val;
+        }
+    }
+
+    // ---- pos-bg ブロック (0-2, 9-11) ----
+    for (int i = 0; i < 3; i++) {
+        for (int j = 0; j < 3; j++) {
+            float val = P_(i, 9+j) + dt * P_(i+3, 9+j);
+            temp1_(i, 9+j) = val;
+            temp1_(9+j, i) = val;
+        }
+    }
+
+    // ---- pos-ba ブロック (0-2, 12-14) ----
+    for (int i = 0; i < 3; i++) {
+        for (int j = 0; j < 3; j++) {
+            float val = P_(i, 12+j) + dt * P_(i+3, 12+j);
+            temp1_(i, 12+j) = val;
+            temp1_(12+j, i) = val;
+        }
+    }
+
+    // ---- vel-vel ブロック (3-5, 3-5) ----
+    // 最も複雑: D_va と D_vb の両方が関与
+    for (int i = 0; i < 3; i++) {
+        float D_va_i0, D_va_i1, D_va_i2, D_vb_i0, D_vb_i1, D_vb_i2;
+        if (i == 0) {
+            D_va_i0 = D_va00; D_va_i1 = D_va01; D_va_i2 = D_va02;
+            D_vb_i0 = D_vb00; D_vb_i1 = D_vb01; D_vb_i2 = D_vb02;
+        } else if (i == 1) {
+            D_va_i0 = D_va10; D_va_i1 = D_va11; D_va_i2 = D_va12;
+            D_vb_i0 = D_vb10; D_vb_i1 = D_vb11; D_vb_i2 = D_vb12;
+        } else {
+            D_va_i0 = D_va20; D_va_i1 = D_va21; D_va_i2 = D_va22;
+            D_vb_i0 = D_vb20; D_vb_i1 = D_vb21; D_vb_i2 = D_vb22;
+        }
+
+        // FP[3+i][k] = P[3+i][k] + D_va[i][m]*P[6+m][k] + D_vb[i][m]*P[12+m][k]
+        for (int j = i; j < 3; j++) {
+            int ii = 3 + i, jj = 3 + j;
+
+            float D_va_j0, D_va_j1, D_va_j2, D_vb_j0, D_vb_j1, D_vb_j2;
+            if (j == 0) {
+                D_va_j0 = D_va00; D_va_j1 = D_va01; D_va_j2 = D_va02;
+                D_vb_j0 = D_vb00; D_vb_j1 = D_vb01; D_vb_j2 = D_vb02;
+            } else if (j == 1) {
+                D_va_j0 = D_va10; D_va_j1 = D_va11; D_va_j2 = D_va12;
+                D_vb_j0 = D_vb10; D_vb_j1 = D_vb11; D_vb_j2 = D_vb12;
+            } else {
+                D_va_j0 = D_va20; D_va_j1 = D_va21; D_va_j2 = D_va22;
+                D_vb_j0 = D_vb20; D_vb_j1 = D_vb21; D_vb_j2 = D_vb22;
+            }
+
+            // 基本項: P[ii][jj]
+            float val = P_(ii, jj);
+
+            // D_va * P_att の寄与
+            val += D_va_i0 * P_(6, jj) + D_va_i1 * P_(7, jj) + D_va_i2 * P_(8, jj);
+            val += P_(ii, 6) * D_va_j0 + P_(ii, 7) * D_va_j1 + P_(ii, 8) * D_va_j2;
+
+            // D_vb * P_ba の寄与
+            val += D_vb_i0 * P_(12, jj) + D_vb_i1 * P_(13, jj) + D_vb_i2 * P_(14, jj);
+            val += P_(ii, 12) * D_vb_j0 + P_(ii, 13) * D_vb_j1 + P_(ii, 14) * D_vb_j2;
+
+            // D_va * P_aa * D_va^T
+            for (int m = 0; m < 3; m++) {
+                float D_va_im = (m==0) ? D_va_i0 : (m==1) ? D_va_i1 : D_va_i2;
+                for (int n = 0; n < 3; n++) {
+                    float D_va_jn = (n==0) ? D_va_j0 : (n==1) ? D_va_j1 : D_va_j2;
+                    val += D_va_im * P_(6+m, 6+n) * D_va_jn;
+                }
+            }
+
+            // D_va * P_ab * D_vb^T + D_vb * P_ba * D_va^T
+            for (int m = 0; m < 3; m++) {
+                float D_va_im = (m==0) ? D_va_i0 : (m==1) ? D_va_i1 : D_va_i2;
+                float D_vb_im = (m==0) ? D_vb_i0 : (m==1) ? D_vb_i1 : D_vb_i2;
+                for (int n = 0; n < 3; n++) {
+                    float D_va_jn = (n==0) ? D_va_j0 : (n==1) ? D_va_j1 : D_va_j2;
+                    float D_vb_jn = (n==0) ? D_vb_j0 : (n==1) ? D_vb_j1 : D_vb_j2;
+                    val += D_va_im * P_(6+m, 12+n) * D_vb_jn;
+                    val += D_vb_im * P_(12+m, 6+n) * D_va_jn;
+                }
+            }
+
+            // D_vb * P_bb * D_vb^T
+            for (int m = 0; m < 3; m++) {
+                float D_vb_im = (m==0) ? D_vb_i0 : (m==1) ? D_vb_i1 : D_vb_i2;
+                for (int n = 0; n < 3; n++) {
+                    float D_vb_jn = (n==0) ? D_vb_j0 : (n==1) ? D_vb_j1 : D_vb_j2;
+                    val += D_vb_im * P_(12+m, 12+n) * D_vb_jn;
+                }
+            }
+
+            // Q項
+            if (i == j) val += accel_var;
+
+            temp1_(ii, jj) = val;
+            temp1_(jj, ii) = val;
+        }
+    }
+
+    // ---- vel-att ブロック (3-5, 6-8) ----
+    for (int i = 0; i < 3; i++) {
+        float D_va_i0, D_va_i1, D_va_i2, D_vb_i0, D_vb_i1, D_vb_i2;
+        if (i == 0) {
+            D_va_i0 = D_va00; D_va_i1 = D_va01; D_va_i2 = D_va02;
+            D_vb_i0 = D_vb00; D_vb_i1 = D_vb01; D_vb_i2 = D_vb02;
+        } else if (i == 1) {
+            D_va_i0 = D_va10; D_va_i1 = D_va11; D_va_i2 = D_va12;
+            D_vb_i0 = D_vb10; D_vb_i1 = D_vb11; D_vb_i2 = D_vb12;
+        } else {
+            D_va_i0 = D_va20; D_va_i1 = D_va21; D_va_i2 = D_va22;
+            D_vb_i0 = D_vb20; D_vb_i1 = D_vb21; D_vb_i2 = D_vb22;
+        }
+
+        for (int j = 0; j < 3; j++) {
+            int ii = 3 + i, jj = 6 + j;
+
+            // FP[ii][k] の関連列
+            float fp_ii_jj = P_(ii, jj) + D_va_i0*P_(6, jj) + D_va_i1*P_(7, jj) + D_va_i2*P_(8, jj)
+                           + D_vb_i0*P_(12, jj) + D_vb_i1*P_(13, jj) + D_vb_i2*P_(14, jj);
+
+            // F^T[k][jj] の非ゼロ: k=jj(1), k=9+j(-dt)
+            float fp_ii_9j = P_(ii, 9+j) + D_va_i0*P_(6, 9+j) + D_va_i1*P_(7, 9+j) + D_va_i2*P_(8, 9+j)
+                           + D_vb_i0*P_(12, 9+j) + D_vb_i1*P_(13, 9+j) + D_vb_i2*P_(14, 9+j);
+
+            float val = fp_ii_jj + fp_ii_9j * neg_dt;
+            temp1_(ii, jj) = val;
+            temp1_(jj, ii) = val;
+        }
+    }
+
+    // ---- vel-bg ブロック (3-5, 9-11) ----
+    for (int i = 0; i < 3; i++) {
+        float D_va_i0, D_va_i1, D_va_i2, D_vb_i0, D_vb_i1, D_vb_i2;
+        if (i == 0) {
+            D_va_i0 = D_va00; D_va_i1 = D_va01; D_va_i2 = D_va02;
+            D_vb_i0 = D_vb00; D_vb_i1 = D_vb01; D_vb_i2 = D_vb02;
+        } else if (i == 1) {
+            D_va_i0 = D_va10; D_va_i1 = D_va11; D_va_i2 = D_va12;
+            D_vb_i0 = D_vb10; D_vb_i1 = D_vb11; D_vb_i2 = D_vb12;
+        } else {
+            D_va_i0 = D_va20; D_va_i1 = D_va21; D_va_i2 = D_va22;
+            D_vb_i0 = D_vb20; D_vb_i1 = D_vb21; D_vb_i2 = D_vb22;
+        }
+
+        for (int j = 0; j < 3; j++) {
+            int ii = 3 + i, jj = 9 + j;
+            float val = P_(ii, jj) + D_va_i0*P_(6, jj) + D_va_i1*P_(7, jj) + D_va_i2*P_(8, jj)
+                      + D_vb_i0*P_(12, jj) + D_vb_i1*P_(13, jj) + D_vb_i2*P_(14, jj);
+            temp1_(ii, jj) = val;
+            temp1_(jj, ii) = val;
+        }
+    }
+
+    // ---- vel-ba ブロック (3-5, 12-14) ----
+    for (int i = 0; i < 3; i++) {
+        float D_va_i0, D_va_i1, D_va_i2, D_vb_i0, D_vb_i1, D_vb_i2;
+        if (i == 0) {
+            D_va_i0 = D_va00; D_va_i1 = D_va01; D_va_i2 = D_va02;
+            D_vb_i0 = D_vb00; D_vb_i1 = D_vb01; D_vb_i2 = D_vb02;
+        } else if (i == 1) {
+            D_va_i0 = D_va10; D_va_i1 = D_va11; D_va_i2 = D_va12;
+            D_vb_i0 = D_vb10; D_vb_i1 = D_vb11; D_vb_i2 = D_vb12;
+        } else {
+            D_va_i0 = D_va20; D_va_i1 = D_va21; D_va_i2 = D_va22;
+            D_vb_i0 = D_vb20; D_vb_i1 = D_vb21; D_vb_i2 = D_vb22;
+        }
+
+        for (int j = 0; j < 3; j++) {
+            int ii = 3 + i, jj = 12 + j;
+            float val = P_(ii, jj) + D_va_i0*P_(6, jj) + D_va_i1*P_(7, jj) + D_va_i2*P_(8, jj)
+                      + D_vb_i0*P_(12, jj) + D_vb_i1*P_(13, jj) + D_vb_i2*P_(14, jj);
+            temp1_(ii, jj) = val;
+            temp1_(jj, ii) = val;
+        }
+    }
+
+    // ---- att-att ブロック (6-8, 6-8) ----
+    for (int i = 0; i < 3; i++) {
+        for (int j = i; j < 3; j++) {
+            int ii = 6 + i, jj = 6 + j;
+            // FP[ii][k] = P[ii][k] + neg_dt * P[9+i][k]
+            // P'[ii][jj] = FP[ii][jj] + FP[ii][9+j] * neg_dt
+            float fp_ii_jj = P_(ii, jj) + neg_dt * P_(9+i, jj);
+            float fp_ii_9j = P_(ii, 9+j) + neg_dt * P_(9+i, 9+j);
+            float val = fp_ii_jj + fp_ii_9j * neg_dt;
+            if (i == j) val += gyro_var;
+            temp1_(ii, jj) = val;
+            temp1_(jj, ii) = val;
+        }
+    }
+
+    // ---- att-bg ブロック (6-8, 9-11) ----
+    for (int i = 0; i < 3; i++) {
+        for (int j = 0; j < 3; j++) {
+            int ii = 6 + i, jj = 9 + j;
+            float val = P_(ii, jj) + neg_dt * P_(9+i, jj);
+            temp1_(ii, jj) = val;
+            temp1_(jj, ii) = val;
+        }
+    }
+
+    // ---- att-ba ブロック (6-8, 12-14) ----
+    for (int i = 0; i < 3; i++) {
+        for (int j = 0; j < 3; j++) {
+            int ii = 6 + i, jj = 12 + j;
+            float val = P_(ii, jj) + neg_dt * P_(9+i, jj);
+            temp1_(ii, jj) = val;
+            temp1_(jj, ii) = val;
+        }
+    }
+
+    // ---- bg-bg ブロック (9-11, 9-11) ----
+    for (int i = 0; i < 3; i++) {
+        for (int j = i; j < 3; j++) {
+            int ii = 9 + i, jj = 9 + j;
+            float val = P_(ii, jj);
+            if (i == j) {
+                val += (i == 2) ? bg_z_var : bg_var;
+            }
+            temp1_(ii, jj) = val;
+            temp1_(jj, ii) = val;
+        }
+    }
+
+    // ---- bg-ba ブロック (9-11, 12-14) ----
+    for (int i = 0; i < 3; i++) {
+        for (int j = 0; j < 3; j++) {
+            int ii = 9 + i, jj = 12 + j;
+            temp1_(ii, jj) = P_(ii, jj);
+            temp1_(jj, ii) = P_(ii, jj);
+        }
+    }
+
+    // ---- ba-ba ブロック (12-14, 12-14) ----
+    for (int i = 0; i < 3; i++) {
+        for (int j = i; j < 3; j++) {
+            int ii = 12 + i, jj = 12 + j;
+            float val = P_(ii, jj);
+            if (i == j) val += ba_var;
+            temp1_(ii, jj) = val;
+            temp1_(jj, ii) = val;
+        }
+    }
+
+    // 結果をP_にコピー
+    P_ = temp1_;
 }
 
 void ESKF::updateBaro(float altitude)
 {
     if (!initialized_) return;
 
-    // NED変換: 上昇=マイナス
-    Matrix<1, 1> z;
-    z(0, 0) = -altitude;
+    // ========================================================================
+    // 疎行列展開による観測更新
+    // H行列の非ゼロ要素: H[0][2]=1 (POS_Z) のみ
+    // ========================================================================
 
-    Matrix<1, 1> h;
-    h(0, 0) = state_.position.z;
+    // 観測残差 y = z - h
+    float y = -altitude - state_.position.z;
 
-    Matrix<1, 15> H;
-    H(0, POS_Z) = 1.0f;
+    float R_val = config_.baro_noise * config_.baro_noise;
 
-    Matrix<1, 1> R;
-    R(0, 0) = config_.baro_noise * config_.baro_noise;
+    // S = H * P * H^T + R = P[2][2] + R (スカラ)
+    float S = P_(2, 2) + R_val;
+    if (S < 1e-10f) return;
+    float S_inv = 1.0f / S;
 
-    measurementUpdate<1>(z, h, H, R);
+    // カルマンゲイン K (15x1): K[i] = P[i][2] / S
+    float K[15];
+    for (int i = 0; i < 15; i++) {
+        K[i] = P_(i, 2) * S_inv;
+    }
+
+    // dx = K * y
+    float dx[15];
+    for (int i = 0; i < 15; i++) {
+        dx[i] = K[i] * y;
+    }
+
+    // 状態注入
+    state_.position.x += dx[POS_X];
+    state_.position.y += dx[POS_Y];
+    state_.position.z += dx[POS_Z];
+    state_.velocity.x += dx[VEL_X];
+    state_.velocity.y += dx[VEL_Y];
+    state_.velocity.z += dx[VEL_Z];
+
+    Vector3 dtheta(dx[ATT_X], dx[ATT_Y], dx[ATT_Z]);
+    Quaternion dq = Quaternion::fromRotationVector(dtheta);
+    state_.orientation = state_.orientation * dq;
+    state_.orientation.normalize();
+    state_.orientation.toEuler(state_.roll, state_.pitch, state_.yaw);
+
+    if (!config_.mag_enabled) {
+        state_.yaw = 0.0f;
+        state_.orientation = Quaternion::fromEuler(state_.roll, state_.pitch, 0.0f);
+    }
+
+    state_.gyro_bias.x += dx[BG_X];
+    state_.gyro_bias.y += dx[BG_Y];
+    if (config_.mag_enabled) {
+        state_.gyro_bias.z += dx[BG_Z];
+    }
+    state_.accel_bias.x += dx[BA_X];
+    state_.accel_bias.y += dx[BA_Y];
+    state_.accel_bias.z += dx[BA_Z];
+
+    // Joseph形式共分散更新: P' = (I - K*H) * P * (I - K*H)^T + K * R * K^T
+    // I_KH[i][j] = delta_ij - K[i]*(j==2)
+    // (I_KH * P)[i][j] = P[i][j] - K[i] * P[2][j]
+    // P'[i][j] = temp[i][j] - K[j] * temp[i][2] + R_val * K[i] * K[j]
+
+    // Step 1: temp1_ = (I - K*H) * P
+    for (int i = 0; i < 15; i++) {
+        float Ki = K[i];
+        for (int j = 0; j < 15; j++) {
+            temp1_(i, j) = P_(i, j) - Ki * P_(2, j);
+        }
+    }
+
+    // Step 2: P' = temp1_ * (I - K*H)^T + K * R * K^T
+    for (int i = 0; i < 15; i++) {
+        float temp1_i2 = temp1_(i, 2);
+        float Ki = K[i];
+        for (int j = 0; j < 15; j++) {
+            float val = temp1_(i, j) - K[j] * temp1_i2;
+            val += R_val * Ki * K[j];
+            P_(i, j) = val;
+        }
+    }
 }
 
 void ESKF::updateToF(float distance)
@@ -223,24 +614,89 @@ void ESKF::updateToF(float distance)
         return;
     }
 
+    // ========================================================================
+    // 疎行列展開による観測更新
+    // H行列の非ゼロ要素: H[0][2]=1 (POS_Z) のみ
+    // ========================================================================
+
     // 姿勢に基づく地上距離への変換
     float cos_roll = std::cos(state_.roll);
     float cos_pitch = std::cos(state_.pitch);
     float height = distance * cos_roll * cos_pitch;
 
-    Matrix<1, 1> z;
-    z(0, 0) = -height;
+    // 観測残差 y = z - h
+    float y = -height - state_.position.z;
 
-    Matrix<1, 1> h;
-    h(0, 0) = state_.position.z;
+    float R_val = config_.tof_noise * config_.tof_noise;
 
-    Matrix<1, 15> H;
-    H(0, POS_Z) = 1.0f;
+    // S = H * P * H^T + R = P[2][2] + R (スカラ)
+    float S = P_(2, 2) + R_val;
+    if (S < 1e-10f) return;
+    float S_inv = 1.0f / S;
 
-    Matrix<1, 1> R;
-    R(0, 0) = config_.tof_noise * config_.tof_noise;
+    // カルマンゲイン K (15x1): K[i] = P[i][2] / S
+    float K[15];
+    for (int i = 0; i < 15; i++) {
+        K[i] = P_(i, 2) * S_inv;
+    }
 
-    measurementUpdate<1>(z, h, H, R);
+    // dx = K * y
+    float dx[15];
+    for (int i = 0; i < 15; i++) {
+        dx[i] = K[i] * y;
+    }
+
+    // 状態注入
+    state_.position.x += dx[POS_X];
+    state_.position.y += dx[POS_Y];
+    state_.position.z += dx[POS_Z];
+    state_.velocity.x += dx[VEL_X];
+    state_.velocity.y += dx[VEL_Y];
+    state_.velocity.z += dx[VEL_Z];
+
+    Vector3 dtheta(dx[ATT_X], dx[ATT_Y], dx[ATT_Z]);
+    Quaternion dq = Quaternion::fromRotationVector(dtheta);
+    state_.orientation = state_.orientation * dq;
+    state_.orientation.normalize();
+    state_.orientation.toEuler(state_.roll, state_.pitch, state_.yaw);
+
+    if (!config_.mag_enabled) {
+        state_.yaw = 0.0f;
+        state_.orientation = Quaternion::fromEuler(state_.roll, state_.pitch, 0.0f);
+    }
+
+    state_.gyro_bias.x += dx[BG_X];
+    state_.gyro_bias.y += dx[BG_Y];
+    if (config_.mag_enabled) {
+        state_.gyro_bias.z += dx[BG_Z];
+    }
+    state_.accel_bias.x += dx[BA_X];
+    state_.accel_bias.y += dx[BA_Y];
+    state_.accel_bias.z += dx[BA_Z];
+
+    // Joseph形式共分散更新: P' = (I - K*H) * P * (I - K*H)^T + K * R * K^T
+    // I_KH[i][j] = delta_ij - K[i]*(j==2)
+    // (I_KH * P)[i][j] = P[i][j] - K[i] * P[2][j]
+    // P'[i][j] = temp[i][j] - K[j] * temp[i][2] + R_val * K[i] * K[j]
+
+    // Step 1: temp1_ = (I - K*H) * P
+    for (int i = 0; i < 15; i++) {
+        float Ki = K[i];
+        for (int j = 0; j < 15; j++) {
+            temp1_(i, j) = P_(i, j) - Ki * P_(2, j);
+        }
+    }
+
+    // Step 2: P' = temp1_ * (I - K*H)^T + K * R * K^T
+    for (int i = 0; i < 15; i++) {
+        float temp1_i2 = temp1_(i, 2);
+        float Ki = K[i];
+        for (int j = 0; j < 15; j++) {
+            float val = temp1_(i, j) - K[j] * temp1_i2;
+            val += R_val * Ki * K[j];
+            P_(i, j) = val;
+        }
+    }
 }
 
 void ESKF::updateMag(const Vector3& mag)
@@ -253,66 +709,183 @@ void ESKF::updateMag(const Vector3& mag)
         return;  // 異常な地磁気読み取り
     }
 
-    // 現在の姿勢から期待される地磁気ベクトル（ボディ座標系）
-    // mag_ref はNED座標系での参照地磁気ベクトル（初期化時に取得）
-    // mag_expected = R^T * mag_ref (NEDからボディへ変換)
-    Matrix<3, 3> R = quaternionToRotationMatrix(state_.orientation);
-    Matrix<3, 1> mag_ref_mat = toMatrix(config_.mag_ref);
-    Matrix<3, 1> mag_expected_mat = R.transpose() * mag_ref_mat;
+    // ========================================================================
+    // 疎行列展開による観測更新
+    // H行列の非ゼロ要素: 列6,7,8（ATT_X, ATT_Y, ATT_Z）のみ
+    // H = -skew(h) の形式
+    // ========================================================================
 
-    // 観測: 地磁気ベクトル全3成分
-    // ピッチが90度に近い場合もZ成分が必要
-    Matrix<3, 1> z;
-    z(0, 0) = mag.x;
-    z(1, 0) = mag.y;
-    z(2, 0) = mag.z;
+    // クォータニオンから回転行列要素を直接計算
+    const Quaternion& q = state_.orientation;
+    float q0 = q.w, q1 = q.x, q2 = q.y, q3 = q.z;
 
-    Matrix<3, 1> h;
-    h(0, 0) = mag_expected_mat(0, 0);
-    h(1, 0) = mag_expected_mat(1, 0);
-    h(2, 0) = mag_expected_mat(2, 0);
-
-    // ヤコビアン: ∂h/∂(roll, pitch, yaw)
-    // h = R^T * mag_ref
-    // ∂h/∂θ = -[h]× (ESKFの誤差状態での微分)
-
-    // R^T の各列を取得
-    float r00 = R(0,0), r01 = R(0,1), r02 = R(0,2);
-    float r10 = R(1,0), r11 = R(1,1), r12 = R(1,2);
-    float r20 = R(2,0), r21 = R(2,1), r22 = R(2,2);
+    // R行列の全要素
+    float r00 = 1 - 2*(q2*q2 + q3*q3);
+    float r01 = 2*(q1*q2 - q0*q3);
+    float r02 = 2*(q1*q3 + q0*q2);
+    float r10 = 2*(q1*q2 + q0*q3);
+    float r11 = 1 - 2*(q1*q1 + q3*q3);
+    float r12 = 2*(q2*q3 - q0*q1);
+    float r20 = 2*(q1*q3 - q0*q2);
+    float r21 = 2*(q2*q3 + q0*q1);
+    float r22 = 1 - 2*(q1*q1 + q2*q2);
 
     // mag_expected = R^T * mag_ref
     float hx = r00*config_.mag_ref.x + r10*config_.mag_ref.y + r20*config_.mag_ref.z;
     float hy = r01*config_.mag_ref.x + r11*config_.mag_ref.y + r21*config_.mag_ref.z;
     float hz = r02*config_.mag_ref.x + r12*config_.mag_ref.y + r22*config_.mag_ref.z;
 
-    // ∂h/∂θ = -[h]×
-    // ∂h/∂roll:  [0, hz, -hy]^T
-    // ∂h/∂pitch: [-hz, 0, hx]^T
-    // ∂h/∂yaw:   [hy, -hx, 0]^T
+    // 観測残差 y = z - h
+    float y0 = mag.x - hx;
+    float y1 = mag.y - hy;
+    float y2 = mag.z - hz;
 
-    Matrix<3, 15> H;
-    // Roll (ATT_X)
-    H(0, ATT_X) = 0.0f;
-    H(1, ATT_X) = hz;
-    H(2, ATT_X) = -hy;
-    // Pitch (ATT_Y)
-    H(0, ATT_Y) = -hz;
-    H(1, ATT_Y) = 0.0f;
-    H(2, ATT_Y) = hx;
-    // Yaw (ATT_Z)
-    H(0, ATT_Z) = hy;
-    H(1, ATT_Z) = -hx;
-    H(2, ATT_Z) = 0.0f;
+    // H行列の非ゼロ要素（-skew(h)形式）
+    // H[0][6]=0,   H[0][7]=-hz, H[0][8]=hy
+    // H[1][6]=hz,  H[1][7]=0,   H[1][8]=-hx
+    // H[2][6]=-hy, H[2][7]=hx,  H[2][8]=0
+    float H06 = 0.0f,  H07 = -hz, H08 = hy;
+    float H16 = hz,    H17 = 0.0f, H18 = -hx;
+    float H26 = -hy,   H27 = hx,   H28 = 0.0f;
 
-    // 観測ノイズ
-    Matrix<3, 3> R_mat;
-    float noise_sq = config_.mag_noise * config_.mag_noise;
-    R_mat(0, 0) = noise_sq;
-    R_mat(1, 1) = noise_sq;
-    R_mat(2, 2) = noise_sq;
+    float R_val = config_.mag_noise * config_.mag_noise;
 
-    measurementUpdate<3>(z, h, H, R_mat);
+    // HP = H * P (3x15): 列6,7,8のみ非ゼロなので
+    // HP[m][j] = H[m][6]*P[6][j] + H[m][7]*P[7][j] + H[m][8]*P[8][j]
+    float HP[3][15];
+    for (int j = 0; j < 15; j++) {
+        float P6j = P_(6, j);
+        float P7j = P_(7, j);
+        float P8j = P_(8, j);
+        HP[0][j] = H06*P6j + H07*P7j + H08*P8j;
+        HP[1][j] = H16*P6j + H17*P7j + H18*P8j;
+        HP[2][j] = H26*P6j + H27*P7j + H28*P8j;
+    }
+
+    // S = HP * H^T + R (3x3)
+    // S[m][n] = HP[m][6]*H[n][6] + HP[m][7]*H[n][7] + HP[m][8]*H[n][8] + R_val*(m==n)
+    float S[3][3];
+    S[0][0] = HP[0][6]*H06 + HP[0][7]*H07 + HP[0][8]*H08 + R_val;
+    S[0][1] = HP[0][6]*H16 + HP[0][7]*H17 + HP[0][8]*H18;
+    S[0][2] = HP[0][6]*H26 + HP[0][7]*H27 + HP[0][8]*H28;
+    S[1][0] = S[0][1];  // 対称
+    S[1][1] = HP[1][6]*H16 + HP[1][7]*H17 + HP[1][8]*H18 + R_val;  // 修正: H1xを使用
+    S[1][2] = HP[1][6]*H26 + HP[1][7]*H27 + HP[1][8]*H28;
+    S[2][0] = S[0][2];  // 対称
+    S[2][1] = S[1][2];  // 対称
+    S[2][2] = HP[2][6]*H26 + HP[2][7]*H27 + HP[2][8]*H28 + R_val;  // 修正: H2xを使用
+
+    // S^-1 (3x3 逆行列)
+    float det = S[0][0]*(S[1][1]*S[2][2] - S[1][2]*S[2][1])
+              - S[0][1]*(S[1][0]*S[2][2] - S[1][2]*S[2][0])
+              + S[0][2]*(S[1][0]*S[2][1] - S[1][1]*S[2][0]);
+    if (std::abs(det) < 1e-10f) return;
+    float inv_det = 1.0f / det;
+
+    float Si[3][3];
+    Si[0][0] = (S[1][1]*S[2][2] - S[1][2]*S[2][1]) * inv_det;
+    Si[0][1] = (S[0][2]*S[2][1] - S[0][1]*S[2][2]) * inv_det;
+    Si[0][2] = (S[0][1]*S[1][2] - S[0][2]*S[1][1]) * inv_det;
+    Si[1][0] = Si[0][1];  // 対称
+    Si[1][1] = (S[0][0]*S[2][2] - S[0][2]*S[2][0]) * inv_det;
+    Si[1][2] = (S[0][2]*S[1][0] - S[0][0]*S[1][2]) * inv_det;
+    Si[2][0] = Si[0][2];  // 対称
+    Si[2][1] = Si[1][2];  // 対称
+    Si[2][2] = (S[0][0]*S[1][1] - S[0][1]*S[1][0]) * inv_det;
+
+    // PHT = P * H^T (15x3)
+    // PHT[i][n] = P[i][6]*H[n][6] + P[i][7]*H[n][7] + P[i][8]*H[n][8]
+    float PHT[15][3];
+    for (int i = 0; i < 15; i++) {
+        float Pi6 = P_(i, 6);
+        float Pi7 = P_(i, 7);
+        float Pi8 = P_(i, 8);
+        PHT[i][0] = Pi6*H06 + Pi7*H07 + Pi8*H08;
+        PHT[i][1] = Pi6*H16 + Pi7*H17 + Pi8*H18;
+        PHT[i][2] = Pi6*H26 + Pi7*H27 + Pi8*H28;
+    }
+
+    // K = PHT * S^-1 (15x3)
+    float K[15][3];
+    for (int i = 0; i < 15; i++) {
+        K[i][0] = PHT[i][0]*Si[0][0] + PHT[i][1]*Si[1][0] + PHT[i][2]*Si[2][0];
+        K[i][1] = PHT[i][0]*Si[0][1] + PHT[i][1]*Si[1][1] + PHT[i][2]*Si[2][1];
+        K[i][2] = PHT[i][0]*Si[0][2] + PHT[i][1]*Si[1][2] + PHT[i][2]*Si[2][2];
+    }
+
+    // dx = K * y
+    float dx[15];
+    for (int i = 0; i < 15; i++) {
+        dx[i] = K[i][0]*y0 + K[i][1]*y1 + K[i][2]*y2;
+    }
+
+    // 状態注入
+    state_.position.x += dx[POS_X];
+    state_.position.y += dx[POS_Y];
+    state_.position.z += dx[POS_Z];
+    state_.velocity.x += dx[VEL_X];
+    state_.velocity.y += dx[VEL_Y];
+    state_.velocity.z += dx[VEL_Z];
+
+    Vector3 dtheta(dx[ATT_X], dx[ATT_Y], dx[ATT_Z]);
+    Quaternion dq = Quaternion::fromRotationVector(dtheta);
+    state_.orientation = state_.orientation * dq;
+    state_.orientation.normalize();
+    state_.orientation.toEuler(state_.roll, state_.pitch, state_.yaw);
+
+    if (!config_.mag_enabled) {
+        state_.yaw = 0.0f;
+        state_.orientation = Quaternion::fromEuler(state_.roll, state_.pitch, 0.0f);
+    }
+
+    state_.gyro_bias.x += dx[BG_X];
+    state_.gyro_bias.y += dx[BG_Y];
+    if (config_.mag_enabled) {
+        state_.gyro_bias.z += dx[BG_Z];
+    }
+    state_.accel_bias.x += dx[BA_X];
+    state_.accel_bias.y += dx[BA_Y];
+    state_.accel_bias.z += dx[BA_Z];
+
+    // Joseph形式共分散更新: P' = (I - K*H) * P * (I - K*H)^T + K * R * K^T
+    // I_KH[i][j] = delta_ij - K[i][0]*H[0][j] - K[i][1]*H[1][j] - K[i][2]*H[2][j]
+    // Hは列6,7,8のみ非ゼロ
+
+    // Step 1: temp1_ = (I - K*H) * P
+    // temp1_[i][j] = P[i][j] - K[i][0]*HP[0][j] - K[i][1]*HP[1][j] - K[i][2]*HP[2][j]
+    for (int i = 0; i < 15; i++) {
+        float Ki0 = K[i][0];
+        float Ki1 = K[i][1];
+        float Ki2 = K[i][2];
+        for (int j = 0; j < 15; j++) {
+            temp1_(i, j) = P_(i, j) - Ki0*HP[0][j] - Ki1*HP[1][j] - Ki2*HP[2][j];
+        }
+    }
+
+    // Step 2: P' = temp1_ * (I - K*H)^T + K * R * K^T
+    // temp1_i を列6,7,8について取得してI_KH^Tと乗算
+    for (int i = 0; i < 15; i++) {
+        float temp1_i6 = temp1_(i, 6);
+        float temp1_i7 = temp1_(i, 7);
+        float temp1_i8 = temp1_(i, 8);
+        float Ki0 = K[i][0];
+        float Ki1 = K[i][1];
+        float Ki2 = K[i][2];
+        for (int j = 0; j < 15; j++) {
+            // (I-KH)^T[k][j] の非ゼロ: k=j(1), k=6(-K[j][0]*H[0][6]-K[j][1]*H[1][6]-K[j][2]*H[2][6]), etc.
+            float Kj0 = K[j][0];
+            float Kj1 = K[j][1];
+            float Kj2 = K[j][2];
+            // temp1_ * (I-KH)^T = temp1_[i][j] - temp1_[i][6..8] * (K[j]*H)^T
+            float corr = temp1_i6*(Kj0*H06 + Kj1*H16 + Kj2*H26)
+                       + temp1_i7*(Kj0*H07 + Kj1*H17 + Kj2*H27)
+                       + temp1_i8*(Kj0*H08 + Kj1*H18 + Kj2*H28);
+            float val = temp1_(i, j) - corr;
+            // K * R * K^T
+            val += R_val * (Ki0*Kj0 + Ki1*Kj1 + Ki2*Kj2);
+            P_(i, j) = val;
+        }
+    }
 }
 
 void ESKF::updateFlow(float flow_x, float flow_y, float height)
@@ -344,9 +917,6 @@ void ESKF::updateFlowWithGyro(float flow_x, float flow_y, float height,
     float flow_y_comp = flow_y - k_yx * gyro_x_corrected - k_yy * gyro_y_corrected - flow_dy_offset;
 
     // ボディ座標系での速度
-    // フローセンサー軸マッピング（実測から）:
-    //   右移動(+Y) → flow_dy > 0
-    //   前方移動(+X) → flow_dx > 0
     float vx_body = flow_x_comp * height;
     float vy_body = flow_y_comp * height;
 
@@ -357,24 +927,109 @@ void ESKF::updateFlowWithGyro(float flow_x, float flow_y, float height,
     float vx_ned = cos_yaw * vx_body - sin_yaw * vy_body;
     float vy_ned = sin_yaw * vx_body + cos_yaw * vy_body;
 
-    // カルマンフィルタ観測更新
-    Matrix<2, 1> z;
-    z(0, 0) = vx_ned;
-    z(1, 0) = vy_ned;
+    // ========================================================================
+    // 疎行列展開による観測更新
+    // H行列の非ゼロ要素: H[0][3]=1 (VEL_X), H[1][4]=1 (VEL_Y) のみ
+    // ========================================================================
 
-    Matrix<2, 1> h;
-    h(0, 0) = state_.velocity.x;
-    h(1, 0) = state_.velocity.y;
+    // 観測残差 y = z - h
+    float y0 = vx_ned - state_.velocity.x;
+    float y1 = vy_ned - state_.velocity.y;
 
-    Matrix<2, 15> H;
-    H(0, VEL_X) = 1.0f;
-    H(1, VEL_Y) = 1.0f;
+    float R_val = config_.flow_noise * config_.flow_noise;
 
-    Matrix<2, 2> R;
-    R(0, 0) = config_.flow_noise * config_.flow_noise;
-    R(1, 1) = config_.flow_noise * config_.flow_noise;
+    // S = H * P * H^T + R (2x2)
+    // S[0][0] = P[3][3] + R_val
+    // S[0][1] = S[1][0] = P[3][4]
+    // S[1][1] = P[4][4] + R_val
+    float P33 = P_(3, 3);
+    float P34 = P_(3, 4);
+    float P44 = P_(4, 4);
 
-    measurementUpdate<2>(z, h, H, R);
+    float S00 = P33 + R_val;
+    float S01 = P34;
+    float S11 = P44 + R_val;
+
+    // S^-1 (2x2 逆行列)
+    float det = S00 * S11 - S01 * S01;
+    if (std::abs(det) < 1e-10f) return;
+    float inv_det = 1.0f / det;
+    float Si00 = S11 * inv_det;
+    float Si01 = -S01 * inv_det;
+    float Si11 = S00 * inv_det;
+
+    // カルマンゲイン K (15x2)
+    // K[i][0] = P[i][3]*Si00 + P[i][4]*Si01
+    // K[i][1] = P[i][3]*Si01 + P[i][4]*Si11
+    float K[15][2];
+    for (int i = 0; i < 15; i++) {
+        float Pi3 = P_(i, 3);
+        float Pi4 = P_(i, 4);
+        K[i][0] = Pi3 * Si00 + Pi4 * Si01;
+        K[i][1] = Pi3 * Si01 + Pi4 * Si11;
+    }
+
+    // dx = K * y
+    float dx[15];
+    for (int i = 0; i < 15; i++) {
+        dx[i] = K[i][0] * y0 + K[i][1] * y1;
+    }
+
+    // 状態注入
+    state_.position.x += dx[POS_X];
+    state_.position.y += dx[POS_Y];
+    state_.position.z += dx[POS_Z];
+    state_.velocity.x += dx[VEL_X];
+    state_.velocity.y += dx[VEL_Y];
+    state_.velocity.z += dx[VEL_Z];
+
+    Vector3 dtheta(dx[ATT_X], dx[ATT_Y], dx[ATT_Z]);
+    Quaternion dq = Quaternion::fromRotationVector(dtheta);
+    state_.orientation = state_.orientation * dq;
+    state_.orientation.normalize();
+    state_.orientation.toEuler(state_.roll, state_.pitch, state_.yaw);
+
+    if (!config_.mag_enabled) {
+        state_.yaw = 0.0f;
+        state_.orientation = Quaternion::fromEuler(state_.roll, state_.pitch, 0.0f);
+    }
+
+    state_.gyro_bias.x += dx[BG_X];
+    state_.gyro_bias.y += dx[BG_Y];
+    if (config_.mag_enabled) {
+        state_.gyro_bias.z += dx[BG_Z];
+    }
+    state_.accel_bias.x += dx[BA_X];
+    state_.accel_bias.y += dx[BA_Y];
+    state_.accel_bias.z += dx[BA_Z];
+
+    // Joseph形式共分散更新: P' = (I - K*H) * P * (I - K*H)^T + K * R * K^T
+    // I_KH[i][j] = delta_ij - K[i][0]*(j==3) - K[i][1]*(j==4)
+
+    // Step 1: temp1_ = (I - K*H) * P
+    // temp1_[i][j] = P[i][j] - K[i][0]*P[3][j] - K[i][1]*P[4][j]
+    for (int i = 0; i < 15; i++) {
+        float Ki0 = K[i][0];
+        float Ki1 = K[i][1];
+        for (int j = 0; j < 15; j++) {
+            temp1_(i, j) = P_(i, j) - Ki0 * P_(3, j) - Ki1 * P_(4, j);
+        }
+    }
+
+    // Step 2: P' = temp1_ * (I - K*H)^T + K * R * K^T
+    // P'[i][j] = temp1_[i][j] - K[j][0]*temp1_[i][3] - K[j][1]*temp1_[i][4]
+    //          + R_val * (K[i][0]*K[j][0] + K[i][1]*K[j][1])
+    for (int i = 0; i < 15; i++) {
+        float temp1_i3 = temp1_(i, 3);
+        float temp1_i4 = temp1_(i, 4);
+        float Ki0 = K[i][0];
+        float Ki1 = K[i][1];
+        for (int j = 0; j < 15; j++) {
+            float val = temp1_(i, j) - K[j][0] * temp1_i3 - K[j][1] * temp1_i4;
+            val += R_val * (Ki0 * K[j][0] + Ki1 * K[j][1]);
+            P_(i, j) = val;
+        }
+    }
 }
 
 void ESKF::updateFlowRaw(int16_t flow_dx, int16_t flow_dy, float distance,
@@ -439,71 +1094,249 @@ void ESKF::updateFlowRaw(int16_t flow_dx, int16_t flow_dy, float distance,
     float vx_ned = cos_yaw * vx_body - sin_yaw * vy_body;
     float vy_ned = sin_yaw * vx_body + cos_yaw * vy_body;
 
-    // ================================================================
-    // 6. カルマンフィルタ観測更新
-    // ================================================================
-    Matrix<2, 1> z;
-    z(0, 0) = vx_ned;
-    z(1, 0) = vy_ned;
+    // ========================================================================
+    // 6. 疎行列展開による観測更新
+    // H行列の非ゼロ要素: H[0][3]=1 (VEL_X), H[1][4]=1 (VEL_Y) のみ
+    // ========================================================================
 
-    Matrix<2, 1> h;
-    h(0, 0) = state_.velocity.x;
-    h(1, 0) = state_.velocity.y;
+    // 観測残差 y = z - h
+    float y0 = vx_ned - state_.velocity.x;
+    float y1 = vy_ned - state_.velocity.y;
 
-    Matrix<2, 15> H;
-    H(0, VEL_X) = 1.0f;
-    H(1, VEL_Y) = 1.0f;
+    float R_val = config_.flow_noise * config_.flow_noise;
 
-    Matrix<2, 2> R;
-    R(0, 0) = config_.flow_noise * config_.flow_noise;
-    R(1, 1) = config_.flow_noise * config_.flow_noise;
+    // S = H * P * H^T + R (2x2)
+    float P33 = P_(3, 3);
+    float P34 = P_(3, 4);
+    float P44 = P_(4, 4);
 
-    measurementUpdate<2>(z, h, H, R);
+    float S00 = P33 + R_val;
+    float S01 = P34;
+    float S11 = P44 + R_val;
+
+    // S^-1 (2x2 逆行列)
+    float det = S00 * S11 - S01 * S01;
+    if (std::abs(det) < 1e-10f) return;
+    float inv_det = 1.0f / det;
+    float Si00 = S11 * inv_det;
+    float Si01 = -S01 * inv_det;
+    float Si11 = S00 * inv_det;
+
+    // カルマンゲイン K (15x2)
+    float K[15][2];
+    for (int i = 0; i < 15; i++) {
+        float Pi3 = P_(i, 3);
+        float Pi4 = P_(i, 4);
+        K[i][0] = Pi3 * Si00 + Pi4 * Si01;
+        K[i][1] = Pi3 * Si01 + Pi4 * Si11;
+    }
+
+    // dx = K * y
+    float dx[15];
+    for (int i = 0; i < 15; i++) {
+        dx[i] = K[i][0] * y0 + K[i][1] * y1;
+    }
+
+    // 状態注入
+    state_.position.x += dx[POS_X];
+    state_.position.y += dx[POS_Y];
+    state_.position.z += dx[POS_Z];
+    state_.velocity.x += dx[VEL_X];
+    state_.velocity.y += dx[VEL_Y];
+    state_.velocity.z += dx[VEL_Z];
+
+    Vector3 dtheta(dx[ATT_X], dx[ATT_Y], dx[ATT_Z]);
+    Quaternion dq = Quaternion::fromRotationVector(dtheta);
+    state_.orientation = state_.orientation * dq;
+    state_.orientation.normalize();
+    state_.orientation.toEuler(state_.roll, state_.pitch, state_.yaw);
+
+    if (!config_.mag_enabled) {
+        state_.yaw = 0.0f;
+        state_.orientation = Quaternion::fromEuler(state_.roll, state_.pitch, 0.0f);
+    }
+
+    state_.gyro_bias.x += dx[BG_X];
+    state_.gyro_bias.y += dx[BG_Y];
+    if (config_.mag_enabled) {
+        state_.gyro_bias.z += dx[BG_Z];
+    }
+    state_.accel_bias.x += dx[BA_X];
+    state_.accel_bias.y += dx[BA_Y];
+    state_.accel_bias.z += dx[BA_Z];
+
+    // Joseph形式共分散更新
+    // Step 1: temp1_ = (I - K*H) * P
+    for (int i = 0; i < 15; i++) {
+        float Ki0 = K[i][0];
+        float Ki1 = K[i][1];
+        for (int j = 0; j < 15; j++) {
+            temp1_(i, j) = P_(i, j) - Ki0 * P_(3, j) - Ki1 * P_(4, j);
+        }
+    }
+
+    // Step 2: P' = temp1_ * (I - K*H)^T + K * R * K^T
+    for (int i = 0; i < 15; i++) {
+        float temp1_i3 = temp1_(i, 3);
+        float temp1_i4 = temp1_(i, 4);
+        float Ki0 = K[i][0];
+        float Ki1 = K[i][1];
+        for (int j = 0; j < 15; j++) {
+            float val = temp1_(i, j) - K[j][0] * temp1_i3 - K[j][1] * temp1_i4;
+            val += R_val * (Ki0 * K[j][0] + Ki1 * K[j][1]);
+            P_(i, j) = val;
+        }
+    }
 }
 
 void ESKF::updateAccelAttitude(const Vector3& accel)
 {
     if (!initialized_) return;
 
+    // バイアス補正された加速度
+    float accel_corrected_x = accel.x - state_.accel_bias.x;
+    float accel_corrected_y = accel.y - state_.accel_bias.y;
+    float accel_corrected_z = accel.z - state_.accel_bias.z;
+
     // 加速度ノルムをチェック（垂直方向の大きな加速を検出）
-    float accel_norm = std::sqrt(accel.x*accel.x + accel.y*accel.y + accel.z*accel.z);
+    float accel_norm = std::sqrt(accel_corrected_x*accel_corrected_x +
+                                  accel_corrected_y*accel_corrected_y +
+                                  accel_corrected_z*accel_corrected_z);
     float gravity_diff = std::abs(accel_norm - config_.gravity);
 
     if (gravity_diff > config_.accel_motion_threshold) {
         return;
     }
 
-    // 期待される加速度計出力
-    Matrix<3, 3> R = quaternionToRotationMatrix(state_.orientation);
-    Vector3 neg_g_world(0.0f, 0.0f, -config_.gravity);
-    Vector3 g_expected = toVector3(R.transpose() * toMatrix(neg_g_world));
+    // ========================================================================
+    // 疎行列展開による観測更新
+    // H行列の非ゼロ要素: H[0][7]=g, H[1][6]=-g のみ
+    // ========================================================================
 
-    // Roll/Pitchのみ補正
-    Matrix<2, 1> z;
-    z(0, 0) = accel.x;
-    z(1, 0) = accel.y;
+    // クォータニオンから必要な回転行列要素を直接計算
+    const Quaternion& q = state_.orientation;
+    float q0 = q.w, q1 = q.x, q2 = q.y, q3 = q.z;
 
-    Matrix<2, 1> h;
-    h(0, 0) = g_expected.x;
-    h(1, 0) = g_expected.y;
+    // R^T の第3列 = R の第3行
+    float R20 = 2*(q1*q3 - q0*q2);
+    float R21 = 2*(q2*q3 + q0*q1);
 
-    Matrix<2, 15> H;
-    H(0, ATT_Y) = config_.gravity;
-    H(1, ATT_X) = -config_.gravity;
+    // 期待される加速度計出力: g_expected = R^T * [0, 0, -g]
+    float neg_g = -config_.gravity;
+    float g_expected_x = R20 * neg_g;
+    float g_expected_y = R21 * neg_g;
 
-    // Adaptive R: 水平加速度が大きいほど観測ノイズを増加
-    // 水平方向の動的加速度があると、それを傾きと誤認するため
-    float horiz_accel_sq = accel.x * accel.x + accel.y * accel.y;
-    constexpr float k_adaptive = 100.0f;  // 調整パラメータ
-    float R_scale = 1.0f + k_adaptive * horiz_accel_sq;
+    // 観測残差 y = z - h（バイアス補正済み加速度を使用）
+    float y0 = accel_corrected_x - g_expected_x;
+    float y1 = accel_corrected_y - g_expected_y;
 
-    // 観測ノイズ（動的にスケーリング）
-    Matrix<2, 2> R_mat;
+    // H行列定数
+    float g = config_.gravity;
+    float g2 = g * g;
+
+    // Adaptive R（バイアス補正済み加速度を使用）
+    float horiz_accel_sq = accel_corrected_x * accel_corrected_x +
+                           accel_corrected_y * accel_corrected_y;
+    float R_scale = 1.0f + config_.k_adaptive * horiz_accel_sq;
     float base_noise_sq = config_.accel_att_noise * config_.accel_att_noise;
-    R_mat(0, 0) = base_noise_sq * R_scale;
-    R_mat(1, 1) = base_noise_sq * R_scale;
+    float R_val = base_noise_sq * R_scale;
 
-    measurementUpdate<2>(z, h, H, R_mat);
+    // S = H * P * H^T + R (2x2)
+    // S[0][0] = g^2 * P[7][7] + R_val
+    // S[0][1] = S[1][0] = -g^2 * P[6][7]
+    // S[1][1] = g^2 * P[6][6] + R_val
+    float P66 = P_(6, 6);
+    float P67 = P_(6, 7);
+    float P77 = P_(7, 7);
+
+    float S00 = g2 * P77 + R_val;
+    float S01 = -g2 * P67;
+    float S11 = g2 * P66 + R_val;
+
+    // S^-1 (2x2 逆行列)
+    float det = S00 * S11 - S01 * S01;
+    if (std::abs(det) < 1e-10f) return;
+    float inv_det = 1.0f / det;
+    float Si00 = S11 * inv_det;
+    float Si01 = -S01 * inv_det;
+    float Si11 = S00 * inv_det;
+
+    // カルマンゲイン K (15x2)
+    // PHT[i][0] = P[i][7] * g
+    // PHT[i][1] = P[i][6] * (-g)
+    // K[i][0] = PHT[i][0] * Si00 + PHT[i][1] * Si01
+    // K[i][1] = PHT[i][0] * Si01 + PHT[i][1] * Si11
+    float K[15][2];
+    for (int i = 0; i < 15; i++) {
+        float PHT_i0 = P_(i, 7) * g;
+        float PHT_i1 = P_(i, 6) * (-g);
+        K[i][0] = PHT_i0 * Si00 + PHT_i1 * Si01;
+        K[i][1] = PHT_i0 * Si01 + PHT_i1 * Si11;
+    }
+
+    // dx = K * y
+    float dx[15];
+    for (int i = 0; i < 15; i++) {
+        dx[i] = K[i][0] * y0 + K[i][1] * y1;
+    }
+
+    // 状態注入
+    state_.position.x += dx[POS_X];
+    state_.position.y += dx[POS_Y];
+    state_.position.z += dx[POS_Z];
+    state_.velocity.x += dx[VEL_X];
+    state_.velocity.y += dx[VEL_Y];
+    state_.velocity.z += dx[VEL_Z];
+
+    Vector3 dtheta(dx[ATT_X], dx[ATT_Y], dx[ATT_Z]);
+    Quaternion dq = Quaternion::fromRotationVector(dtheta);
+    state_.orientation = state_.orientation * dq;
+    state_.orientation.normalize();
+    state_.orientation.toEuler(state_.roll, state_.pitch, state_.yaw);
+
+    if (!config_.mag_enabled) {
+        state_.yaw = 0.0f;
+        state_.orientation = Quaternion::fromEuler(state_.roll, state_.pitch, 0.0f);
+    }
+
+    state_.gyro_bias.x += dx[BG_X];
+    state_.gyro_bias.y += dx[BG_Y];
+    if (config_.mag_enabled) {
+        state_.gyro_bias.z += dx[BG_Z];
+    }
+    state_.accel_bias.x += dx[BA_X];
+    state_.accel_bias.y += dx[BA_Y];
+    state_.accel_bias.z += dx[BA_Z];
+
+    // Joseph形式共分散更新: P' = (I - K*H) * P * (I - K*H)^T + K * R * K^T
+    // I_KH[i][j] = delta_ij - K[i][0]*g*(j==7) + K[i][1]*g*(j==6)
+
+    // Step 1: temp1_ = (I - K*H) * P
+    // temp1_[i][j] = P[i][j] - K[i][0]*g*P[7][j] + K[i][1]*g*P[6][j]
+    for (int i = 0; i < 15; i++) {
+        float Ki0_g = K[i][0] * g;
+        float Ki1_g = K[i][1] * g;
+        for (int j = 0; j < 15; j++) {
+            temp1_(i, j) = P_(i, j) - Ki0_g * P_(7, j) + Ki1_g * P_(6, j);
+        }
+    }
+
+    // Step 2: P' = temp1_ * (I - K*H)^T + K * R * K^T
+    // P'[i][j] = temp1_[i][j] - K[j][0]*g*temp1_[i][7] + K[j][1]*g*temp1_[i][6]
+    //          + R_val * (K[i][0]*K[j][0] + K[i][1]*K[j][1])
+    for (int i = 0; i < 15; i++) {
+        float temp1_i6 = temp1_(i, 6);
+        float temp1_i7 = temp1_(i, 7);
+        float Ki0 = K[i][0];
+        float Ki1 = K[i][1];
+        for (int j = 0; j < 15; j++) {
+            float Kj0_g = K[j][0] * g;
+            float Kj1_g = K[j][1] * g;
+            float val = temp1_(i, j) - Kj0_g * temp1_i7 + Kj1_g * temp1_i6;
+            val += R_val * (Ki0 * K[j][0] + Ki1 * K[j][1]);
+            P_(i, j) = val;
+        }
+    }
 }
 
 void ESKF::injectErrorState(const Matrix<15, 1>& dx)

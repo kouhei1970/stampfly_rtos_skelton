@@ -550,6 +550,7 @@ def main():
     parser.add_argument('--biases', action='store_true', help='Show biases')
     parser.add_argument('--trajectory', action='store_true', help='Show XY trajectory')
     parser.add_argument('--compare', action='store_true', help='Compare PC vs Device')
+    parser.add_argument('--pc', action='store_true', help='Show PC simulation results only (hide Device)')
     parser.add_argument('--save', type=str, help='Save to file')
     parser.add_argument('--no-show', action='store_true', help='Do not display')
 
@@ -573,6 +574,10 @@ def main():
     # Force compare mode if requested
     if args.compare:
         has_device = has_device or ('dev_pos_x' in df.columns)
+
+    # PC-only mode: hide device data
+    if args.pc:
+        has_device = False
 
     figures = []
 

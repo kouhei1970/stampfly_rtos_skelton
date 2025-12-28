@@ -1,6 +1,6 @@
 # StampFly RTOS Skeleton 実装進捗
 
-## 最終更新: 2025-12-28 (V1パケット形式廃止)
+## 最終更新: 2025-12-28 (疎行列展開版ESKFバグ修正)
 
 ---
 
@@ -806,37 +806,6 @@ uint8_t checksum;
 
 ## 次のステップ
 
-### ESKFデバッグ（地磁気有効化） 📋 次の作業
-
-地磁気キャリブレーション完了により、以下の検証が可能:
-
-1. **デバイスで地磁気校正実施**
-   ```
-   > magcal start
-   > (デバイスを回転)
-   > magcal stop
-   > magcal save
-   > reset
-   ```
-
-2. **四角形移動テスト（30cm高度）**
-   ```bash
-   python log_capture.py capture -p /dev/tty.usbmodem* -o flight.bin -d 60
-   ```
-
-3. **PC版ESKFでリプレイ・比較**
-   ```bash
-   ./eskf_replay flight.bin flight_pc.csv
-   python visualize_device_log.py flight.bin --pc flight_pc.csv --mode both
-   ```
-
-4. **デバイス vs PC 結果が一致するまで検証**
-   - Yawドリフト
-   - 位置推定精度
-   - 閉ループエラー
-
----
-
 ### 自動キャリブレーションフレームワーク 📋 設計完了
 
 詳細設計: `docs/auto_calibration_design.md`
@@ -859,20 +828,11 @@ Phase 4: Q/R微調整 (複数データセット)
 
 ### 直近の作業予定（優先度順）
 
-1. **ESKF行列演算の最適化** ⚠️ 重要
-   - 現状: 15x15行列演算が重く、400Hzで動作不可（100Hzに制限中）
-   - 対策: スパース行列を展開してスカラー演算に変換
-   - 目標: 400Hzでの安定動作
+1. **モータードライバ実機テスト** - PWM出力確認
 
-2. **地磁気キャリブレーション実装**
-   - ハードアイアン/ソフトアイアン補正
-   - キャリブレーション後にESKF地磁気更新を有効化
+2. **ESP-NOW通信テスト** - コントローラとの双方向通信
 
-3. **モータードライバ実機テスト** - PWM出力確認
-
-4. **ESP-NOW通信テスト** - コントローラとの双方向通信
-
-5. **状態遷移統合テスト** - INIT→IDLE→ARMED
+3. **状態遷移統合テスト** - INIT→IDLE→ARMED
 
 ### 残りの Phase 4 作業 (テスト)
 
@@ -1580,6 +1540,13 @@ if (g_cli.isBinlogV2Enabled()) {
 
 | 日付 | 内容 |
 |------|------|
+| 2025-12-28 | 疎行列展開版ESKFバグ修正: updateMagのS行列計算でH行列のインデックス誤り(H0x→H1x/H2x)を修正、PC版とデバイス版で同一の疎行列実装に統一 |
+| 2025-12-28 | updateAccelAttitudeWithGyro廃止: updateAccelAttitudeに統一、k_adaptiveはconfig_から取得（デフォルト0.0f） |
+| 2025-12-28 | visualize_eskf.py: --pcオプション追加（PCシミュレーション結果のみ表示） |
+| 2025-12-28 | 姿勢推定400Hz化: updateAccelAttitudeを毎サイクル実行（50Hz→400Hz） |
+| 2025-12-28 | ESP Timer導入: 正確な2.5ms周期(400Hz)をESP Timerで実現、セマフォによるIMUタスク同期 |
+| 2025-12-28 | ESKF 400Hz化: 4サンプル平均を廃止し毎サイクルpredict実行、dt=0.0025s、Flow=100Hz維持 |
+| 2025-12-28 | 地磁気Yaw推定検証完了: 360度回転テストで正常動作確認、「次のステップ」から地磁気関連項目を削除 |
 | 2025-12-28 | V1パケット形式廃止: replay.cpp/cli.hpp/cli.cpp/main.cppでV1コードをコメントアウト、V2のみに統一 |
 | 2025-12-27 | ESKFパラメータ自動最適化: optimize_params.py作成、replay.cppパラメータ引数追加、flow_rad_per_pixel=0.00222、軸別スケーリング導入、X=20.2cm/Y=20.0cm達成 |
 | 2025-12-01 | 動的四角形テスト: 軸マッピング修正(XY入替+符号)、flow_noise=0.1、flow_scale=0.16 |

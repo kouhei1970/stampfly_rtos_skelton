@@ -62,6 +62,7 @@ python visualize_eskf.py result.csv
 | `--biases` | バイアス推定値（ジャイロ、加速度） |
 | `--trajectory` | XY軌跡 |
 | `--compare` | PC ESKF vs Device ESKF 比較表示 |
+| `--pc` | PC シミュレーション結果のみ表示（Device非表示） |
 | `--save FILE` | 画像ファイルに保存 |
 | `--no-show` | ウィンドウを表示しない（--saveと併用） |
 
@@ -73,6 +74,9 @@ python visualize_eskf.py flow01.bin --sensors --attitude
 
 # PC vs Device比較
 python visualize_eskf.py result.csv --compare --all
+
+# PCシミュレーション結果のみ表示（Device非表示）
+python visualize_eskf.py result.csv --pc --attitude --position
 
 # 画像に保存（表示なし）
 python visualize_eskf.py flow01.bin --all --save result.png --no-show

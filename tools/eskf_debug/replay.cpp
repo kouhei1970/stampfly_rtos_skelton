@@ -428,7 +428,7 @@ int main(int argc, char* argv[])
     config.k_adaptive = k_adaptive;
     config.gyro_att_threshold = gyro_att_threshold;
 
-    // 地磁気更新を有効化
+    // 地磁気更新を有効化（デバイスと合わせる）
     config.mag_enabled = true;
     eskf.init(config);
     eskf.reset();
@@ -578,21 +578,22 @@ int main(int argc, char* argv[])
         accel_att_counter++;
         if (accel_att_counter >= 2) {
             accel_att_counter = 0;
-            eskf.updateAccelAttitudeWithGyro(accel, gyro);
+            eskf.updateAccelAttitude(accel);
         }
 
         // ====================================================================
         // Baro Update (50Hz = every 2nd packet)
+        // TODO: 気圧センサの値が確認できたら有効化
         // ====================================================================
-        if (i % 2 == 0) {
-            float baro_alt = pkt.baro_alt;
-            if (std::abs(baro_alt) < 0.001f && pkt.pressure > 80000.0f) {
-                constexpr float P0 = 101325.0f;
-                baro_alt = 44330.0f * (1.0f - std::pow(pkt.pressure / P0, 0.1903f));
-            }
-            float baro_alt_relative = baro_alt - baro_alt_reference;
-            eskf.updateBaro(baro_alt_relative);
-        }
+        // if (i % 2 == 0) {
+        //     float baro_alt = pkt.baro_alt;
+        //     if (std::abs(baro_alt) < 0.001f && pkt.pressure > 80000.0f) {
+        //         constexpr float P0 = 101325.0f;
+        //         baro_alt = 44330.0f * (1.0f - std::pow(pkt.pressure / P0, 0.1903f));
+        //     }
+        //     float baro_alt_relative = baro_alt - baro_alt_reference;
+        //     eskf.updateBaro(baro_alt_relative);
+        // }
 
         // ====================================================================
         // ToF Update (33Hz ≈ 30Hz = every 3rd packet)

@@ -261,16 +261,6 @@ public:
     void updateAccelAttitude(const Vector3& accel);
 
     /**
-     * @brief 加速度計姿勢補正 (ジャイロ情報付き)
-     *
-     * att_update_modeに応じて異なるアルゴリズムを使用:
-     * - 0: 加速度絶対値フィルタのみ
-     * - 1: 適応的R（水平加速度ベース）
-     * - 2: 角速度フィルタ（高回転時にR増加）
-     */
-    void updateAccelAttitudeWithGyro(const Vector3& accel, const Vector3& gyro);
-
-    /**
      * @brief 現在の状態取得
      */
     State getState() const { return state_; }
