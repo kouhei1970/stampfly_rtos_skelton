@@ -383,39 +383,45 @@ void ESKF::updateFlowRaw(int16_t flow_dx, int16_t flow_dy, float distance,
     if (!initialized_ || distance < config_.flow_min_height || dt <= 0) return;
 
     // ================================================================
-    // 1. ピクセル変化 → ピクセル角速度 [rad/s]
+    // 1. フローオフセット補正 → ピクセル角速度 [rad/s]
     // ================================================================
+    // オフセット補正（静止ホバリングキャリブレーションで取得）
+    float flow_dx_corrected = static_cast<float>(flow_dx) - config_.flow_offset[0];
+    float flow_dy_corrected = static_cast<float>(flow_dy) - config_.flow_offset[1];
+
     // PMW3901: FOV=42°, 35pixels → 0.0209 rad/pixel
-    float flow_x_cam = static_cast<float>(flow_dx) * config_.flow_rad_per_pixel / dt;
-    float flow_y_cam = static_cast<float>(flow_dy) * config_.flow_rad_per_pixel / dt;
+    float flow_x_cam = flow_dx_corrected * config_.flow_rad_per_pixel / dt;
+    float flow_y_cam = flow_dy_corrected * config_.flow_rad_per_pixel / dt;
 
     // ================================================================
-    // 2. カメラ座標系 → 機体座標系
-    // ================================================================
-    // [flow_body_x]   [c2b_xx c2b_xy] [flow_cam_x]
-    // [flow_body_y] = [c2b_yx c2b_yy] [flow_cam_y]
-    float flow_x_body = config_.flow_cam_to_body[0] * flow_x_cam
-                      + config_.flow_cam_to_body[1] * flow_y_cam;
-    float flow_y_body = config_.flow_cam_to_body[2] * flow_x_cam
-                      + config_.flow_cam_to_body[3] * flow_y_cam;
-
-    // ================================================================
-    // 3. 回転成分除去 → 並進由来の角速度
+    // 2. 回転成分除去（カメラ座標系で実施）
     // ================================================================
     // ジャイロバイアス補正（predict()と同様）
     float gyro_x_corrected = gyro_x - state_.gyro_bias.x;
     float gyro_y_corrected = gyro_y - state_.gyro_bias.y;
 
-    // 機体角速度 → カメラ角速度（カメラは下向き固定）
-    // 機体がroll方向に回転 → カメラはY軸周りに回転 → flow_x変化
-    // 機体がpitch方向に回転 → カメラはX軸周りに回転 → flow_y変化
-    // flow_rotation_x = gyro_y (pitch回転がflow_xに影響)
-    // flow_rotation_y = -gyro_x (roll回転がflow_yに影響、符号反転)
-    float flow_rotation_x = gyro_y_corrected;   // pitch → flow_x
-    float flow_rotation_y = -gyro_x_corrected;  // roll → flow_y (符号反転)
+    // ジャイロ→フロー回転補償（回帰分析から導出した係数を使用）
+    // flow_rotation_x = k_xx * gyro_x + k_xy * gyro_y
+    // flow_rotation_y = k_yx * gyro_x + k_yy * gyro_y
+    // これらの係数はカメラ座標系での補償値（NED gyroに対して）
+    float flow_rot_x_cam = config_.flow_gyro_comp[0] * gyro_x_corrected
+                         + config_.flow_gyro_comp[1] * gyro_y_corrected;
+    float flow_rot_y_cam = config_.flow_gyro_comp[2] * gyro_x_corrected
+                         + config_.flow_gyro_comp[3] * gyro_y_corrected;
 
-    float flow_trans_x = flow_x_body - flow_rotation_x;
-    float flow_trans_y = flow_y_body - flow_rotation_y;
+    // カメラ座標系で回転成分を除去
+    float flow_trans_x_cam = flow_x_cam - flow_rot_x_cam;
+    float flow_trans_y_cam = flow_y_cam - flow_rot_y_cam;
+
+    // ================================================================
+    // 3. カメラ座標系 → 機体座標系
+    // ================================================================
+    // [flow_body_x]   [c2b_xx c2b_xy] [flow_cam_x]
+    // [flow_body_y] = [c2b_yx c2b_yy] [flow_cam_y]
+    float flow_trans_x = config_.flow_cam_to_body[0] * flow_trans_x_cam
+                       + config_.flow_cam_to_body[1] * flow_trans_y_cam;
+    float flow_trans_y = config_.flow_cam_to_body[2] * flow_trans_x_cam
+                       + config_.flow_cam_to_body[3] * flow_trans_y_cam;
 
     // ================================================================
     // 4. 並進速度算出 [m/s]

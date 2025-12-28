@@ -24,6 +24,10 @@ using namespace stampfly::math;
 // Binary Log Packet Structures (must match cli.hpp)
 // ============================================================================
 
+// ==========================================================================
+// V1 Packet Structure - DEPRECATED (commented out for future removal)
+// ==========================================================================
+#if 0
 #pragma pack(push, 1)
 struct BinaryLogPacketV1 {
     uint8_t header[2];      // 0xAA, 0x55
@@ -41,8 +45,8 @@ struct BinaryLogPacketV1 {
     uint8_t checksum;
 };
 #pragma pack(pop)
-
 static_assert(sizeof(BinaryLogPacketV1) == 64, "V1 Packet size mismatch");
+#endif
 
 #pragma pack(push, 1)
 struct BinaryLogPacketV2 {
@@ -109,6 +113,10 @@ struct SensorData {
 // Checksum Verification
 // ============================================================================
 
+// ==========================================================================
+// V1 Checksum - DEPRECATED (commented out for future removal)
+// ==========================================================================
+#if 0
 bool verify_checksum_v1(const BinaryLogPacketV1& pkt)
 {
     const uint8_t* data = reinterpret_cast<const uint8_t*>(&pkt);
@@ -118,6 +126,7 @@ bool verify_checksum_v1(const BinaryLogPacketV1& pkt)
     }
     return checksum == pkt.checksum;
 }
+#endif
 
 bool verify_checksum_v2(const BinaryLogPacketV2& pkt)
 {
@@ -145,7 +154,8 @@ int detect_log_format(const char* filename)
     }
     fclose(f);
 
-    if (header[0] == 0xAA && header[1] == 0x55) return 1;
+    // V1 detection disabled - DEPRECATED
+    // if (header[0] == 0xAA && header[1] == 0x55) return 1;
     if (header[0] == 0xAA && header[1] == 0x56) return 2;
     return 0;
 }
@@ -167,11 +177,15 @@ std::vector<SensorData> load_log_file(const char* filename, int& version, bool q
     }
 
     if (!quiet) {
-        printf("Log format: V%d (%d bytes/packet)\n", version, version == 1 ? 64 : 128);
+        printf("Log format: V%d (%d bytes/packet)\n", version, 128);
     }
 
     int checksum_errors = 0;
 
+    // ==========================================================================
+    // V1 Parsing - DEPRECATED (commented out for future removal)
+    // ==========================================================================
+#if 0
     if (version == 1) {
         BinaryLogPacketV1 pkt;
         while (fread(&pkt, sizeof(pkt), 1, f) == 1) {
@@ -203,7 +217,9 @@ std::vector<SensorData> load_log_file(const char* filename, int& version, bool q
                 }
             }
         }
-    } else {
+    } else
+#endif
+    {
         BinaryLogPacketV2 pkt;
         while (fread(&pkt, sizeof(pkt), 1, f) == 1) {
             if (pkt.header[0] == 0xAA && pkt.header[1] == 0x56) {
@@ -281,6 +297,9 @@ void print_usage(const char* prog)
     printf("  --gyro_bias_noise=N Gyro bias RW noise (default: 0.00005)\n");
     printf("  --accel_bias_noise=N Accel bias RW noise (default: 0.001)\n");
     printf("  --flow_rad_per_pixel=N Flow calibration [rad/pixel] (default: 0.00205)\n");
+    printf("  --att_update_mode=N Attitude update mode (0=accel_mag, 1=adaptive_R, 2=gyro) (default: 1)\n");
+    printf("  --k_adaptive=N      Adaptive R coefficient (mode 1) (default: 100)\n");
+    printf("  --gyro_att_threshold=N Gyro threshold [rad/s] (mode 2) (default: 0.5)\n");
 }
 
 // Helper to parse --key=value arguments
@@ -319,6 +338,11 @@ int main(int argc, char* argv[])
     float flow_rad_per_pixel = default_cfg.flow_rad_per_pixel;
     float flow_scale_x = default_cfg.flow_cam_to_body[0];
     float flow_scale_y = default_cfg.flow_cam_to_body[3];
+    float flow_offset_x = default_cfg.flow_offset[0];
+    float flow_offset_y = default_cfg.flow_offset[1];
+    int att_update_mode = default_cfg.att_update_mode;
+    float k_adaptive = default_cfg.k_adaptive;
+    float gyro_att_threshold = default_cfg.gyro_att_threshold;
 
     for (int i = 3; i < argc; i++) {
         if (strcmp(argv[i], "--verbose") == 0) {
@@ -349,6 +373,16 @@ int main(int argc, char* argv[])
             flow_scale_x = std::atof(argv[i] + 15);
         } else if (strncmp(argv[i], "--flow_scale_y=", 15) == 0) {
             flow_scale_y = std::atof(argv[i] + 15);
+        } else if (strncmp(argv[i], "--flow_offset_x=", 16) == 0) {
+            flow_offset_x = std::atof(argv[i] + 16);
+        } else if (strncmp(argv[i], "--flow_offset_y=", 16) == 0) {
+            flow_offset_y = std::atof(argv[i] + 16);
+        } else if (strncmp(argv[i], "--att_update_mode=", 18) == 0) {
+            att_update_mode = std::atoi(argv[i] + 18);
+        } else if (strncmp(argv[i], "--k_adaptive=", 13) == 0) {
+            k_adaptive = std::atof(argv[i] + 13);
+        } else if (strncmp(argv[i], "--gyro_att_threshold=", 21) == 0) {
+            gyro_att_threshold = std::atof(argv[i] + 21);
         }
     }
 
@@ -388,6 +422,11 @@ int main(int argc, char* argv[])
     config.flow_rad_per_pixel = flow_rad_per_pixel;
     config.flow_cam_to_body[0] = flow_scale_x;  // c2b_xx
     config.flow_cam_to_body[3] = flow_scale_y;  // c2b_yy
+    config.flow_offset[0] = flow_offset_x;
+    config.flow_offset[1] = flow_offset_y;
+    config.att_update_mode = att_update_mode;
+    config.k_adaptive = k_adaptive;
+    config.gyro_att_threshold = gyro_att_threshold;
 
     // 地磁気更新を有効化
     config.mag_enabled = true;
@@ -539,7 +578,7 @@ int main(int argc, char* argv[])
         accel_att_counter++;
         if (accel_att_counter >= 2) {
             accel_att_counter = 0;
-            eskf.updateAccelAttitude(accel);
+            eskf.updateAccelAttitudeWithGyro(accel, gyro);
         }
 
         // ====================================================================

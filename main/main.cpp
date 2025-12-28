@@ -929,12 +929,9 @@ static void CLITask(void* pvParameters)
             }
 
             // Output binary log data at fixed interval (100Hz for ESKF debug)
-            if ((g_cli.isBinlogEnabled() || g_cli.isBinlogV2Enabled()) && (now - last_binlog) >= binlog_period) {
-                if (g_cli.isBinlogV2Enabled()) {
-                    g_cli.outputBinaryLogV2();
-                } else {
-                    g_cli.outputBinaryLog();
-                }
+            // V1 binlog removed - now only V2 (128 bytes with ESKF estimates)
+            if (g_cli.isBinlogV2Enabled() && (now - last_binlog) >= binlog_period) {
+                g_cli.outputBinaryLogV2();
                 last_binlog = now;
             }
         }

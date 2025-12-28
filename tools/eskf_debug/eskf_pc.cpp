@@ -453,39 +453,45 @@ void ESKF::updateFlowRaw(int16_t flow_dx, int16_t flow_dy, float distance,
     if (!initialized_ || distance < config_.flow_min_height || dt <= 0) return;
 
     // ================================================================
-    // 1. ピクセル変化 → ピクセル角速度 [rad/s]
+    // 1. フローオフセット補正 → ピクセル角速度 [rad/s]
     // ================================================================
+    // オフセット補正（静止ホバリングキャリブレーションで取得）
+    float flow_dx_corrected = static_cast<float>(flow_dx) - config_.flow_offset[0];
+    float flow_dy_corrected = static_cast<float>(flow_dy) - config_.flow_offset[1];
+
     // PMW3901: FOV=42°, 35pixels → 0.0209 rad/pixel
-    float flow_x_cam = static_cast<float>(flow_dx) * config_.flow_rad_per_pixel / dt;
-    float flow_y_cam = static_cast<float>(flow_dy) * config_.flow_rad_per_pixel / dt;
+    float flow_x_cam = flow_dx_corrected * config_.flow_rad_per_pixel / dt;
+    float flow_y_cam = flow_dy_corrected * config_.flow_rad_per_pixel / dt;
 
     // ================================================================
-    // 2. カメラ座標系 → 機体座標系
-    // ================================================================
-    // [flow_body_x]   [c2b_xx c2b_xy] [flow_cam_x]
-    // [flow_body_y] = [c2b_yx c2b_yy] [flow_cam_y]
-    float flow_x_body = config_.flow_cam_to_body[0] * flow_x_cam
-                      + config_.flow_cam_to_body[1] * flow_y_cam;
-    float flow_y_body = config_.flow_cam_to_body[2] * flow_x_cam
-                      + config_.flow_cam_to_body[3] * flow_y_cam;
-
-    // ================================================================
-    // 3. 回転成分除去 → 並進由来の角速度
+    // 2. 回転成分除去（カメラ座標系で実施）
     // ================================================================
     // ジャイロバイアス補正（predict()と同様）
     float gyro_x_corrected = gyro_x - state_.gyro_bias.x;
     float gyro_y_corrected = gyro_y - state_.gyro_bias.y;
 
-    // 機体角速度 → カメラ角速度（カメラは下向き固定）
-    // 機体がroll方向に回転 → カメラはY軸周りに回転 → flow_x変化
-    // 機体がpitch方向に回転 → カメラはX軸周りに回転 → flow_y変化
-    // flow_rotation_x = gyro_y (pitch回転がflow_xに影響)
-    // flow_rotation_y = -gyro_x (roll回転がflow_yに影響、符号反転)
-    float flow_rotation_x = gyro_y_corrected;   // pitch → flow_x
-    float flow_rotation_y = -gyro_x_corrected;  // roll → flow_y (符号反転)
+    // ジャイロ→フロー回転補償（回帰分析から導出した係数を使用）
+    // flow_rotation_x = k_xx * gyro_x + k_xy * gyro_y
+    // flow_rotation_y = k_yx * gyro_x + k_yy * gyro_y
+    // これらの係数はカメラ座標系での補償値（NED gyroに対して）
+    float flow_rot_x_cam = config_.flow_gyro_comp[0] * gyro_x_corrected
+                         + config_.flow_gyro_comp[1] * gyro_y_corrected;
+    float flow_rot_y_cam = config_.flow_gyro_comp[2] * gyro_x_corrected
+                         + config_.flow_gyro_comp[3] * gyro_y_corrected;
 
-    float flow_trans_x = flow_x_body - flow_rotation_x;
-    float flow_trans_y = flow_y_body - flow_rotation_y;
+    // カメラ座標系で回転成分を除去
+    float flow_trans_x_cam = flow_x_cam - flow_rot_x_cam;
+    float flow_trans_y_cam = flow_y_cam - flow_rot_y_cam;
+
+    // ================================================================
+    // 3. カメラ座標系 → 機体座標系
+    // ================================================================
+    // [flow_body_x]   [c2b_xx c2b_xy] [flow_cam_x]
+    // [flow_body_y] = [c2b_yx c2b_yy] [flow_cam_y]
+    float flow_trans_x = config_.flow_cam_to_body[0] * flow_trans_x_cam
+                       + config_.flow_cam_to_body[1] * flow_trans_y_cam;
+    float flow_trans_y = config_.flow_cam_to_body[2] * flow_trans_x_cam
+                       + config_.flow_cam_to_body[3] * flow_trans_y_cam;
 
     // ================================================================
     // 4. 並進速度算出 [m/s]
@@ -529,6 +535,12 @@ void ESKF::updateFlowRaw(int16_t flow_dx, int16_t flow_dy, float distance,
 
 void ESKF::updateAccelAttitude(const Vector3& accel)
 {
+    // 後方互換: ジャイロなしで呼び出された場合
+    updateAccelAttitudeWithGyro(accel, Vector3(0, 0, 0));
+}
+
+void ESKF::updateAccelAttitudeWithGyro(const Vector3& accel, const Vector3& gyro)
+{
     if (!initialized_) return;
 
     // 加速度ノルムをチェック（静止時は重力のみ）
@@ -541,11 +553,8 @@ void ESKF::updateAccelAttitude(const Vector3& accel)
     }
 
     // 静止時の加速度計出力の期待値（ボディ座標系）
-    // 加速度計は比力を測定: a_sensor = a_actual - g = 0 - g = -g
-    // NEDフレーム: g = (0, 0, +9.81), よって a_sensor = (0, 0, -9.81)
-    // ボディ座標系への変換: a_expected = R^T * a_sensor_world = R^T * (0, 0, -g)
     Matrix<3, 3> R = quaternionToRotationMatrix(state_.orientation);
-    Vector3 neg_g_world(0.0f, 0.0f, -config_.gravity);  // 静止時の比力 = -g
+    Vector3 neg_g_world(0.0f, 0.0f, -config_.gravity);
     Vector3 g_expected = toVector3(R.transpose() * toMatrix(neg_g_world));
 
     // Roll/Pitchのみ補正（XY成分）
@@ -557,20 +566,62 @@ void ESKF::updateAccelAttitude(const Vector3& accel)
     h(0, 0) = g_expected.x;
     h(1, 0) = g_expected.y;
 
-    // ヤコビアン (小角近似)
-    // a_expected = R^T * (0, 0, -g) where g = 9.81
-    // 小角近似: R ≈ I + [θ]×, R^T ≈ I - [θ]×
-    // a_expected_x ≈ +g * pitch,  a_expected_y ≈ -g * roll
-    // ∂ax/∂pitch = +g,  ∂ay/∂roll = -g
+    // ヤコビアン
     Matrix<2, 15> H;
     H(0, ATT_Y) = config_.gravity;   // ∂ax/∂pitch = +g
     H(1, ATT_X) = -config_.gravity;  // ∂ay/∂roll = -g
 
-    // Adaptive R: 水平加速度が大きいほど観測ノイズを増加
-    // 水平方向の動的加速度があると、それを傾きと誤認するため
-    float horiz_accel_sq = accel.x * accel.x + accel.y * accel.y;
-    constexpr float k_adaptive = 100.0f;  // 調整パラメータ（強め）
-    float R_scale = 1.0f + k_adaptive * horiz_accel_sq;
+    // R_scaleの計算（モード別）
+    float R_scale = 1.0f;
+    bool protect_bias = false;
+
+    switch (config_.att_update_mode) {
+        case 0:
+            // モード0: 加速度絶対値フィルタのみ
+            // accel_motion_thresholdで既にフィルタ済み、R_scale=1
+            R_scale = 1.0f;
+            break;
+
+        case 1:
+            // モード1: 適応的R（水平加速度ベース）
+            {
+                float horiz_accel_sq = accel.x * accel.x + accel.y * accel.y;
+                R_scale = 1.0f + config_.k_adaptive * horiz_accel_sq;
+            }
+            break;
+
+        case 2:
+            // モード2: 角速度フィルタ
+            // 高回転中は加速度計の瞬時値より積分を信頼
+            {
+                float gyro_mag_sq = gyro.x * gyro.x + gyro.y * gyro.y;
+                float threshold_sq = config_.gyro_att_threshold * config_.gyro_att_threshold;
+                if (gyro_mag_sq > threshold_sq) {
+                    // 角速度が閾値を超えたらRを増加
+                    R_scale = 1.0f + 100.0f * (gyro_mag_sq - threshold_sq);
+                }
+            }
+            break;
+
+        case 3:
+            // モード3: 高回転時バイアス保護
+            // 姿勢は通常通り更新するが、ジャイロバイアスは保護
+            {
+                float gyro_mag_sq = gyro.x * gyro.x + gyro.y * gyro.y;
+                float threshold_sq = config_.gyro_att_threshold * config_.gyro_att_threshold;
+                if (gyro_mag_sq > threshold_sq) {
+                    protect_bias = true;
+                }
+            }
+            break;
+
+        default:
+            R_scale = 1.0f;
+            break;
+    }
+
+    // 高回転時はバイアスを保存
+    Vector3 saved_gyro_bias = state_.gyro_bias;
 
     // 観測ノイズ（動的にスケーリング）
     Matrix<2, 2> R_mat;
@@ -579,6 +630,11 @@ void ESKF::updateAccelAttitude(const Vector3& accel)
     R_mat(1, 1) = base_noise_sq * R_scale;
 
     measurementUpdate<2>(z, h, H, R_mat);
+
+    // モード3: 高回転時はバイアスを復元
+    if (protect_bias) {
+        state_.gyro_bias = saved_gyro_bias;
+    }
 }
 
 void ESKF::injectErrorState(const Matrix<15, 1>& dx)

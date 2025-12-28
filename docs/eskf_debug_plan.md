@@ -32,45 +32,172 @@ ESKFが実機で正しく動作しない問題をデバッグするため、以�
 
 ## 2. バイナリログ形式
 
-### 2.1 パケット構造 (60 bytes)
+### 2.1 パケットバージョン
+
+| バージョン | サイズ | ヘッダー | 内容 | 状態 |
+|-----------|--------|---------|------|------|
+| V1 | 64 bytes | 0xAA 0x55 | センサデータのみ | **非推奨** |
+| V2 | 128 bytes | 0xAA 0x56 | センサ + ESKF推定値 | **現行** |
+
+> **注意**: 2024年12月以降、V1は非推奨です。すべてのツールはV2のみサポートします。
+
+---
+
+### 2.2 V2 パケット構造 (128 bytes) - 現行フォーマット
+
+**ヘッダー**: `0xAA 0x56`
+
+#### センサデータ部 (63 bytes)
+
+| Offset | Size | Type | Field | Description | 単位 |
+|--------|------|------|-------|-------------|------|
+| 0 | 2 | uint8_t[2] | header | 0xAA, 0x56 | - |
+| 2 | 4 | uint32_t | timestamp_ms | ブート後経過時間 | ms |
+| 6 | 4 | float | accel_x | 加速度 X | m/s² |
+| 10 | 4 | float | accel_y | 加速度 Y | m/s² |
+| 14 | 4 | float | accel_z | 加速度 Z | m/s² |
+| 18 | 4 | float | gyro_x | 角速度 X | rad/s |
+| 22 | 4 | float | gyro_y | 角速度 Y | rad/s |
+| 26 | 4 | float | gyro_z | 角速度 Z | rad/s |
+| 30 | 4 | float | mag_x | 地磁気 X | uT |
+| 34 | 4 | float | mag_y | 地磁気 Y | uT |
+| 38 | 4 | float | mag_z | 地磁気 Z | uT |
+| 42 | 4 | float | pressure | 気圧 | Pa |
+| 46 | 4 | float | baro_alt | 気圧高度 | m |
+| 50 | 4 | float | tof_bottom | ToF底面距離 | m |
+| 54 | 4 | float | tof_front | ToF前方距離 | m |
+| 58 | 2 | int16_t | flow_dx | OptFlow delta X | counts |
+| 60 | 2 | int16_t | flow_dy | OptFlow delta Y | counts |
+| 62 | 1 | uint8_t | flow_squal | OptFlow品質 (0-255) | - |
+
+#### ESKF推定値部 (48 bytes)
+
+| Offset | Size | Type | Field | Description | 単位 |
+|--------|------|------|-------|-------------|------|
+| 63 | 4 | float | pos_x | 位置 X (NED) | m |
+| 67 | 4 | float | pos_y | 位置 Y (NED) | m |
+| 71 | 4 | float | pos_z | 位置 Z (NED, 下向き正) | m |
+| 75 | 4 | float | vel_x | 速度 X | m/s |
+| 79 | 4 | float | vel_y | 速度 Y | m/s |
+| 83 | 4 | float | vel_z | 速度 Z | m/s |
+| 87 | 4 | float | roll | ロール角 | rad |
+| 91 | 4 | float | pitch | ピッチ角 | rad |
+| 95 | 4 | float | yaw | ヨー角 | rad |
+| 99 | 4 | float | gyro_bias_z | ジャイロバイアス Z | rad/s |
+| 103 | 4 | float | accel_bias_x | 加速度バイアス X | m/s² |
+| 107 | 4 | float | accel_bias_y | 加速度バイアス Y | m/s² |
+
+#### メタデータ部 (17 bytes)
 
 | Offset | Size | Type | Field | Description |
 |--------|------|------|-------|-------------|
-| 0 | 2 | uint8_t[2] | header | 0xAA, 0x55 (パケット識別) |
-| 2 | 4 | uint32_t | timestamp_ms | ブート後経過時間 [ms] |
-| 6 | 4 | float | accel_x | 加速度 X [m/s²] |
-| 10 | 4 | float | accel_y | 加速度 Y [m/s²] |
-| 14 | 4 | float | accel_z | 加速度 Z [m/s²] |
-| 18 | 4 | float | gyro_x | 角速度 X [rad/s] |
-| 22 | 4 | float | gyro_y | 角速度 Y [rad/s] |
-| 26 | 4 | float | gyro_z | 角速度 Z [rad/s] |
-| 30 | 4 | float | mag_x | 地磁気 X [uT] |
-| 34 | 4 | float | mag_y | 地磁気 Y [uT] |
-| 38 | 4 | float | mag_z | 地磁気 Z [uT] |
-| 42 | 4 | float | pressure | 気圧 [Pa] |
-| 46 | 4 | float | baro_alt | 気圧高度 [m] |
-| 50 | 4 | float | tof_bottom | ToF底面 [m] |
-| 54 | 4 | float | tof_front | ToF前方 [m] |
-| 58 | 2 | int16_t | flow_dx | OptFlow delta X |
-| 60 | 2 | int16_t | flow_dy | OptFlow delta Y |
-| 62 | 1 | uint8_t | flow_squal | OptFlow品質 |
-| 63 | 1 | uint8_t | checksum | XOR (byte 2-62) |
+| 111 | 1 | uint8_t | eskf_status | ESKF状態 (0=未初期化, 1=動作中) |
+| 112 | 4 | float | baro_ref_alt | 気圧基準高度 (PCリプレイ用) |
+| 116 | 11 | uint8_t[11] | reserved | 予約 (将来拡張用) |
+| 127 | 1 | uint8_t | checksum | XOR (byte 2-126) |
 
-**合計: 64 bytes**
+**合計: 128 bytes**
 
-### 2.2 チェックサム計算
+#### Python struct フォーマット
+
+```python
+PACKET_FORMAT = '<2sI6f3f2f2f2hB3f3f3f3fB4s11sB'
+# 2s  : header (2 bytes)
+# I   : timestamp_ms (4 bytes)
+# 6f  : accel_xyz + gyro_xyz (24 bytes)
+# 3f  : mag_xyz (12 bytes)
+# 2f  : pressure + baro_alt (8 bytes)
+# 2f  : tof_bottom + tof_front (8 bytes)
+# 2h  : flow_dx + flow_dy (4 bytes)
+# B   : flow_squal (1 byte)
+# 3f  : pos_xyz (12 bytes)
+# 3f  : vel_xyz (12 bytes)
+# 3f  : roll + pitch + yaw (12 bytes)
+# 3f  : gyro_bias_z + accel_bias_xy (12 bytes)
+# B   : eskf_status (1 byte)
+# 4s  : baro_ref_alt as bytes (4 bytes)
+# 11s : reserved (11 bytes)
+# B   : checksum (1 byte)
+```
+
+#### C++ 構造体定義
+
+```cpp
+// components/stampfly_cli/include/cli.hpp
+#pragma pack(push, 1)
+struct BinaryLogPacketV2 {
+    uint8_t header[2];      // 0xAA, 0x56
+    uint32_t timestamp_ms;
+    // IMU (24 bytes)
+    float accel_x, accel_y, accel_z;  // [m/s²]
+    float gyro_x, gyro_y, gyro_z;     // [rad/s]
+    // Mag (12 bytes)
+    float mag_x, mag_y, mag_z;        // [uT]
+    // Baro (8 bytes)
+    float pressure;                    // [Pa]
+    float baro_alt;                    // [m]
+    // ToF (8 bytes)
+    float tof_bottom, tof_front;      // [m]
+    // Flow (5 bytes)
+    int16_t flow_dx, flow_dy;
+    uint8_t flow_squal;
+    // ESKF Position (12 bytes)
+    float pos_x, pos_y, pos_z;        // [m] NED
+    // ESKF Velocity (12 bytes)
+    float vel_x, vel_y, vel_z;        // [m/s]
+    // ESKF Attitude (12 bytes)
+    float roll, pitch, yaw;           // [rad]
+    // ESKF Biases (12 bytes)
+    float gyro_bias_z;                // [rad/s]
+    float accel_bias_x, accel_bias_y; // [m/s²]
+    // Metadata (17 bytes)
+    uint8_t eskf_status;
+    float baro_ref_alt;               // [m]
+    uint8_t reserved[11];
+    uint8_t checksum;
+};
+#pragma pack(pop)
+static_assert(sizeof(BinaryLogPacketV2) == 128);
+```
+
+### 2.3 チェックサム計算
 
 ```cpp
 uint8_t checksum = 0;
-for (int i = 2; i < 63; i++) {
+for (int i = 2; i < 127; i++) {
     checksum ^= packet[i];
 }
+// packet[127] = checksum;
 ```
 
-### 2.3 出力レート
+### 2.4 出力レート
 
 - **100Hz** (10ms周期) - IMUの400Hzからダウンサンプリング
-- **転送速度**: 64B × 100Hz = 6.4KB/s (115200bpsで十分)
+- **転送速度**: 128B × 100Hz = 12.8KB/s (115200bpsで十分)
+
+---
+
+### 2.5 V1 パケット構造 (64 bytes) - 非推奨
+
+> **警告**: V1は非推奨です。新規開発ではV2を使用してください。
+
+**ヘッダー**: `0xAA 0x55`
+
+| Offset | Size | Type | Field | Description |
+|--------|------|------|-------|-------------|
+| 0 | 2 | uint8_t[2] | header | 0xAA, 0x55 |
+| 2 | 4 | uint32_t | timestamp_ms | ブート後経過時間 [ms] |
+| 6-29 | 24 | float[6] | accel + gyro | IMUデータ |
+| 30-41 | 12 | float[3] | mag | 地磁気 |
+| 42-49 | 8 | float[2] | pressure + baro_alt | 気圧 |
+| 50-57 | 8 | float[2] | tof_bottom + tof_front | ToF |
+| 58-62 | 5 | int16_t[2] + uint8_t | flow | OptFlow |
+| 63 | 1 | uint8_t | checksum | XOR (byte 2-62) |
+
+V1チェックサム:
+```cpp
+for (int i = 2; i < 63; i++) checksum ^= packet[i];
+```
 
 ---
 

@@ -74,27 +74,47 @@ public:
         // [flow_body_y] = [c2b_yx c2b_yy] [flow_cam_y]
         float flow_cam_to_body[4];      // {c2b_xx, c2b_xy, c2b_yx, c2b_yy}
 
+        // ジャイロ→フロー回転補償係数 (回帰分析から導出)
+        // flow_rotation_x = k_xx * gyro_x + k_xy * gyro_y
+        // flow_rotation_y = k_yx * gyro_x + k_yy * gyro_y
+        // これらはカメラ座標系での補償係数 [rad/s per rad/s]
+        float flow_gyro_comp[4];        // {k_xx, k_xy, k_yx, k_yy}
+
+        // フローセンサーオフセット [counts/sample]
+        // 静止ホバリング時のフロー平均値をキャリブレーションで取得
+        float flow_offset[2];           // {dx_offset, dy_offset}
+
         // 地磁気有効フラグ
         // false: 地磁気観測なし、ジャイロバイアスZは初期値から更新しない
         bool mag_enabled;
 
+        // 姿勢補正モード
+        // 0: 加速度絶対値フィルタのみ (accel_motion_thresholdで判定)
+        // 1: 適応的R (水平加速度でRをスケーリング)
+        // 2: 角速度フィルタ (高回転時にRを増加)
+        // 3: 高回転時バイアス保護 (姿勢は更新、バイアスは保護)
+        int att_update_mode;
+        float k_adaptive;           // 適応的Rの係数 (モード1用)
+        float gyro_att_threshold;   // 角速度閾値 [rad/s] (モード2, 3用)
+
         // デフォルト設定
-        // 20cm四方移動テストで最適化済み (2025-12-27)
-        // 最適化結果: X=20.2cm, Y=20.0cm, 原点復帰誤差2.3cm
+        // 両データセット最適化 (2025-12-28)
+        // flow01.bin: Roll=2.06°, dist=9.9cm
+        // flow_sa.bin: Roll=4.30°, dist=0.0cm
         static Config defaultConfig() {
             Config cfg;
-            // プロセスノイズ (Q) - 最適化済み
-            cfg.gyro_noise = 0.001f;           // rad/s/√Hz
-            cfg.accel_noise = 0.05f;           // m/s²/√Hz
-            cfg.gyro_bias_noise = 0.00005f;    // rad/s/√s
-            cfg.accel_bias_noise = 0.001f;     // m/s²/√s
+            // プロセスノイズ (Q) - 両データセット最適化
+            cfg.gyro_noise = 0.009655f;        // rad/s/√Hz
+            cfg.accel_noise = 0.062885f;       // m/s²/√Hz
+            cfg.gyro_bias_noise = 0.000013f;   // rad/s/√s
+            cfg.accel_bias_noise = 0.050771f;  // m/s²/√s
 
-            // 観測ノイズ (R) - 最適化済み
+            // 観測ノイズ (R) - 両データセット最適化
             cfg.baro_noise = 0.1f;             // m
-            cfg.tof_noise = 0.007f;            // m
+            cfg.tof_noise = 0.002540f;         // m
             cfg.mag_noise = 0.1f;              // uT
-            cfg.flow_noise = 0.05f;            // m/s
-            cfg.accel_att_noise = 0.7f;        // m/s²
+            cfg.flow_noise = 0.005232f;        // m/s (フロー信頼度高)
+            cfg.accel_att_noise = 0.514334f;   // m/s²
 
             // 初期共分散
             cfg.init_pos_std = 1.0f;
@@ -126,7 +146,28 @@ public:
             cfg.flow_cam_to_body[2] = 0.0f;    // c2b_yx
             cfg.flow_cam_to_body[3] = 1.015f;  // c2b_yy (Y軸スケール)
 
+            // ジャイロ→フロー回転補償係数（グリッドサーチ最適化 flow01.bin 2025-12-28）
+            // 定点でのロール動揺テストデータからグリッドサーチで最適化
+            // flow_rotation_x = k_xx * gyro_x + k_xy * gyro_y
+            // flow_rotation_y = k_yx * gyro_x + k_yy * gyro_y
+            // 注意: フローセンサーのバイアスは別途キャリブレーションが必要
+            cfg.flow_gyro_comp[0] = -0.20f;    // k_xx: gyro_x → flow_x
+            cfg.flow_gyro_comp[1] = 0.30f;     // k_xy: gyro_y → flow_x
+            cfg.flow_gyro_comp[2] = -1.50f;    // k_yx: gyro_x → flow_y
+            cfg.flow_gyro_comp[3] = -0.40f;    // k_yy: gyro_y → flow_y
+
+            // フローオフセット（未キャリブレーション時は0）
+            // 静止ホバリングでキャリブレーション後に設定
+            cfg.flow_offset[0] = 0.0f;         // dx offset [counts/sample]
+            cfg.flow_offset[1] = 0.0f;         // dy offset [counts/sample]
+
             cfg.mag_enabled = false;           // デフォルトは地磁気無効
+
+            // 姿勢補正モード設定
+            cfg.att_update_mode = 0;           // 加速度絶対値フィルタのみ（適応R無効）
+            cfg.k_adaptive = 0.0f;             // 使用しない
+            cfg.gyro_att_threshold = 0.5f;     // rad/s（モード2用、現在未使用）
+
             return cfg;
         }
     };
@@ -218,6 +259,16 @@ public:
      * Roll/Pitchを補正する
      */
     void updateAccelAttitude(const Vector3& accel);
+
+    /**
+     * @brief 加速度計姿勢補正 (ジャイロ情報付き)
+     *
+     * att_update_modeに応じて異なるアルゴリズムを使用:
+     * - 0: 加速度絶対値フィルタのみ
+     * - 1: 適応的R（水平加速度ベース）
+     * - 2: 角速度フィルタ（高回転時にR増加）
+     */
+    void updateAccelAttitudeWithGyro(const Vector3& accel, const Vector3& gyro);
 
     /**
      * @brief 現在の状態取得

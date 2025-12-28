@@ -16,6 +16,10 @@
 
 namespace stampfly {
 
+// ==========================================================================
+// V1 Packet Structure - DEPRECATED (commented out for future removal)
+// ==========================================================================
+#if 0
 /**
  * @brief Binary log packet structure V1 (64 bytes) - Legacy
  *
@@ -46,6 +50,7 @@ struct BinaryLogPacketV1 {
 #pragma pack(pop)
 
 static_assert(sizeof(BinaryLogPacketV1) == 64, "BinaryLogPacketV1 must be 64 bytes");
+#endif
 
 /**
  * @brief Binary log packet structure V2 (128 bytes)
@@ -118,8 +123,8 @@ struct BinaryLogPacketV2 {
 
 static_assert(sizeof(BinaryLogPacketV2) == 128, "BinaryLogPacketV2 must be 128 bytes");
 
-// Alias for current version
-using BinaryLogPacket = BinaryLogPacketV1;
+// V1 alias - DEPRECATED
+// using BinaryLogPacket = BinaryLogPacketV1;
 
 /**
  * @brief Command handler function pointer type
@@ -216,6 +221,10 @@ public:
      */
     void resetLogCounter() { log_counter_ = 0; }
 
+    // ==========================================================================
+    // V1 Binary Log - DEPRECATED (commented out for future removal)
+    // ==========================================================================
+#if 0
     /**
      * @brief Check if binary logging is enabled
      */
@@ -230,6 +239,7 @@ public:
      * @brief Output binary log packet V1 (call periodically from task at 100Hz)
      */
     void outputBinaryLog();
+#endif
 
     /**
      * @brief Output binary log packet V2 with ESKF estimates (call periodically from task at 100Hz)
@@ -289,7 +299,7 @@ private:
     bool initialized_ = false;
     bool teleplot_enabled_ = false;
     bool log_enabled_ = false;
-    bool binlog_enabled_ = false;
+    // bool binlog_enabled_ = false;  // V1 - DEPRECATED
     bool binlog_v2_enabled_ = false;
     uint32_t log_counter_ = 0;
     uint32_t binlog_counter_ = 0;

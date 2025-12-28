@@ -356,7 +356,7 @@ static void cmd_binlog(int argc, char** argv, void* context)
 
     if (strcmp(argv[1], "on") == 0) {
         cli->resetBinlogCounter();
-        cli->setBinlogEnabled(false);  // Ensure V1 is off
+        // cli->setBinlogEnabled(false);  // V1 - DEPRECATED
         // binlog開始時のコールバック呼び出し（mag_ref設定など）
         cli->callBinlogStartCallback();
         esp_log_level_set("*", ESP_LOG_NONE);
@@ -364,7 +364,7 @@ static void cmd_binlog(int argc, char** argv, void* context)
         vTaskDelay(pdMS_TO_TICKS(100));
         cli->setBinlogV2Enabled(true);
     } else if (strcmp(argv[1], "off") == 0) {
-        cli->setBinlogEnabled(false);
+        // cli->setBinlogEnabled(false);  // V1 - DEPRECATED
         cli->setBinlogV2Enabled(false);
         esp_log_level_set("*", ESP_LOG_INFO);
         cli->print("Binary logging OFF, total samples: %lu\r\n",
@@ -798,6 +798,10 @@ void CLI::outputCSVLog()
     log_counter_++;
 }
 
+// ==========================================================================
+// V1 Binary Log Output - DEPRECATED (commented out for future removal)
+// ==========================================================================
+#if 0
 void CLI::outputBinaryLog()
 {
     if (!binlog_enabled_) return;
@@ -864,6 +868,7 @@ void CLI::outputBinaryLog()
 
     binlog_counter_++;
 }
+#endif
 
 void CLI::outputBinaryLogV2()
 {

@@ -1,6 +1,6 @@
 # StampFly RTOS Skeleton 実装進捗
 
-## 最終更新: 2025-12-28
+## 最終更新: 2025-12-28 (V1パケット形式廃止)
 
 ---
 
@@ -232,22 +232,26 @@ tools/
     └── estimate_qr.py       # Q/Rパラメータ推定
 ```
 
-### バイナリログ形式
+### バイナリログ形式（V2、128バイト）
+
+> **注**: V1 (64バイト、ヘッダ 0xAA 0x55) は廃止されました。詳細は「V1パケット形式廃止」セクションを参照。
 
 | オフセット | サイズ | 内容 |
 |-----------|-------|------|
-| 0-1 | 2 | ヘッダ (0xAA 0x55) |
+| 0-1 | 2 | ヘッダ (0xAA 0x56) |
 | 2-5 | 4 | タイムスタンプ (ms) |
-| 6-17 | 12 | 加速度 (x,y,z float) |
-| 18-29 | 12 | ジャイロ (x,y,z float) |
-| 30-41 | 12 | 磁気 (x,y,z float) |
-| 42-45 | 4 | 気圧高度 (float) |
-| 46-49 | 4 | ToF下 (float) |
-| 50-53 | 4 | ToF前 (float) |
-| 54-57 | 4 | OptFlow dx (float) |
-| 58-61 | 4 | OptFlow dy (float) |
-| 62 | 1 | 予約 |
-| 63 | 1 | XORチェックサム |
+| 6-29 | 24 | IMU (accel xyz, gyro xyz) |
+| 30-41 | 12 | 磁気 (xyz) |
+| 42-49 | 8 | 気圧 (pressure, alt) |
+| 50-57 | 8 | ToF (bottom, front) |
+| 58-62 | 5 | OptFlow (dx, dy, squal) |
+| 63-74 | 12 | Position (xyz) |
+| 75-86 | 12 | Velocity (xyz) |
+| 87-98 | 12 | Attitude (roll, pitch, yaw) |
+| 99-110 | 12 | Bias (gyro_z, accel_x, accel_y) |
+| 111 | 1 | ESKF status |
+| 112-126 | 15 | Reserved (baro_ref_alt含む) |
+| 127 | 1 | XORチェックサム |
 
 ### 使用方法
 
@@ -1495,10 +1499,88 @@ cfg.flow_cam_to_body[3] = 1.015f;  // Y軸
 
 ---
 
+## V1パケット形式廃止 ✅ 完了 (2025-12-28)
+
+### 概要
+
+バイナリログ形式をV2 (128バイト) に統一し、レガシーV1 (64バイト) コードを無効化。
+
+### 背景
+
+- V1 (64バイト): センサデータのみ、ヘッダ 0xAA 0x55
+- V2 (128バイト): センサデータ + ESKF推定結果、ヘッダ 0xAA 0x56
+
+V2がデフォルトとなり、V1は実質使用されていなかったため、コードを整理。
+
+### 変更内容
+
+#### 1. replay.cpp (PC版ESKFリプレイ)
+
+```cpp
+// コメントアウト (#if 0 ... #endif)
+- BinaryLogPacketV1 構造体
+- verify_checksum_v1() 関数
+- detect_log_format() のV1検出 (0xAA 0x55)
+- load_log_file() のV1パース分岐
+```
+
+#### 2. cli.hpp (デバイス側CLI)
+
+```cpp
+// コメントアウト
+- BinaryLogPacketV1 構造体
+- using BinaryLogPacket = BinaryLogPacketV1; エイリアス
+- isBinlogEnabled(), setBinlogEnabled(), outputBinaryLog()
+- binlog_enabled_ メンバ変数
+```
+
+#### 3. cli.cpp
+
+```cpp
+// コメントアウト
+- outputBinaryLog() V1関数
+- cmd_binlog() 内の setBinlogEnabled() 呼び出し
+```
+
+#### 4. main.cpp
+
+```cpp
+// 簡略化
+// 修正前: V1/V2分岐ロジック
+if (g_cli.isBinlogEnabled() || g_cli.isBinlogV2Enabled()) {
+    if (g_cli.isBinlogV2Enabled()) {
+        g_cli.outputBinaryLogV2();
+    } else {
+        g_cli.outputBinaryLog();
+    }
+}
+
+// 修正後: V2のみ
+if (g_cli.isBinlogV2Enabled()) {
+    g_cli.outputBinaryLogV2();
+}
+```
+
+### ビルド確認
+
+| ターゲット | 結果 |
+|-----------|------|
+| eskf_replay (PC) | ✅ ビルド成功 |
+| デバイスファームウェア | ✅ ビルド成功 |
+| 動作テスト (flow01.bin) | ✅ 正常動作 |
+
+### 今後
+
+- V1コードは `#if 0` でコメントアウト済み
+- 完全削除は将来のクリーンアップ時に実施
+
+---
+
 ## 変更履歴
 
 | 日付 | 内容 |
 |------|------|
+| 2025-12-28 | V1パケット形式廃止: replay.cpp/cli.hpp/cli.cpp/main.cppでV1コードをコメントアウト、V2のみに統一 |
 | 2025-12-27 | ESKFパラメータ自動最適化: optimize_params.py作成、replay.cppパラメータ引数追加、flow_rad_per_pixel=0.00222、軸別スケーリング導入、X=20.2cm/Y=20.0cm達成 |
 | 2025-12-01 | 動的四角形テスト: 軸マッピング修正(XY入替+符号)、flow_noise=0.1、flow_scale=0.16 |
 | 2025-12-01 | フローオフセット除去: flow_dx/dy_offset=0に設定、静止ドリフト2.2cm→0.2cm (90%改善) |

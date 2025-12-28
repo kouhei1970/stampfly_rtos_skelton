@@ -16,57 +16,23 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 
 
-def load_binlog_v1(filename):
-    """Load V1 binary log (64 bytes, header 0xAA 0x55)"""
-    data = []
-    with open(filename, 'rb') as f:
-        content = f.read()
-
-    packet_size = 64
-    i = 0
-    while i < len(content) - packet_size + 1:
-        # Find header
-        if content[i] == 0xAA and content[i+1] == 0x55:
-            packet = content[i:i+packet_size]
-
-            # Verify checksum
-            checksum = 0
-            for b in packet[2:63]:
-                checksum ^= b
-            if checksum != packet[63]:
-                i += 1
-                continue
-
-            # Parse packet
-            # header(2) + timestamp(4) + accel(12) + gyro(12) + mag(12) + ...
-            timestamp_ms = struct.unpack('<I', packet[2:6])[0]
-            mag_x, mag_y, mag_z = struct.unpack('<fff', packet[30:42])
-
-            data.append({
-                'timestamp_ms': timestamp_ms,
-                'mag_x': mag_x,
-                'mag_y': mag_y,
-                'mag_z': mag_z
-            })
-            i += packet_size
-        else:
-            i += 1
-
-    return data
+# V2 Packet constants (128 bytes, header 0xAA 0x56)
+PACKET_SIZE = 128
+PACKET_HEADER = bytes([0xAA, 0x56])
+PACKET_FORMAT = '<2sI6f3f2f2f2hB3f3f3f3fB15sB'
 
 
-def load_binlog_v2(filename):
+def load_binlog(filename):
     """Load V2 binary log (128 bytes, header 0xAA 0x56)"""
     data = []
     with open(filename, 'rb') as f:
         content = f.read()
 
-    packet_size = 128
     i = 0
-    while i < len(content) - packet_size + 1:
+    while i < len(content) - PACKET_SIZE + 1:
         # Find header
         if content[i] == 0xAA and content[i+1] == 0x56:
-            packet = content[i:i+packet_size]
+            packet = content[i:i+PACKET_SIZE]
 
             # Verify checksum
             checksum = 0
@@ -77,38 +43,26 @@ def load_binlog_v2(filename):
                 continue
 
             # Parse packet
-            timestamp_ms = struct.unpack('<I', packet[2:6])[0]
-            mag_x, mag_y, mag_z = struct.unpack('<fff', packet[30:42])
+            try:
+                unpacked = struct.unpack(PACKET_FORMAT, packet)
+                timestamp_ms = unpacked[1]
+                mag_x = unpacked[8]
+                mag_y = unpacked[9]
+                mag_z = unpacked[10]
 
-            data.append({
-                'timestamp_ms': timestamp_ms,
-                'mag_x': mag_x,
-                'mag_y': mag_y,
-                'mag_z': mag_z
-            })
-            i += packet_size
+                data.append({
+                    'timestamp_ms': timestamp_ms,
+                    'mag_x': mag_x,
+                    'mag_y': mag_y,
+                    'mag_z': mag_z
+                })
+            except:
+                pass
+            i += PACKET_SIZE
         else:
             i += 1
 
     return data
-
-
-def detect_and_load(filename):
-    """Auto-detect log format and load"""
-    with open(filename, 'rb') as f:
-        content = f.read(10)
-
-    # Check header
-    for i in range(len(content) - 1):
-        if content[i] == 0xAA:
-            if content[i+1] == 0x55:
-                print(f"Detected V1 format (64 bytes)")
-                return load_binlog_v1(filename)
-            elif content[i+1] == 0x56:
-                print(f"Detected V2 format (128 bytes)")
-                return load_binlog_v2(filename)
-
-    raise ValueError("Unknown log format")
 
 
 def plot_mag_xy(data, output_file=None):
@@ -200,7 +154,8 @@ def main():
         sys.exit(1)
 
     print(f"Loading: {input_file}")
-    data = detect_and_load(input_file)
+    print(f"Packet format: V2 ({PACKET_SIZE} bytes)")
+    data = load_binlog(input_file)
     print(f"Loaded {len(data)} samples")
 
     if len(data) == 0:
