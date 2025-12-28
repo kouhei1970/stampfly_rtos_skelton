@@ -31,6 +31,10 @@ static const char* TAG = "CLI";
 // External reference to magnetometer calibrator (defined in main.cpp)
 extern stampfly::MagCalibrator* g_mag_calibrator;
 
+// External reference to logger (defined in main.cpp)
+#include "logger.hpp"
+extern stampfly::Logger* g_logger_ptr;
+
 namespace stampfly {
 
 // Forward declarations for command handlers
@@ -196,7 +200,7 @@ void CLI::registerDefaultCommands()
     registerCommand("sensor", cmd_sensor, "Show sensor data", this);
     registerCommand("teleplot", cmd_teleplot, "Teleplot stream [on|off]", this);
     registerCommand("log", cmd_log, "CSV log [on|off|header]", this);
-    registerCommand("binlog", cmd_binlog, "Binary log [on|off] @100Hz (128B)", this);
+    registerCommand("binlog", cmd_binlog, "Binary log [on|off|freq] @400Hz", this);
     registerCommand("loglevel", cmd_loglevel, "Set ESP_LOG level [none|error|warn|info|debug|verbose]", this);
     registerCommand("calib", cmd_calib, "Run calibration", this);
     registerCommand("magcal", cmd_magcal, "Mag calibration [start|stop|status|save|clear]", this);
@@ -342,35 +346,48 @@ static void cmd_binlog(int argc, char** argv, void* context)
 {
     CLI* cli = static_cast<CLI*>(context);
 
+    if (g_logger_ptr == nullptr) {
+        cli->print("Logger not available\r\n");
+        return;
+    }
+
     if (argc < 2) {
-        cli->print("Usage: binlog [on|off]\r\n");
-        cli->print("  on  - Start binary logging (100Hz, 128B/pkt, sensor + ESKF)\r\n");
-        cli->print("  off - Stop binary logging\r\n");
-        cli->print("Current: %s, samples: %lu\r\n",
-                   cli->isBinlogV2Enabled() ? "on" : "off",
-                   (unsigned long)cli->getBinlogCounter());
+        cli->print("Usage: binlog [on|off|freq <hz>]\r\n");
+        cli->print("  on       - Start binary logging (400Hz, 128B/pkt, sensor + ESKF)\r\n");
+        cli->print("  off      - Stop binary logging\r\n");
+        cli->print("  freq <hz>- Set logging frequency (10-1000Hz)\r\n");
+        cli->print("Current: %s, freq=%luHz, count=%lu, dropped=%lu\r\n",
+                   g_logger_ptr->isRunning() ? "on" : "off",
+                   (unsigned long)g_logger_ptr->getFrequency(),
+                   (unsigned long)g_logger_ptr->getLogCount(),
+                   (unsigned long)g_logger_ptr->getDropCount());
         cli->print("\r\nPacket format (128 bytes): Header 0xAA 0x56\r\n");
         cli->print("Contains: IMU, Mag, Baro, ToF, Flow, ESKF estimates\r\n");
         return;
     }
 
     if (strcmp(argv[1], "on") == 0) {
-        cli->resetBinlogCounter();
-        // cli->setBinlogEnabled(false);  // V1 - DEPRECATED
-        // binlog開始時のコールバック呼び出し（mag_ref設定など）
-        cli->callBinlogStartCallback();
+        g_logger_ptr->resetCounters();
         esp_log_level_set("*", ESP_LOG_NONE);
-        cli->print("Binary logging ON (100Hz, 128B) - ESP_LOG suppressed\r\n");
+        cli->print("Binary logging ON (%luHz, 128B) - ESP_LOG suppressed\r\n",
+                   (unsigned long)g_logger_ptr->getFrequency());
         vTaskDelay(pdMS_TO_TICKS(100));
-        cli->setBinlogV2Enabled(true);
+        g_logger_ptr->start();
     } else if (strcmp(argv[1], "off") == 0) {
-        // cli->setBinlogEnabled(false);  // V1 - DEPRECATED
-        cli->setBinlogV2Enabled(false);
+        g_logger_ptr->stop();
         esp_log_level_set("*", ESP_LOG_INFO);
-        cli->print("Binary logging OFF, total samples: %lu\r\n",
-                   (unsigned long)cli->getBinlogCounter());
+        cli->print("Binary logging OFF, total=%lu, dropped=%lu\r\n",
+                   (unsigned long)g_logger_ptr->getLogCount(),
+                   (unsigned long)g_logger_ptr->getDropCount());
+    } else if (strcmp(argv[1], "freq") == 0 && argc >= 3) {
+        uint32_t freq = atoi(argv[2]);
+        if (g_logger_ptr->setFrequency(freq) == ESP_OK) {
+            cli->print("Logging frequency set to %luHz\r\n", (unsigned long)freq);
+        } else {
+            cli->print("Invalid frequency (10-1000Hz)\r\n");
+        }
     } else {
-        cli->print("Usage: binlog [on|off]\r\n");
+        cli->print("Usage: binlog [on|off|freq <hz>]\r\n");
     }
 }
 

@@ -9,8 +9,10 @@
 #include <stdio.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #include "esp_log.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "nvs_flash.h"
 #include "esp_netif.h"
 #include "esp_event.h"
@@ -41,6 +43,9 @@
 
 // CLI
 #include "cli.hpp"
+
+// Logger
+#include "logger.hpp"
 
 static const char* TAG = "main";
 
@@ -111,6 +116,9 @@ static constexpr uint32_t STACK_SIZE_CLI = 4096;
 // Global magnetometer calibrator (accessible from CLI)
 stampfly::MagCalibrator* g_mag_calibrator = nullptr;
 
+// Global logger pointer (accessible from CLI)
+stampfly::Logger* g_logger_ptr = nullptr;
+
 namespace {
     // Sensors
     stampfly::BMI270Wrapper g_imu;
@@ -142,6 +150,9 @@ namespace {
 
     // CLI
     stampfly::CLI g_cli;
+
+    // Logger (400Hz binary log output)
+    stampfly::Logger g_logger;
 
     // Barometer reference for relative altitude (ESKF expects NED, origin at boot)
     float g_baro_reference_altitude = 0.0f;
@@ -178,6 +189,10 @@ namespace {
     TaskHandle_t g_button_task_handle = nullptr;
     TaskHandle_t g_comm_task_handle = nullptr;
     TaskHandle_t g_cli_task_handle = nullptr;
+
+    // ESP Timer for precise 400Hz (2.5ms) IMU timing
+    esp_timer_handle_t g_imu_timer = nullptr;
+    SemaphoreHandle_t g_imu_semaphore = nullptr;
 }
 
 // =============================================================================
@@ -234,19 +249,37 @@ static void onBinlogStart()
 }
 
 // =============================================================================
+// Timer Callbacks
+// =============================================================================
+
+/**
+ * @brief ESP Timer callback for 400Hz IMU timing
+ *
+ * This callback runs from the esp_timer task context and gives a semaphore
+ * to wake up the IMU task with precise 2.5ms timing.
+ *
+ * Note: ESP_TIMER_TASK dispatch runs in a high-priority FreeRTOS task,
+ * not in ISR context, so we use xSemaphoreGive instead of xSemaphoreGiveFromISR.
+ */
+static void imu_timer_callback(void* arg)
+{
+    xSemaphoreGive(g_imu_semaphore);
+}
+
+// =============================================================================
 // Task Functions
 // =============================================================================
 
 /**
  * @brief IMU Task - 400Hz (2.5ms period)
  * Reads BMI270 FIFO, applies filters, updates estimators
+ *
+ * Timing: Uses ESP Timer for precise 2.5ms (400Hz) period.
+ * The timer callback gives a semaphore which this task waits on.
  */
 static void IMUTask(void* pvParameters)
 {
-    ESP_LOGI(TAG, "IMUTask started");
-
-    TickType_t last_wake_time = xTaskGetTickCount();
-    const TickType_t period = pdMS_TO_TICKS(2);  // ~400Hz
+    ESP_LOGI(TAG, "IMUTask started (400Hz via ESP Timer)");
 
     auto& state = stampfly::StampFlyState::getInstance();
 
@@ -254,6 +287,11 @@ static void IMUTask(void* pvParameters)
     static uint32_t imu_read_fail_counter = 0;
 
     while (true) {
+        // Wait for timer semaphore (precise 2.5ms = 400Hz timing)
+        if (xSemaphoreTake(g_imu_semaphore, portMAX_DELAY) != pdTRUE) {
+            continue;
+        }
+
         imu_loop_counter++;
 
         // 10秒ごとにIMUタスク生存確認
@@ -313,123 +351,166 @@ static void IMUTask(void* pvParameters)
                 stampfly::math::Vector3 a(filtered_accel[0], filtered_accel[1], filtered_accel[2]);
                 stampfly::math::Vector3 g(filtered_gyro[0], filtered_gyro[1], filtered_gyro[2]);
 
-                // Update ESKF predict step (100Hz = 400Hz / 4)
+                // Update ESKF predict step (400Hz)
                 if (g_eskf.isInitialized()) {
-                    static uint32_t eskf_predict_counter = 0;
-                    static uint32_t accel_att_counter = 0;
+                    static uint32_t flow_update_counter = 0;
                     static uint32_t eskf_error_counter = 0;
 
-                    // IMUデータを蓄積（平均化用）
-                    static stampfly::math::Vector3 accel_sum(0, 0, 0);
-                    static stampfly::math::Vector3 gyro_sum(0, 0, 0);
+                    // 入力値の事前チェック
+                    bool eskf_ok = std::isfinite(a.x) && std::isfinite(a.y) && std::isfinite(a.z) &&
+                                   std::isfinite(g.x) && std::isfinite(g.y) && std::isfinite(g.z);
 
-                    accel_sum += a;
-                    gyro_sum += g;
-                    eskf_predict_counter++;
+                    if (eskf_ok) {
+                        g_eskf.predict(a, g, 0.0025f);  // 2.5ms (400Hz)
 
-                    // 4サンプルごとにESKF predict実行 (100Hz)
-                    if (eskf_predict_counter >= 4) {
-                        // 平均値を計算
-                        stampfly::math::Vector3 a_avg = accel_sum * 0.25f;
-                        stampfly::math::Vector3 g_avg = gyro_sum * 0.25f;
+                        // 加速度計による姿勢補正 (400Hz)
+                        g_eskf.updateAccelAttitude(a);
 
-                        // リセット
-                        accel_sum = stampfly::math::Vector3(0, 0, 0);
-                        gyro_sum = stampfly::math::Vector3(0, 0, 0);
-                        eskf_predict_counter = 0;
+                        // オプティカルフロー更新（100Hz = 400Hz / 4）
+                        flow_update_counter++;
+                        if (flow_update_counter >= 4) {
+                            flow_update_counter = 0;
+                            int16_t flow_dx, flow_dy;
+                            uint8_t flow_squal;
+                            state.getFlowRawData(flow_dx, flow_dy, flow_squal);
 
-                        // 入力値の事前チェック
-                        bool eskf_ok = std::isfinite(a_avg.x) && std::isfinite(a_avg.y) && std::isfinite(a_avg.z) &&
-                                       std::isfinite(g_avg.x) && std::isfinite(g_avg.y) && std::isfinite(g_avg.z);
-
-                        if (eskf_ok) {
-                            g_eskf.predict(a_avg, g_avg, 0.01f);  // 10ms (100Hz)
-
-                            // 加速度計による姿勢補正 (50Hz = 100Hz / 2)
-                            accel_att_counter++;
-                            if (accel_att_counter >= 2) {
-                                accel_att_counter = 0;
-                                g_eskf.updateAccelAttitude(a_avg);
-                            }
-
-                            // オプティカルフロー更新（IMUタスク内で実行、100Hz）
-                            {
-                                int16_t flow_dx, flow_dy;
-                                uint8_t flow_squal;
-                                state.getFlowRawData(flow_dx, flow_dy, flow_squal);
-
-                                if (stampfly::OutlierDetector::isFlowValid(flow_squal)) {
-                                    float tof_bottom, tof_front;
-                                    state.getToFData(tof_bottom, tof_front);
-                                    float distance = tof_bottom;
-                                    if (distance < 0.02f) distance = 0.02f;
-                                    if (distance > 0.02f) {
-                                        // 新API: 生カウントとdt、機体ジャイロを渡す
-                                        // ESKF内部で物理的に正しい変換を行う
-                                        constexpr float dt = 0.01f;  // 100Hz
-                                        g_eskf.updateFlowRaw(flow_dx, flow_dy, distance, dt, g_avg.x, g_avg.y);
-                                    }
+                            if (stampfly::OutlierDetector::isFlowValid(flow_squal)) {
+                                float tof_bottom, tof_front;
+                                state.getToFData(tof_bottom, tof_front);
+                                float distance = tof_bottom;
+                                if (distance < 0.02f) distance = 0.02f;
+                                if (distance > 0.02f) {
+                                    // 新API: 生カウントとdt、機体ジャイロを渡す
+                                    // ESKF内部で物理的に正しい変換を行う
+                                    constexpr float dt = 0.01f;  // 100Hz (フローセンサーレート)
+                                    g_eskf.updateFlowRaw(flow_dx, flow_dy, distance, dt, g.x, g.y);
                                 }
                             }
+                        }
 
-                            // Baro更新（data_readyフラグで制御、50Hz）
-                            if (g_baro_data_ready) {
-                                g_baro_data_ready = false;
-                                g_eskf.updateBaro(g_baro_data_cache);
+                        // Baro更新（data_readyフラグで制御、50Hz）
+                        // TODO: 気圧センサの値が確認できたら有効化
+                        if (g_baro_data_ready) {
+                            g_baro_data_ready = false;
+                            // g_eskf.updateBaro(g_baro_data_cache);
+                        }
+
+                        // ToF更新（data_readyフラグで制御、30Hz）
+                        if (g_tof_data_ready) {
+                            g_tof_data_ready = false;
+                            if (g_tof_data_cache > 0.01f && g_tof_data_cache < 4.0f) {
+                                g_eskf.updateToF(g_tof_data_cache);
                             }
+                        }
 
-                            // ToF更新（data_readyフラグで制御、30Hz）
-                            if (g_tof_data_ready) {
-                                g_tof_data_ready = false;
-                                if (g_tof_data_cache > 0.01f && g_tof_data_cache < 4.0f) {
-                                    g_eskf.updateToF(g_tof_data_cache);
-                                }
-                            }
+                        // Mag更新（data_readyフラグで制御、10Hz）
+                        if (g_mag_data_ready && g_mag_ref_set) {
+                            g_mag_data_ready = false;
+                            g_eskf.updateMag(g_mag_data_cache);
+                        }
 
-                            // Mag更新（data_readyフラグで制御、10Hz）
-                            if (g_mag_data_ready && g_mag_ref_set) {
-                                g_mag_data_ready = false;
-                                g_eskf.updateMag(g_mag_data_cache);
-                            }
+                        // Update StampFlyState with ESKF estimated state
+                        auto eskf_state = g_eskf.getState();
 
-                            // Update StampFlyState with ESKF estimated state
-                            auto eskf_state = g_eskf.getState();
+                        // 出力値の検証（NaNチェック + 発散検出）
+                        bool eskf_valid = std::isfinite(eskf_state.roll) && std::isfinite(eskf_state.pitch);
 
-                            // 出力値の検証（NaNチェック + 発散検出）
-                            bool eskf_valid = std::isfinite(eskf_state.roll) && std::isfinite(eskf_state.pitch);
+                        // 発散検出: 位置/速度が異常に大きい場合
+                        constexpr float MAX_POS = 100.0f;   // 100m以上は異常
+                        constexpr float MAX_VEL = 50.0f;    // 50m/s以上は異常
+                        bool pos_diverged = std::abs(eskf_state.position.x) > MAX_POS ||
+                                           std::abs(eskf_state.position.y) > MAX_POS ||
+                                           std::abs(eskf_state.position.z) > MAX_POS;
+                        bool vel_diverged = std::abs(eskf_state.velocity.x) > MAX_VEL ||
+                                           std::abs(eskf_state.velocity.y) > MAX_VEL ||
+                                           std::abs(eskf_state.velocity.z) > MAX_VEL;
 
-                            // 発散検出: 位置/速度が異常に大きい場合
-                            constexpr float MAX_POS = 100.0f;   // 100m以上は異常
-                            constexpr float MAX_VEL = 50.0f;    // 50m/s以上は異常
-                            bool pos_diverged = std::abs(eskf_state.position.x) > MAX_POS ||
-                                               std::abs(eskf_state.position.y) > MAX_POS ||
-                                               std::abs(eskf_state.position.z) > MAX_POS;
-                            bool vel_diverged = std::abs(eskf_state.velocity.x) > MAX_VEL ||
-                                               std::abs(eskf_state.velocity.y) > MAX_VEL ||
-                                               std::abs(eskf_state.velocity.z) > MAX_VEL;
+                        if (eskf_valid && !pos_diverged && !vel_diverged) {
+                            state.updateAttitude(eskf_state.roll, eskf_state.pitch, eskf_state.yaw);
+                            state.updateEstimatedPosition(eskf_state.position.x, eskf_state.position.y, eskf_state.position.z);
+                            state.updateEstimatedVelocity(eskf_state.velocity.x, eskf_state.velocity.y, eskf_state.velocity.z);
+                            state.updateGyroBias(eskf_state.gyro_bias.x, eskf_state.gyro_bias.y, eskf_state.gyro_bias.z);
+                            state.updateAccelBias(eskf_state.accel_bias.x, eskf_state.accel_bias.y, eskf_state.accel_bias.z);
 
-                            if (eskf_valid && !pos_diverged && !vel_diverged) {
-                                state.updateAttitude(eskf_state.roll, eskf_state.pitch, eskf_state.yaw);
-                                state.updateEstimatedPosition(eskf_state.position.x, eskf_state.position.y, eskf_state.position.z);
-                                state.updateEstimatedVelocity(eskf_state.velocity.x, eskf_state.velocity.y, eskf_state.velocity.z);
-                                state.updateGyroBias(eskf_state.gyro_bias.x, eskf_state.gyro_bias.y, eskf_state.gyro_bias.z);
-                                state.updateAccelBias(eskf_state.accel_bias.x, eskf_state.accel_bias.y, eskf_state.accel_bias.z);
-                            } else {
-                                eskf_error_counter++;
-                                if (eskf_error_counter % 100 == 1) {
-                                    if (!eskf_valid) {
-                                        ESP_LOGW(TAG, "ESKF output NaN, errors=%lu", eskf_error_counter);
-                                    } else {
-                                        ESP_LOGW(TAG, "ESKF diverged: pos=[%.1f,%.1f,%.1f] vel=[%.1f,%.1f,%.1f], resetting...",
-                                                 eskf_state.position.x, eskf_state.position.y, eskf_state.position.z,
-                                                 eskf_state.velocity.x, eskf_state.velocity.y, eskf_state.velocity.z);
-                                        g_eskf.reset();
-                                    }
-                                }
+                            // === Binary logging (400Hz) ===
+                            if (g_logger.isRunning()) {
+                                stampfly::LogPacket pkt;
+                                pkt.header[0] = 0xAA;
+                                pkt.header[1] = 0x56;  // V2
+                                pkt.timestamp_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
+
+                                // IMU data (filtered, body frame)
+                                pkt.accel_x = filtered_accel[0];
+                                pkt.accel_y = filtered_accel[1];
+                                pkt.accel_z = filtered_accel[2];
+                                pkt.gyro_x = filtered_gyro[0];
+                                pkt.gyro_y = filtered_gyro[1];
+                                pkt.gyro_z = filtered_gyro[2];
+
+                                // Mag data (from state cache)
+                                stampfly::Vec3 mag_cached;
+                                state.getMagData(mag_cached);
+                                pkt.mag_x = mag_cached.x;
+                                pkt.mag_y = mag_cached.y;
+                                pkt.mag_z = mag_cached.z;
+
+                                // Baro data
+                                float baro_alt_cached, pressure_cached;
+                                state.getBaroData(baro_alt_cached, pressure_cached);
+                                pkt.pressure = pressure_cached;
+                                pkt.baro_alt = baro_alt_cached;
+
+                                // ToF data
+                                float tof_bottom_cached, tof_front_cached;
+                                state.getToFData(tof_bottom_cached, tof_front_cached);
+                                pkt.tof_bottom = tof_bottom_cached;
+                                pkt.tof_front = tof_front_cached;
+
+                                // OptFlow raw data
+                                int16_t flow_dx_cached, flow_dy_cached;
+                                uint8_t flow_squal_cached;
+                                state.getFlowRawData(flow_dx_cached, flow_dy_cached, flow_squal_cached);
+                                pkt.flow_dx = flow_dx_cached;
+                                pkt.flow_dy = flow_dy_cached;
+                                pkt.flow_squal = flow_squal_cached;
+
+                                // ESKF estimates
+                                pkt.pos_x = eskf_state.position.x;
+                                pkt.pos_y = eskf_state.position.y;
+                                pkt.pos_z = eskf_state.position.z;
+                                pkt.vel_x = eskf_state.velocity.x;
+                                pkt.vel_y = eskf_state.velocity.y;
+                                pkt.vel_z = eskf_state.velocity.z;
+                                pkt.roll = eskf_state.roll;
+                                pkt.pitch = eskf_state.pitch;
+                                pkt.yaw = eskf_state.yaw;
+                                pkt.gyro_bias_z = eskf_state.gyro_bias.z;
+                                pkt.accel_bias_x = eskf_state.accel_bias.x;
+                                pkt.accel_bias_y = eskf_state.accel_bias.y;
+
+                                // Status
+                                pkt.eskf_status = 1;  // running
+                                pkt.baro_ref_alt = g_baro_reference_altitude;
+                                memset(pkt.reserved, 0, sizeof(pkt.reserved));
+                                pkt.checksum = 0;  // Will be calculated by Logger
+
+                                g_logger.pushData(pkt);
                             }
                         } else {
                             eskf_error_counter++;
+                            if (eskf_error_counter % 100 == 1) {
+                                if (!eskf_valid) {
+                                    ESP_LOGW(TAG, "ESKF output NaN, errors=%lu", eskf_error_counter);
+                                } else {
+                                    ESP_LOGW(TAG, "ESKF diverged: pos=[%.1f,%.1f,%.1f] vel=[%.1f,%.1f,%.1f], resetting...",
+                                             eskf_state.position.x, eskf_state.position.y, eskf_state.position.z,
+                                             eskf_state.velocity.x, eskf_state.velocity.y, eskf_state.velocity.z);
+                                    g_eskf.reset();
+                                }
+                            }
                         }
+                    } else {
+                        eskf_error_counter++;
                     }
                 }
                 // Fallback to simple attitude estimator if ESKF not available
@@ -446,8 +527,7 @@ static void IMUTask(void* pvParameters)
                 }
             }
         }
-
-        vTaskDelayUntil(&last_wake_time, period);
+        // No delay here - timing controlled by ESP Timer semaphore
     }
 }
 
@@ -893,6 +973,8 @@ static void CommTask(void* pvParameters)
 
 /**
  * @brief CLI Task - Low priority, processes USB serial input
+ *
+ * Note: Binary logging moved to stampfly_logger component (400Hz via ESP Timer)
  */
 static void CLITask(void* pvParameters)
 {
@@ -905,10 +987,8 @@ static void CLITask(void* pvParameters)
 
     TickType_t last_teleplot = xTaskGetTickCount();
     TickType_t last_csvlog = xTaskGetTickCount();
-    TickType_t last_binlog = xTaskGetTickCount();
     const TickType_t teleplot_period = pdMS_TO_TICKS(50);  // 20Hz teleplot output
     const TickType_t csvlog_period = pdMS_TO_TICKS(50);    // 20Hz CSV log output
-    const TickType_t binlog_period = pdMS_TO_TICKS(10);    // 100Hz binary log output
 
     while (true) {
         if (g_cli.isInitialized()) {
@@ -928,14 +1008,10 @@ static void CLITask(void* pvParameters)
                 last_csvlog = now;
             }
 
-            // Output binary log data at fixed interval (100Hz for ESKF debug)
-            // V1 binlog removed - now only V2 (128 bytes with ESKF estimates)
-            if (g_cli.isBinlogV2Enabled() && (now - last_binlog) >= binlog_period) {
-                g_cli.outputBinaryLogV2();
-                last_binlog = now;
-            }
+            // Binary logging now handled by stampfly_logger component at 400Hz
+            // controlled via g_logger.start()/stop()
         }
-        vTaskDelay(pdMS_TO_TICKS(5));  // 5ms polling for 100Hz binlog
+        vTaskDelay(pdMS_TO_TICKS(10));  // 10ms polling (teleplot/csvlog only)
     }
 }
 
@@ -1271,7 +1347,7 @@ static esp_err_t initEstimators()
             ESP_LOGW(TAG, "ESKF init failed: %s", esp_err_to_name(ret));
             state.setESKFInitialized(false);
         } else {
-            ESP_LOGI(TAG, "ESKF initialized (predict at 100Hz)");
+            ESP_LOGI(TAG, "ESKF initialized (predict at 400Hz)");
             state.setESKFInitialized(true);
 
             // ジャイロバイアスキャリブレーション（静止状態で実行）
@@ -1425,10 +1501,31 @@ static esp_err_t initCLI()
 
     g_cli.registerDefaultCommands();
 
-    // binlog開始時にmag_refを設定するコールバックを登録
+    // binlog開始時にmag_refを設定するコールバックを登録 (後方互換性のため維持)
     g_cli.setBinlogStartCallback(onBinlogStart);
 
     ESP_LOGI(TAG, "CLI initialized");
+    return ESP_OK;
+}
+
+static esp_err_t initLogger()
+{
+    ESP_LOGI(TAG, "Initializing Logger...");
+
+    // 400Hz logging (matches ESKF rate)
+    esp_err_t ret = g_logger.init(400);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "Logger init failed: %s", esp_err_to_name(ret));
+        return ret;
+    }
+
+    // Set start callback (ESKF reset + mag_ref setting)
+    g_logger.setStartCallback(onBinlogStart);
+
+    // Set global pointer for CLI access
+    g_logger_ptr = &g_logger;
+
+    ESP_LOGI(TAG, "Logger initialized at 400Hz");
     return ESP_OK;
 }
 
@@ -1446,18 +1543,45 @@ static void startTasks()
     xTaskCreatePinnedToCore(PowerTask, "PowerTask", STACK_SIZE_POWER, nullptr,
                             PRIORITY_POWER_TASK, &g_power_task_handle, 0);
 
+    // Initialize IMU timer and semaphore for precise 400Hz timing
+    g_imu_semaphore = xSemaphoreCreateBinary();
+    if (g_imu_semaphore == nullptr) {
+        ESP_LOGE(TAG, "Failed to create IMU semaphore");
+    }
+
+    esp_timer_create_args_t imu_timer_args = {
+        .callback = imu_timer_callback,
+        .arg = nullptr,
+        .dispatch_method = ESP_TIMER_TASK,  // Run in esp_timer task context
+        .name = "imu_timer",
+        .skip_unhandled_events = true,      // Skip if semaphore already given
+    };
+    esp_err_t ret = esp_timer_create(&imu_timer_args, &g_imu_timer);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to create IMU timer: %s", esp_err_to_name(ret));
+    } else {
+        // Start periodic timer: 2500μs = 2.5ms = 400Hz
+        ret = esp_timer_start_periodic(g_imu_timer, 2500);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to start IMU timer: %s", esp_err_to_name(ret));
+        } else {
+            ESP_LOGI(TAG, "IMU timer started: 2.5ms period (400Hz)");
+        }
+    }
+
     // Sensor tasks (Core 1)
     xTaskCreatePinnedToCore(IMUTask, "IMUTask", STACK_SIZE_IMU, nullptr,
                             PRIORITY_IMU_TASK, &g_imu_task_handle, 1);
 
+    // I2C sensor tasks (Core 0) - moved from Core 1 to avoid contention with 400Hz IMU
     xTaskCreatePinnedToCore(MagTask, "MagTask", STACK_SIZE_MAG, nullptr,
-                            PRIORITY_MAG_TASK, &g_mag_task_handle, 1);
+                            PRIORITY_MAG_TASK, &g_mag_task_handle, 0);
 
     xTaskCreatePinnedToCore(BaroTask, "BaroTask", STACK_SIZE_BARO, nullptr,
-                            PRIORITY_BARO_TASK, &g_baro_task_handle, 1);
+                            PRIORITY_BARO_TASK, &g_baro_task_handle, 0);
 
     xTaskCreatePinnedToCore(ToFTask, "ToFTask", STACK_SIZE_TOF, nullptr,
-                            PRIORITY_TOF_TASK, &g_tof_task_handle, 1);
+                            PRIORITY_TOF_TASK, &g_tof_task_handle, 0);
 
     xTaskCreatePinnedToCore(OptFlowTask, "OptFlowTask", STACK_SIZE_OPTFLOW, nullptr,
                             PRIORITY_OPTFLOW_TASK, &g_optflow_task_handle, 1);
@@ -1548,6 +1672,10 @@ extern "C" void app_main(void)
     // Initialize CLI
     ESP_LOGI(TAG, "Initializing CLI...");
     initCLI();
+
+    // Initialize Logger (400Hz binary log)
+    ESP_LOGI(TAG, "Initializing Logger...");
+    initLogger();
 
     // Start all tasks
     ESP_LOGI(TAG, "Starting tasks...");
