@@ -1,6 +1,160 @@
 # StampFly RTOS Skeleton 実装進捗
 
-## 最終更新: 2025-12-28 (疎行列展開版ESKFバグ修正)
+## 最終更新: 2025-12-29 (ControlTask実装・モータCLI・ARMトグル)
+
+---
+
+## 飛行制御基盤実装 ✅ 完了 (2025-12-29)
+
+### ControlTask（飛行制御タスク）
+
+400Hz で実行される飛行制御タスクを実装。IMUTaskとセマフォで同期。
+
+**ファイル**: `main/main.cpp:569-634`
+
+```cpp
+static void ControlTask(void* pvParameters)
+{
+    while (true) {
+        // Wait for control semaphore (given by IMU task after ESKF update)
+        if (xSemaphoreTake(g_control_semaphore, portMAX_DELAY) != pdTRUE) {
+            continue;
+        }
+
+        // Only run control when ARMED or FLYING
+        if (flight_state != FlightState::ARMED && flight_state != FlightState::FLYING) {
+            // Stop all motors
+            continue;
+        }
+
+        // Get control input and apply to motors
+        float throttle, roll, pitch, yaw;
+        state.getControlInput(throttle, roll, pitch, yaw);
+
+        // Simple throttle control (PID control is TODO)
+        g_motor.setMotor(MotorDriver::MOTOR_FR, throttle);
+        g_motor.setMotor(MotorDriver::MOTOR_RR, throttle);
+        g_motor.setMotor(MotorDriver::MOTOR_RL, throttle);
+        g_motor.setMotor(MotorDriver::MOTOR_FL, throttle);
+    }
+}
+```
+
+**モーターレイアウト図** (X-quad, 上から見た図):
+```
+           Front
+      FL (M4)   FR (M1)
+         ╲   ▲   ╱
+          ╲  │  ╱
+           ╲ │ ╱
+            ╲│╱
+             ╳
+            ╱│╲
+           ╱ │ ╲
+          ╱  │  ╲
+         ╱   │   ╲
+      RL (M3)    RR (M2)
+            Rear
+
+Motor rotation:
+  M1 (FR): CCW    M2 (RR): CW
+  M3 (RL): CCW    M4 (FL): CW
+```
+
+### スロットル正規化修正
+
+コントローラのスロットルスティックは上半分のみ使用（2048-4095 → 0〜1）。
+
+**ファイル**: `components/stampfly_state/stampfly_state.cpp:396-407`
+
+```cpp
+void StampFlyState::getControlInput(float& throttle, float& roll, float& pitch, float& yaw) const
+{
+    // Throttle uses upper half only (2048-4095 -> 0 to 1), negative clipped
+    float throttle_raw = (ctrl_throttle_ - 2048) / 2048.0f;
+    throttle = (throttle_raw < 0) ? 0 : throttle_raw;  // 0 to 1 (clipped)
+    roll = (ctrl_roll_ - 2048) / 2048.0f;              // -1 to +1
+    pitch = (ctrl_pitch_ - 2048) / 2048.0f;            // -1 to +1
+    yaw = (ctrl_yaw_ - 2048) / 2048.0f;                // -1 to +1
+}
+```
+
+### CLIモータテストコマンド
+
+**ファイル**: `components/stampfly_cli/cli.cpp:687-777`
+
+```
+motor test <id> <throttle>  - 単体モーターテスト (id:1-4, throttle:0-100)
+motor all <throttle>        - 全モーターテスト (throttle:0-100)
+motor stop                  - 全モーター停止
+```
+
+`testMotor()` を使用してarm状態に関係なく動作。
+
+### コントローラからのARM/DISARMトグル
+
+**ファイル**: `main/main.cpp:1209-1235`
+
+立ち上がりエッジ検出によるトグル動作:
+
+```cpp
+// Handle arm/disarm toggle from controller (rising edge detection)
+static bool prev_arm_flag = false;
+bool arm_flag = (packet.flags & CTRL_FLAG_ARM) != 0;
+
+// Detect rising edge (button press)
+if (arm_flag && !prev_arm_flag) {
+    if (flight_state == FlightState::IDLE || flight_state == FlightState::ERROR) {
+        // IDLE/ERROR → ARM
+        state.requestArm();
+        g_motor.arm();  // Enable motor driver
+    } else if (flight_state == FlightState::ARMED) {
+        // ARMED → DISARM
+        state.requestDisarm();
+        g_motor.disarm();  // Disable motor driver
+    }
+}
+prev_arm_flag = arm_flag;
+```
+
+### LED機能拡張
+
+**ファイル**: `components/stampfly_led/led.cpp`
+
+| 機能 | 説明 |
+|------|------|
+| NVS保存 | `setBrightness(val, true)` で明るさをNVSに保存 |
+| 低バッテリー警告 | 3.4V未満でシアン点滅 (`showLowBatteryCyan()`) |
+| FLYING色変更 | 緑→黄色に変更 |
+
+### デバッグモード
+
+電池なし（USB給電のみ）でもARMできるモード。
+
+```
+debug on   - デバッグモード有効（LOW_BATTERYエラー無視でARM可能）
+debug off  - デバッグモード無効
+```
+
+### 開発者ドキュメント
+
+**ファイル**: `docs/developer_guide.md` (新規作成)
+
+- main.cpp構造説明
+- タスク構成と優先度
+- データフロー図
+- 飛行制御実装の手引き（PID制御例含む）
+
+### 変更ファイル一覧
+
+| ファイル | 変更内容 |
+|---------|---------|
+| `main/main.cpp` | ControlTask追加、ARM/DISARMトグル、g_motor_ptr定義 |
+| `components/stampfly_state/stampfly_state.cpp` | スロットル正規化修正 |
+| `components/stampfly_cli/cli.cpp` | motorコマンド実装 |
+| `components/stampfly_cli/CMakeLists.txt` | stampfly_motor依存追加 |
+| `components/stampfly_led/led.cpp` | NVS保存、低バッテリーLED、FLYING色変更 |
+| `docs/developer_guide.md` | 新規作成 |
 
 ---
 
@@ -37,7 +191,8 @@ main.cppに以下を統合:
 **FreeRTOSタスク:**
 | タスク名 | 周波数 | 優先度 | Core | スタック |
 |----------|--------|--------|------|---------|
-| IMUTask | 400Hz | 24 | 1 | 8192 |
+| IMUTask | 400Hz | 24 | 1 | 16384 |
+| ControlTask | 400Hz | 23 | 1 | 8192 |
 | OptFlowTask | 100Hz | 20 | 1 | 8192 |
 | MagTask | 100Hz | 18 | 1 | 8192 |
 | BaroTask | 50Hz | 16 | 1 | 8192 |
@@ -1540,6 +1695,10 @@ if (g_cli.isBinlogV2Enabled()) {
 
 | 日付 | 内容 |
 |------|------|
+| 2025-12-29 | 飛行制御基盤実装: ControlTask(400Hz)追加、モータCLIコマンド(test/all/stop)、ARMトグル(立ち上がりエッジ検出)、モータドライバarm/disarm連携 |
+| 2025-12-29 | スロットル正規化修正: 上半分のみ使用(2048-4095→0〜1)、負値クリップ |
+| 2025-12-29 | LED機能拡張: 明るさNVS保存、低バッテリー(3.4V未満)シアン警告、FLYING色を黄色に変更 |
+| 2025-12-29 | 開発者ドキュメント作成: docs/developer_guide.md (main.cpp構造、タスク構成、PID制御例) |
 | 2025-12-28 | 疎行列展開版ESKFバグ修正: updateMagのS行列計算でH行列のインデックス誤り(H0x→H1x/H2x)を修正、PC版とデバイス版で同一の疎行列実装に統一 |
 | 2025-12-28 | updateAccelAttitudeWithGyro廃止: updateAccelAttitudeに統一、k_adaptiveはconfig_から取得（デフォルト0.0f） |
 | 2025-12-28 | visualize_eskf.py: --pcオプション追加（PCシミュレーション結果のみ表示） |

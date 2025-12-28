@@ -206,11 +206,41 @@ esp_err_t ControllerComm::sendTelemetry(const TelemetryPacket& packet)
     return ret;
 }
 
+esp_err_t ControllerComm::setChannel(int channel)
+{
+    if (channel < 1 || channel > 13) {
+        ESP_LOGE(TAG, "Invalid channel %d (must be 1-13)", channel);
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    ESP_LOGI(TAG, "Setting WiFi channel to %d", channel);
+
+    esp_err_t ret = esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to set WiFi channel: %s", esp_err_to_name(ret));
+        return ret;
+    }
+
+    config_.wifi_channel = channel;
+
+    // Update peer channel if paired
+    if (paired_) {
+        esp_now_peer_info_t peer = {};
+        if (esp_now_get_peer(controller_mac_, &peer) == ESP_OK) {
+            peer.channel = channel;
+            esp_now_mod_peer(&peer);
+        }
+    }
+
+    return ESP_OK;
+}
+
 void ControllerComm::enterPairingMode()
 {
-    ESP_LOGI(TAG, "Entering pairing mode");
+    ESP_LOGI(TAG, "Entering pairing mode on channel %d", config_.wifi_channel);
     pairing_mode_ = true;
     connected_ = false;
+    pairing_broadcast_active_ = true;
 
     // ブロードキャストピア追加
     uint8_t broadcast_mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
@@ -227,16 +257,38 @@ void ControllerComm::enterPairingMode()
         ESP_LOGW(TAG, "Failed to add broadcast peer: %s", esp_err_to_name(ret));
     }
 
-    // 自MACアドレスをブロードキャスト（コントローラが受信）
+    // Send first pairing packet immediately
+    sendPairingPacket();
+}
+
+void ControllerComm::sendPairingPacket()
+{
+    // Pairing packet format for Simple_StampFly_Joy controller:
+    // Byte 0: Channel
+    // Byte 1-6: Drone MAC address
+    // Byte 7-10: Signature 0xAA 0x55 0x16 0x88
+    uint8_t pairing_packet[11];
+
+    // Get own MAC address
     uint8_t my_mac[6];
     esp_wifi_get_mac(WIFI_IF_STA, my_mac);
 
-    ESP_LOGI(TAG, "Broadcasting MAC: %02X:%02X:%02X:%02X:%02X:%02X",
-             my_mac[0], my_mac[1], my_mac[2], my_mac[3], my_mac[4], my_mac[5]);
+    // Build pairing packet
+    pairing_packet[0] = static_cast<uint8_t>(config_.wifi_channel);
+    memcpy(&pairing_packet[1], my_mac, 6);
+    pairing_packet[7] = 0xAA;
+    pairing_packet[8] = 0x55;
+    pairing_packet[9] = 0x16;
+    pairing_packet[10] = 0x88;
 
-    ret = esp_now_send(broadcast_mac, my_mac, 6);
+    ESP_LOGI(TAG, "Broadcasting pairing packet: MAC=%02X:%02X:%02X:%02X:%02X:%02X CH=%d",
+             my_mac[0], my_mac[1], my_mac[2], my_mac[3], my_mac[4], my_mac[5],
+             config_.wifi_channel);
+
+    uint8_t broadcast_mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+    esp_err_t ret = esp_now_send(broadcast_mac, pairing_packet, sizeof(pairing_packet));
     if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "Broadcast send failed: %s", esp_err_to_name(ret));
+        ESP_LOGW(TAG, "Pairing broadcast failed: %s", esp_err_to_name(ret));
     }
 }
 
@@ -244,6 +296,7 @@ void ControllerComm::exitPairingMode()
 {
     ESP_LOGI(TAG, "Exiting pairing mode");
     pairing_mode_ = false;
+    pairing_broadcast_active_ = false;
 
     // ブロードキャストピア削除
     uint8_t broadcast_mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
@@ -345,6 +398,15 @@ void ControllerComm::tick()
     if (!initialized_) return;
 
     uint32_t now = xTaskGetTickCount() * portTICK_PERIOD_MS;
+
+    // ペアリングモード中は定期的にパケットを送信（500ms間隔）
+    if (pairing_mode_ && pairing_broadcast_active_) {
+        static uint32_t last_pairing_broadcast = 0;
+        if (now - last_pairing_broadcast > 500) {
+            sendPairingPacket();
+            last_pairing_broadcast = now;
+        }
+    }
 
     // 接続状態の更新
     if (connected_ && last_recv_time_ > 0) {

@@ -1,0 +1,439 @@
+# StampFly 開発者ガイド
+
+このドキュメントは、StampFly RTOSスケルトンに機能を追加する開発者向けのガイドです。
+
+## 目次
+
+1. [main.cppの構造](#maincppの構造)
+2. [タスク構成とタイミング](#タスク構成とタイミング)
+3. [データフロー](#データフロー)
+4. [飛行制御コードの追加方法](#飛行制御コードの追加方法)
+5. [新しいセンサーの追加](#新しいセンサーの追加)
+6. [CLIコマンドの追加](#cliコマンドの追加)
+7. [状態管理](#状態管理)
+8. [デバッグ方法](#デバッグ方法)
+
+---
+
+## main.cppの構造
+
+`main/main.cpp`は以下のセクションで構成されています：
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ 1. インクルードと定数定義 (1-110行目)                         │
+│    - GPIO定義                                                │
+│    - タスク優先度                                            │
+│    - スタックサイズ                                          │
+├─────────────────────────────────────────────────────────────┤
+│ 2. グローバルインスタンス (112-202行目)                       │
+│    - センサードライバ (g_imu, g_mag, g_baro, etc.)           │
+│    - アクチュエータ (g_motor, g_led, g_buzzer)               │
+│    - 推定器 (g_eskf, g_attitude_est)                         │
+│    - 通信 (g_comm, g_cli)                                    │
+│    - タスクハンドル                                          │
+├─────────────────────────────────────────────────────────────┤
+│ 3. ヘルパー関数 (204-256行目)                                 │
+│    - setMagReferenceFromBuffer()                             │
+│    - onBinlogStart()                                         │
+├─────────────────────────────────────────────────────────────┤
+│ 4. タイマーコールバック (258-273行目)                         │
+│    - imu_timer_callback() - 400Hz精密タイミング               │
+├─────────────────────────────────────────────────────────────┤
+│ 5. タスク関数 (275-1140行目)  ★重要                          │
+│    - IMUTask (400Hz) - ESKF更新、センサー融合                 │
+│    - ControlTask (400Hz) - 飛行制御 ★スタブ実装済み          │
+│    - OptFlowTask (100Hz) - オプティカルフロー                 │
+│    - MagTask (100Hz) - 地磁気センサー                         │
+│    - BaroTask (50Hz) - 気圧センサー                           │
+│    - ToFTask (30Hz) - ToFセンサー                             │
+│    - PowerTask (10Hz) - 電源監視                              │
+│    - LEDTask (30Hz) - LED制御                                 │
+│    - ButtonTask (100Hz) - ボタン入力                          │
+│    - CommTask (50Hz) - ESP-NOW通信                            │
+│    - CLITask - USBシリアルCLI                                 │
+├─────────────────────────────────────────────────────────────┤
+│ 6. イベントハンドラ (1039-1129行目)                           │
+│    - onButtonEvent() - ボタンイベント処理                     │
+│    - onControlPacket() - コントローラー入力処理               │
+├─────────────────────────────────────────────────────────────┤
+│ 7. 初期化関数 (1131-1627行目)                                 │
+│    - initI2C(), initSensors(), initActuators()               │
+│    - initEstimators(), initCommunication()                   │
+│    - initCLI(), initLogger(), startTasks()                   │
+├─────────────────────────────────────────────────────────────┤
+│ 8. エントリポイント (1629-1747行目)                           │
+│    - app_main() - 初期化シーケンス                           │
+└─────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## タスク構成とタイミング
+
+### CPUコア割り当て
+
+| Core | タスク | 理由 |
+|------|--------|------|
+| Core 1 | IMUTask (400Hz) | 高頻度処理、Core 0と分離 |
+| Core 1 | ControlTask (400Hz) | IMUと同期、リアルタイム制御 |
+| Core 1 | OptFlowTask (100Hz) | SPI通信、IMUと同じCore |
+| Core 0 | MagTask, BaroTask, ToFTask | I2Cセンサー群 |
+| Core 0 | その他すべて | 低優先度タスク |
+
+### タスク優先度 (高い順)
+
+| 優先度 | タスク | 周波数 | 役割 |
+|--------|--------|--------|------|
+| 24 | IMUTask | 400Hz | センサー読み取り + ESKF |
+| 23 | **ControlTask** | 400Hz | **飛行制御 (スタブ)** |
+| 20 | OptFlowTask | 100Hz | オプティカルフロー |
+| 18 | MagTask | 100Hz | 地磁気 |
+| 16 | BaroTask | 50Hz | 気圧 |
+| 15 | CommTask | 50Hz | ESP-NOW通信 |
+| 14 | ToFTask | 30Hz | ToFセンサー |
+| 12 | PowerTask | 10Hz | 電源監視 |
+| 10 | ButtonTask | 100Hz | ボタン入力 |
+| 8 | LEDTask | 30Hz | LED制御 |
+| 5 | CLITask | - | USBシリアル |
+
+---
+
+## データフロー
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                        センサータスク                              │
+├──────────────────────────────────────────────────────────────────┤
+│  IMUTask ─────► g_eskf.predict() ─────────────────────┐          │
+│  (400Hz)                                               │          │
+│                                                        ▼          │
+│  MagTask ─────► g_mag_data_cache ──► g_eskf.updateMag()          │
+│  (100Hz→10Hz)   + g_mag_data_ready                               │
+│                                                                   │
+│  BaroTask ────► g_baro_data_cache ─► g_eskf.updateBaro()         │
+│  (50Hz)         + g_baro_data_ready                              │
+│                                                                   │
+│  ToFTask ─────► g_tof_data_cache ──► g_eskf.updateToF()          │
+│  (30Hz)         + g_tof_data_ready                               │
+│                                                                   │
+│  OptFlowTask ─► state.updateOpticalFlow() ─► g_eskf.updateFlow() │
+│  (100Hz)                                                          │
+└──────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌──────────────────────────────────────────────────────────────────┐
+│                     StampFlyState (共有状態)                      │
+├──────────────────────────────────────────────────────────────────┤
+│  センサーデータ:  accel_, gyro_, mag_, baro_, tof_, flow_        │
+│  推定状態:        position_, velocity_, roll_, pitch_, yaw_      │
+│  制御入力:        ctrl_throttle_, ctrl_roll_, ctrl_pitch_, ...   │
+│  システム状態:    flight_state_, error_code_, pairing_state_     │
+└──────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌──────────────────────────────────────────────────────────────────┐
+│                      ControlTask (400Hz, スタブ)                  │
+├──────────────────────────────────────────────────────────────────┤
+│  IMUTask完了 ──► セマフォ ──► ControlTask起動                     │
+│                                │                                  │
+│                                ▼                                  │
+│                     姿勢/入力取得 → PID計算 → モーター出力         │
+│                                │                                  │
+│                                ▼                                  │
+│                     g_motor.setMixerOutput(thrust, r, p, y)       │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 飛行制御コードの追加方法
+
+### ControlTaskについて
+
+**ControlTask**は既にスタブとして実装されています（`main.cpp`の563行目付近）。
+このタスクは400HzでIMUTaskと同期して実行されます。
+
+スタブには以下のコメント付きサンプルコードが含まれています：
+- 姿勢・角速度の取得
+- コントローラー入力の取得
+- PD制御の計算
+- モーターミキシング
+
+### 実装手順
+
+`main.cpp`の`ControlTask`関数内のコメントを解除して、PIDゲインを調整するだけで飛行制御が実装できます。
+
+**Step 1: PIDゲインの定義（570行目付近）**
+
+コメントを解除してゲインを設定：
+
+```cpp
+constexpr float KP_ROLL = 1.0f;
+constexpr float KD_ROLL = 0.1f;
+constexpr float KP_PITCH = 1.0f;
+constexpr float KD_PITCH = 0.1f;
+constexpr float KP_YAW = 0.5f;
+```
+
+**Step 2: 制御コードの実装（596-652行目付近）**
+
+コメントを解除して制御を有効化：
+
+```cpp
+// Step 1: 現在の姿勢を取得
+float roll, pitch, yaw;
+state.getAttitudeEuler(roll, pitch, yaw);
+
+// Step 2: ジャイロ（角速度）を取得
+stampfly::Vec3 accel, gyro;
+state.getIMUData(accel, gyro);
+
+// Step 3: コントローラー入力を取得 (正規化: throttle 0-1, others -1 to +1)
+float throttle_cmd, roll_cmd, pitch_cmd, yaw_cmd;
+state.getControlInput(throttle_cmd, roll_cmd, pitch_cmd, yaw_cmd);
+
+// Step 4: 目標姿勢計算
+constexpr float MAX_ANGLE = 30.0f * M_PI / 180.0f;  // 最大30度
+float roll_target = roll_cmd * MAX_ANGLE;
+float pitch_target = pitch_cmd * MAX_ANGLE;
+float yaw_rate_target = yaw_cmd * 2.0f;  // rad/s
+
+// Step 5: PD制御
+float roll_error = roll_target - roll;
+float pitch_error = pitch_target - pitch;
+float roll_out = KP_ROLL * roll_error - KD_ROLL * gyro.x;
+float pitch_out = KP_PITCH * pitch_error - KD_PITCH * gyro.y;
+float yaw_out = KP_YAW * (yaw_rate_target - gyro.z);
+
+// Step 6: モーターミキシング呼び出し
+g_motor.setMixerOutput(throttle_cmd, roll_out, pitch_out, yaw_out);
+
+// Step 7: 状態遷移
+if (flight_state == stampfly::FlightState::ARMED && throttle_cmd > 0.1f) {
+    state.setFlightState(stampfly::FlightState::FLYING);
+}
+```
+
+**Step 3: スタブ部分を削除**
+
+最後の行を削除：
+
+```cpp
+// これを削除:
+g_motor.setMixerOutput(0, 0, 0, 0);
+```
+
+### モーターミキシングAPI
+
+```cpp
+// 推奨: 高レベルAPI（内部でX-quadミキシング）
+g_motor.setMixerOutput(thrust, roll, pitch, yaw);
+
+// 低レベル: 個別モーター制御
+g_motor.setMotor(stampfly::MotorDriver::MOTOR_FR, value);  // 0.0-1.0
+g_motor.setMotor(stampfly::MotorDriver::MOTOR_RR, value);
+g_motor.setMotor(stampfly::MotorDriver::MOTOR_RL, value);
+g_motor.setMotor(stampfly::MotorDriver::MOTOR_FL, value);
+```
+
+### X-Quadモーター配置
+
+```
+     前方
+   FL    FR
+    ╲  ╱
+     ╲╱
+     ╱╲
+    ╱  ╲
+   RL    RR
+
+FR(M1): CCW  (反時計回り)
+RR(M2): CW   (時計回り)
+RL(M3): CCW  (反時計回り)
+FL(M4): CW   (時計回り)
+```
+
+---
+
+## 新しいセンサーの追加
+
+### 1. コンポーネントの作成
+
+```
+components/stampfly_newsensor/
+├── CMakeLists.txt
+├── include/
+│   └── newsensor.hpp
+└── newsensor.cpp
+```
+
+### 2. main.cppへの統合
+
+```cpp
+// グローバルインスタンス追加
+stampfly::NewSensor g_newsensor;
+
+// initSensors()に初期化コード追加
+{
+    stampfly::NewSensor::Config cfg;
+    cfg.i2c_bus = g_i2c_bus;
+    ret = g_newsensor.init(cfg);
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "NewSensor initialized");
+    }
+}
+
+// 必要に応じて専用タスクを追加
+static void NewSensorTask(void* pvParameters) {
+    // ...
+}
+```
+
+---
+
+## CLIコマンドの追加
+
+### 1. cli.cppにハンドラ追加
+
+```cpp
+// Forward declaration
+static void cmd_mycommand(int argc, char** argv, void* context);
+
+// registerDefaultCommands()に登録
+registerCommand("mycommand", cmd_mycommand, "My new command", this);
+
+// ハンドラ実装
+static void cmd_mycommand(int argc, char** argv, void* context)
+{
+    CLI* cli = static_cast<CLI*>(context);
+    cli->print("Hello from mycommand!\r\n");
+}
+```
+
+### 2. 外部グローバル変数へのアクセス
+
+```cpp
+// cli.cpp先頭で宣言
+extern stampfly::MyClass* g_myclass_ptr;
+
+// main.cppでポインタ設定
+stampfly::MyClass* g_myclass_ptr = nullptr;
+// 初期化後に
+g_myclass_ptr = &g_myclass;
+```
+
+---
+
+## 状態管理
+
+### FlightState（飛行状態）
+
+```
+INIT ──► CALIBRATING ──► IDLE ◄──► ARMED ◄──► FLYING
+                           │                    │
+                           └──► ERROR ◄─────────┘
+```
+
+| 状態 | 説明 | LED |
+|------|------|-----|
+| INIT | 初期化中 | 青・呼吸 |
+| CALIBRATING | キャリブレーション中 | 黄・高速点滅 |
+| IDLE | 待機中（ARM可能） | 緑・常灯 |
+| ARMED | アーム済み（飛行準備完了） | 緑・低速点滅 |
+| FLYING | 飛行中 | 黄・常灯 |
+| ERROR | エラー発生 | 赤・高速点滅 |
+
+### StampFlyStateへのアクセス
+
+```cpp
+auto& state = stampfly::StampFlyState::getInstance();
+
+// 読み取り
+float voltage = state.getVoltage();
+stampfly::FlightState fs = state.getFlightState();
+
+// 書き込み
+state.updateAttitude(roll, pitch, yaw);
+state.setFlightState(stampfly::FlightState::FLYING);
+```
+
+---
+
+## デバッグ方法
+
+### 1. CLIコマンド
+
+| コマンド | 説明 |
+|----------|------|
+| `status` | システム状態表示 |
+| `sensor all` | 全センサーデータ表示 |
+| `ctrl watch` | コントローラー入力監視 |
+| `loglevel info` | ESP_LOGを有効化 |
+| `teleplot on` | Teleplot形式出力 |
+| `binlog on` | 400Hzバイナリログ開始 |
+| `debug on` | エラー無視モード |
+
+### 2. ESP_LOGの使用
+
+```cpp
+ESP_LOGI(TAG, "Info message: %d", value);
+ESP_LOGW(TAG, "Warning message");
+ESP_LOGE(TAG, "Error message");
+```
+
+CLIで有効化：`loglevel info` または `loglevel debug`
+
+### 3. バイナリログの解析
+
+```bash
+# ログ収集
+python tools/scripts/log_capture.py /dev/ttyACM0 output.bin
+
+# 解析（tools/eskf_debugで）
+./eskf_replay output.bin
+```
+
+---
+
+## ファイル構成
+
+```
+stampfly_rtos_skelton/
+├── main/
+│   └── main.cpp              ← メインエントリポイント
+├── components/
+│   ├── stampfly_state/       ← 状態管理（シングルトン）
+│   ├── stampfly_imu/         ← BMI270ドライバ
+│   ├── stampfly_mag/         ← BMM150ドライバ
+│   ├── stampfly_baro/        ← BMP280ドライバ
+│   ├── stampfly_tof/         ← VL53L3CXドライバ
+│   ├── stampfly_opticalflow/ ← PMW3901ドライバ
+│   ├── stampfly_power/       ← INA3221ドライバ
+│   ├── stampfly_motor/       ← モータードライバ
+│   ├── stampfly_led/         ← WS2812 LEDドライバ
+│   ├── stampfly_buzzer/      ← ブザードライバ
+│   ├── stampfly_button/      ← ボタンドライバ
+│   ├── stampfly_eskf/        ← ESKFフィルター
+│   ├── stampfly_filter/      ← LPF/推定器
+│   ├── stampfly_comm/        ← ESP-NOW通信
+│   ├── stampfly_cli/         ← USBシリアルCLI
+│   ├── stampfly_logger/      ← バイナリログ
+│   └── stampfly_math/        ← 数学ライブラリ
+├── docs/                     ← ドキュメント
+└── tools/                    ← 開発ツール
+```
+
+---
+
+## 注意事項
+
+1. **スレッドセーフティ**: `StampFlyState`はmutexで保護されています。直接メンバーにアクセスせず、getter/setterを使用してください。
+
+2. **タイミング**: IMUTaskは400Hzの精密タイミングが必要です。同じCore 1で重い処理を追加しないでください。
+
+3. **I2Cバス**: 複数のI2Cセンサーが同じバスを共有しています。各タスクはCore 0で実行され、I2Cドライバ内部でスレッドセーフに処理されます。
+
+4. **ESKF更新**: すべてのESKF更新はIMUTask内で行われます。他のセンサータスクはデータをキャッシュしてフラグを立てるだけです（レースコンディション防止）。
+
+5. **モーター安全**: `g_motor.setThrottle()`を呼ぶ前に、必ずフライト状態をチェックしてください。

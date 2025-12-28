@@ -35,6 +35,18 @@ extern stampfly::MagCalibrator* g_mag_calibrator;
 #include "logger.hpp"
 extern stampfly::Logger* g_logger_ptr;
 
+// External reference to controller comm (defined in main.cpp)
+#include "controller_comm.hpp"
+extern stampfly::ControllerComm* g_comm_ptr;
+
+// External reference to LED (defined in main.cpp)
+#include "led.hpp"
+extern stampfly::LED* g_led_ptr;
+
+// External reference to motor driver (defined in main.cpp)
+#include "motor_driver.hpp"
+extern stampfly::MotorDriver* g_motor_ptr;
+
 namespace stampfly {
 
 // Forward declarations for command handlers
@@ -54,6 +66,9 @@ static void cmd_reset(int argc, char** argv, void* context);
 static void cmd_gain(int argc, char** argv, void* context);
 static void cmd_attitude(int argc, char** argv, void* context);
 static void cmd_version(int argc, char** argv, void* context);
+static void cmd_ctrl(int argc, char** argv, void* context);
+static void cmd_debug(int argc, char** argv, void* context);
+static void cmd_led(int argc, char** argv, void* context);
 
 esp_err_t CLI::init()
 {
@@ -211,6 +226,9 @@ void CLI::registerDefaultCommands()
     registerCommand("gain", cmd_gain, "Set control gain", this);
     registerCommand("attitude", cmd_attitude, "Show attitude", this);
     registerCommand("version", cmd_version, "Show version info", this);
+    registerCommand("ctrl", cmd_ctrl, "Show controller input [watch]", this);
+    registerCommand("debug", cmd_debug, "Debug mode [on|off] (ignore errors)", this);
+    registerCommand("led", cmd_led, "LED [brightness <0-255>]", this);
 }
 
 // ========== Command Handlers ==========
@@ -224,11 +242,58 @@ static void cmd_help(int, char**, void* context)
 static void cmd_status(int, char**, void* context)
 {
     CLI* cli = static_cast<CLI*>(context);
+    auto& state = StampFlyState::getInstance();
+
     cli->print("=== System Status ===\r\n");
-    cli->print("Flight State: INIT (stub)\r\n");
-    cli->print("Pairing: NOT_PAIRED (stub)\r\n");
-    cli->print("Battery: 4.2V (stub)\r\n");
-    cli->print("Connected: No (stub)\r\n");
+
+    // Flight state
+    const char* flight_state_str = "UNKNOWN";
+    switch (state.getFlightState()) {
+        case FlightState::INIT: flight_state_str = "INIT"; break;
+        case FlightState::CALIBRATING: flight_state_str = "CALIBRATING"; break;
+        case FlightState::IDLE: flight_state_str = "IDLE"; break;
+        case FlightState::ARMED: flight_state_str = "ARMED"; break;
+        case FlightState::FLYING: flight_state_str = "FLYING"; break;
+        case FlightState::LANDING: flight_state_str = "LANDING"; break;
+        case FlightState::ERROR: flight_state_str = "ERROR"; break;
+    }
+    cli->print("Flight State: %s\r\n", flight_state_str);
+
+    // Error code
+    const char* error_str = "NONE";
+    switch (state.getErrorCode()) {
+        case ErrorCode::NONE: error_str = "NONE"; break;
+        case ErrorCode::SENSOR_IMU: error_str = "SENSOR_IMU"; break;
+        case ErrorCode::SENSOR_MAG: error_str = "SENSOR_MAG"; break;
+        case ErrorCode::SENSOR_BARO: error_str = "SENSOR_BARO"; break;
+        case ErrorCode::SENSOR_TOF: error_str = "SENSOR_TOF"; break;
+        case ErrorCode::SENSOR_FLOW: error_str = "SENSOR_FLOW"; break;
+        case ErrorCode::SENSOR_POWER: error_str = "SENSOR_POWER"; break;
+        case ErrorCode::LOW_BATTERY: error_str = "LOW_BATTERY"; break;
+        case ErrorCode::COMM_LOST: error_str = "COMM_LOST"; break;
+        case ErrorCode::CALIBRATION_FAILED: error_str = "CALIBRATION_FAILED"; break;
+    }
+    cli->print("Error: %s\r\n", error_str);
+
+    // Battery
+    cli->print("Battery: %.2fV\r\n", state.getVoltage());
+
+    // ESP-NOW status
+    if (g_comm_ptr != nullptr) {
+        cli->print("ESP-NOW: %s, %s\r\n",
+                   g_comm_ptr->isPaired() ? "paired" : "not paired",
+                   g_comm_ptr->isConnected() ? "connected" : "disconnected");
+    } else {
+        cli->print("ESP-NOW: not available\r\n");
+    }
+
+    // ESKF status
+    cli->print("ESKF: %s\r\n", state.isESKFInitialized() ? "initialized" : "not initialized");
+
+    // Attitude
+    StateVector3 att = state.getAttitude();
+    cli->print("Attitude: R=%.1f P=%.1f Y=%.1f deg\r\n",
+               att.x * 180.0f / M_PI, att.y * 180.0f / M_PI, att.z * 180.0f / M_PI);
 }
 
 static void cmd_sensor(int argc, char** argv, void* context)
@@ -623,26 +688,57 @@ static void cmd_motor(int argc, char** argv, void* context)
 {
     CLI* cli = static_cast<CLI*>(context);
 
+    if (g_motor_ptr == nullptr) {
+        cli->print("Motor driver not available\r\n");
+        return;
+    }
+
     if (argc < 2) {
-        cli->print("Usage: motor test <id> <throttle> | arm | disarm\r\n");
-        cli->print("  test <id> <throttle> - Test motor (id:1-4, throttle:0-100)\r\n");
-        cli->print("  arm                  - Arm motors\r\n");
-        cli->print("  disarm               - Disarm motors\r\n");
+        cli->print("Usage: motor <command>\r\n");
+        cli->print("  test <id> <throttle> - Test single motor (id:1-4, throttle:0-100)\r\n");
+        cli->print("  all <throttle>       - Test all motors (throttle:0-100)\r\n");
+        cli->print("  stop                 - Stop all motors\r\n");
+        cli->print("\r\n");
+        cli->print("Motor layout (top view):\r\n");
+        cli->print("       Front\r\n");
+        cli->print("   M4(FL)  M1(FR)\r\n");
+        cli->print("       X\r\n");
+        cli->print("   M3(RL)  M2(RR)\r\n");
+        cli->print("        Rear\r\n");
         return;
     }
 
     const char* cmd = argv[1];
-    if (strcmp(cmd, "arm") == 0) {
-        cli->print("Motors armed (stub)\r\n");
-        // TODO: StampFlyState::requestArm()
+
+    if (strcmp(cmd, "stop") == 0) {
+        // Use testMotor to bypass arm check
+        g_motor_ptr->testMotor(MotorDriver::MOTOR_FR, 0);
+        g_motor_ptr->testMotor(MotorDriver::MOTOR_RR, 0);
+        g_motor_ptr->testMotor(MotorDriver::MOTOR_RL, 0);
+        g_motor_ptr->testMotor(MotorDriver::MOTOR_FL, 0);
+        cli->print("All motors stopped\r\n");
     }
-    else if (strcmp(cmd, "disarm") == 0) {
-        cli->print("Motors disarmed (stub)\r\n");
-        // TODO: StampFlyState::requestDisarm()
+    else if (strcmp(cmd, "all") == 0) {
+        if (argc < 3) {
+            cli->print("Usage: motor all <throttle>\r\n");
+            return;
+        }
+        int throttle = atoi(argv[2]);
+        if (throttle < 0 || throttle > 100) {
+            cli->print("Invalid throttle. Use 0-100.\r\n");
+            return;
+        }
+        // Use testMotor to bypass arm check
+        g_motor_ptr->testMotor(MotorDriver::MOTOR_FR, throttle);
+        g_motor_ptr->testMotor(MotorDriver::MOTOR_RR, throttle);
+        g_motor_ptr->testMotor(MotorDriver::MOTOR_RL, throttle);
+        g_motor_ptr->testMotor(MotorDriver::MOTOR_FL, throttle);
+        cli->print("All motors at %d%%\r\n", throttle);
     }
     else if (strcmp(cmd, "test") == 0) {
         if (argc < 4) {
             cli->print("Usage: motor test <id> <throttle>\r\n");
+            cli->print("  id: 1=FR, 2=RR, 3=RL, 4=FL\r\n");
             return;
         }
         int id = atoi(argv[2]);
@@ -655,28 +751,101 @@ static void cmd_motor(int argc, char** argv, void* context)
             cli->print("Invalid throttle. Use 0-100.\r\n");
             return;
         }
-        cli->print("Testing motor %d at %d%% (stub)\r\n", id, throttle);
-        // TODO: MotorDriver::testMotor(id-1, throttle)
+
+        const char* motor_names[] = {"FR (M1)", "RR (M2)", "RL (M3)", "FL (M4)"};
+        g_motor_ptr->testMotor(id - 1, throttle);
+        cli->print("Motor %s at %d%%\r\n", motor_names[id - 1], throttle);
     }
     else {
         cli->print("Unknown motor command: %s\r\n", cmd);
     }
 }
 
-static void cmd_pair(int, char**, void* context)
+static void cmd_pair(int argc, char** argv, void* context)
 {
     CLI* cli = static_cast<CLI*>(context);
-    cli->print("Entering pairing mode...\r\n");
-    cli->print("Press the pairing button on the controller.\r\n");
-    // TODO: ControllerComm::enterPairingMode()
+
+    if (g_comm_ptr == nullptr) {
+        cli->print("ControllerComm not available\r\n");
+        return;
+    }
+
+    // Show current status
+    if (argc < 2) {
+        cli->print("ESP-NOW Pairing Status:\r\n");
+        cli->print("  Initialized: %s\r\n", g_comm_ptr->isInitialized() ? "yes" : "no");
+        cli->print("  Channel: %d\r\n", g_comm_ptr->getChannel());
+        cli->print("  Paired: %s\r\n", g_comm_ptr->isPaired() ? "yes" : "no");
+        cli->print("  Connected: %s\r\n", g_comm_ptr->isConnected() ? "yes" : "no");
+        cli->print("  Pairing mode: %s\r\n", g_comm_ptr->isPairingMode() ? "active" : "inactive");
+        cli->print("\r\nUsage:\r\n");
+        cli->print("  pair start      - Enter pairing mode\r\n");
+        cli->print("  pair stop       - Exit pairing mode\r\n");
+        cli->print("  pair channel <n>- Set WiFi channel (1-13)\r\n");
+        return;
+    }
+
+    const char* cmd = argv[1];
+
+    if (strcmp(cmd, "start") == 0) {
+        if (g_comm_ptr->isPairingMode()) {
+            cli->print("Already in pairing mode\r\n");
+            return;
+        }
+        cli->print("Entering pairing mode on channel %d...\r\n", g_comm_ptr->getChannel());
+        cli->print("Send control packet from controller to complete pairing.\r\n");
+        g_comm_ptr->enterPairingMode();
+    } else if (strcmp(cmd, "stop") == 0) {
+        if (!g_comm_ptr->isPairingMode()) {
+            cli->print("Not in pairing mode\r\n");
+            return;
+        }
+        cli->print("Exiting pairing mode\r\n");
+        g_comm_ptr->exitPairingMode();
+    } else if (strcmp(cmd, "channel") == 0) {
+        if (argc < 3) {
+            cli->print("Current channel: %d\r\n", g_comm_ptr->getChannel());
+            cli->print("Usage: pair channel <1-13>\r\n");
+            return;
+        }
+        int channel = atoi(argv[2]);
+        if (channel < 1 || channel > 13) {
+            cli->print("Invalid channel. Use 1-13.\r\n");
+            return;
+        }
+        esp_err_t ret = g_comm_ptr->setChannel(channel);
+        if (ret == ESP_OK) {
+            cli->print("WiFi channel set to %d\r\n", channel);
+        } else {
+            cli->print("Failed to set channel: %s\r\n", esp_err_to_name(ret));
+        }
+    } else {
+        cli->print("Unknown subcommand: %s\r\n", cmd);
+        cli->print("Usage: pair [start|stop|channel]\r\n");
+    }
 }
 
 static void cmd_unpair(int, char**, void* context)
 {
     CLI* cli = static_cast<CLI*>(context);
+
+    if (g_comm_ptr == nullptr) {
+        cli->print("ControllerComm not available\r\n");
+        return;
+    }
+
+    if (!g_comm_ptr->isPaired()) {
+        cli->print("Not paired to any controller\r\n");
+        return;
+    }
+
     cli->print("Clearing pairing information...\r\n");
-    // TODO: ControllerComm::clearPairingFromNVS()
-    cli->print("Pairing cleared. Restart to apply.\r\n");
+    esp_err_t ret = g_comm_ptr->clearPairingFromNVS();
+    if (ret == ESP_OK) {
+        cli->print("Pairing cleared successfully\r\n");
+    } else {
+        cli->print("Failed to clear pairing: %s\r\n", esp_err_to_name(ret));
+    }
 }
 
 static void cmd_reset(int, char**, void* context)
@@ -718,6 +887,125 @@ static void cmd_version(int, char**, void* context)
     cli->print("StampFly RTOS Skeleton\r\n");
     cli->print("  ESP-IDF: %s\r\n", esp_get_idf_version());
     cli->print("  Chip: ESP32-S3\r\n");
+}
+
+static void cmd_ctrl(int argc, char** argv, void* context)
+{
+    CLI* cli = static_cast<CLI*>(context);
+    auto& state = StampFlyState::getInstance();
+
+    // Parse duration for watch mode (default 10 seconds)
+    int watch_seconds = 0;
+    if (argc >= 2) {
+        if (strcmp(argv[1], "watch") == 0) {
+            watch_seconds = (argc >= 3) ? atoi(argv[2]) : 10;
+            if (watch_seconds < 1) watch_seconds = 10;
+            if (watch_seconds > 60) watch_seconds = 60;
+        }
+    }
+
+    if (watch_seconds > 0) {
+        cli->print("Controller input (%d sec):\r\n", watch_seconds);
+    }
+
+    int iterations = watch_seconds * 10;  // 10Hz
+    do {
+        uint16_t throttle, roll, pitch, yaw;
+        state.getRawControlInput(throttle, roll, pitch, yaw);
+        uint8_t flags = state.getControlFlags();
+
+        // Check connection status
+        const char* conn_status = "disconnected";
+        if (g_comm_ptr != nullptr && g_comm_ptr->isConnected()) {
+            conn_status = "connected";
+        }
+
+        if (watch_seconds > 0) {
+            // Overwrite line with \r
+            // Flags: A=Arm, F=Flip, M=Mode, H=AltMode(Hold)
+            cli->print("\rT:%4u R:%4u P:%4u Y:%4u [%c%c%c%c] [%s]   ",
+                       throttle, roll, pitch, yaw,
+                       (flags & CTRL_FLAG_ARM) ? 'A' : '-',
+                       (flags & CTRL_FLAG_FLIP) ? 'F' : '-',
+                       (flags & CTRL_FLAG_MODE) ? 'M' : '-',
+                       (flags & CTRL_FLAG_ALT_MODE) ? 'H' : '-',
+                       conn_status);
+            vTaskDelay(pdMS_TO_TICKS(100));  // 10Hz update
+            iterations--;
+        } else {
+            cli->print("Controller Input (raw ADC values):\r\n");
+            cli->print("  Throttle: %u (0-4095)\r\n", throttle);
+            cli->print("  Roll:     %u (2048=center)\r\n", roll);
+            cli->print("  Pitch:    %u (2048=center)\r\n", pitch);
+            cli->print("  Yaw:      %u (2048=center)\r\n", yaw);
+            cli->print("  Flags:    0x%02X\r\n", flags);
+            cli->print("    ARM:      %s\r\n", (flags & CTRL_FLAG_ARM) ? "ON" : "OFF");
+            cli->print("    FLIP:     %s\r\n", (flags & CTRL_FLAG_FLIP) ? "ON" : "OFF");
+            cli->print("    MODE:     %s\r\n", (flags & CTRL_FLAG_MODE) ? "ON" : "OFF");
+            cli->print("    ALT_MODE: %s\r\n", (flags & CTRL_FLAG_ALT_MODE) ? "ON" : "OFF");
+            cli->print("  Status:   %s\r\n", conn_status);
+        }
+    } while (iterations > 0);
+
+    if (watch_seconds > 0) {
+        cli->print("\r\n");
+    }
+}
+
+static void cmd_debug(int argc, char** argv, void* context)
+{
+    CLI* cli = static_cast<CLI*>(context);
+    auto& state = StampFlyState::getInstance();
+
+    if (argc < 2) {
+        cli->print("Debug mode: %s\r\n", state.isDebugMode() ? "ON" : "OFF");
+        cli->print("Usage: debug [on|off]\r\n");
+        cli->print("  When ON, ARM ignores errors (LOW_BATTERY, sensors, etc.)\r\n");
+        return;
+    }
+
+    if (strcmp(argv[1], "on") == 0) {
+        state.setDebugMode(true);
+        cli->print("Debug mode ON - errors will be ignored for ARM\r\n");
+    } else if (strcmp(argv[1], "off") == 0) {
+        state.setDebugMode(false);
+        cli->print("Debug mode OFF\r\n");
+    } else {
+        cli->print("Usage: debug [on|off]\r\n");
+    }
+}
+
+static void cmd_led(int argc, char** argv, void* context)
+{
+    CLI* cli = static_cast<CLI*>(context);
+
+    if (g_led_ptr == nullptr) {
+        cli->print("LED not available\r\n");
+        return;
+    }
+
+    if (argc < 2) {
+        cli->print("LED brightness: %d (0-255)\r\n", g_led_ptr->getBrightness());
+        cli->print("Usage: led brightness <0-255>\r\n");
+        return;
+    }
+
+    if (strcmp(argv[1], "brightness") == 0) {
+        if (argc < 3) {
+            cli->print("Current brightness: %d\r\n", g_led_ptr->getBrightness());
+            cli->print("Usage: led brightness <0-255>\r\n");
+            return;
+        }
+        int brightness = atoi(argv[2]);
+        if (brightness < 0 || brightness > 255) {
+            cli->print("Invalid brightness. Use 0-255.\r\n");
+            return;
+        }
+        g_led_ptr->setBrightness(static_cast<uint8_t>(brightness), true);  // save to NVS
+        cli->print("LED brightness set to %d (saved)\r\n", brightness);
+    } else {
+        cli->print("Usage: led brightness <0-255>\r\n");
+    }
 }
 
 void CLI::outputTeleplot()

@@ -135,7 +135,7 @@ class CLI {
 public:
     static constexpr size_t MAX_CMD_LEN = 128;
     static constexpr size_t MAX_ARGS = 8;
-    static constexpr size_t MAX_COMMANDS = 16;
+    static constexpr size_t MAX_COMMANDS = 20;
     static constexpr size_t MAX_CMD_NAME_LEN = 16;
     static constexpr size_t MAX_HELP_LEN = 48;
 

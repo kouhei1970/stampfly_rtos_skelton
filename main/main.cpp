@@ -84,6 +84,7 @@ static constexpr int GPIO_BUTTON = 0;
 // =============================================================================
 
 static constexpr UBaseType_t PRIORITY_IMU_TASK = 24;
+static constexpr UBaseType_t PRIORITY_CONTROL_TASK = 23;  // Flight control (after IMU)
 static constexpr UBaseType_t PRIORITY_OPTFLOW_TASK = 20;
 static constexpr UBaseType_t PRIORITY_MAG_TASK = 18;
 static constexpr UBaseType_t PRIORITY_BARO_TASK = 16;
@@ -99,6 +100,7 @@ static constexpr UBaseType_t PRIORITY_CLI_TASK = 5;
 // =============================================================================
 
 static constexpr uint32_t STACK_SIZE_IMU = 16384;  // Increased for ESKF matrix operations
+static constexpr uint32_t STACK_SIZE_CONTROL = 8192;  // Flight control task
 static constexpr uint32_t STACK_SIZE_OPTFLOW = 8192;
 static constexpr uint32_t STACK_SIZE_MAG = 8192;
 static constexpr uint32_t STACK_SIZE_BARO = 8192;
@@ -118,6 +120,15 @@ stampfly::MagCalibrator* g_mag_calibrator = nullptr;
 
 // Global logger pointer (accessible from CLI)
 stampfly::Logger* g_logger_ptr = nullptr;
+
+// Global controller comm pointer (accessible from CLI)
+stampfly::ControllerComm* g_comm_ptr = nullptr;
+
+// Global LED pointer (accessible from CLI)
+stampfly::LED* g_led_ptr = nullptr;
+
+// Global motor driver pointer (accessible from CLI)
+stampfly::MotorDriver* g_motor_ptr = nullptr;
 
 namespace {
     // Sensors
@@ -180,6 +191,7 @@ namespace {
 
     // Task handles
     TaskHandle_t g_imu_task_handle = nullptr;
+    TaskHandle_t g_control_task_handle = nullptr;
     TaskHandle_t g_optflow_task_handle = nullptr;
     TaskHandle_t g_mag_task_handle = nullptr;
     TaskHandle_t g_baro_task_handle = nullptr;
@@ -193,6 +205,7 @@ namespace {
     // ESP Timer for precise 400Hz (2.5ms) IMU timing
     esp_timer_handle_t g_imu_timer = nullptr;
     SemaphoreHandle_t g_imu_semaphore = nullptr;
+    SemaphoreHandle_t g_control_semaphore = nullptr;  // For control task synchronization
 }
 
 // =============================================================================
@@ -519,6 +532,9 @@ static void IMUTask(void* pvParameters)
                     auto att_state = g_attitude_est.getState();
                     state.updateAttitude(att_state.roll, att_state.pitch, att_state.yaw);
                 }
+
+                // Wake up ControlTask (runs at same 400Hz rate)
+                xSemaphoreGive(g_control_semaphore);
             } else {
                 imu_read_fail_counter++;
                 // 連続失敗時にログ出力
@@ -528,6 +544,92 @@ static void IMUTask(void* pvParameters)
             }
         }
         // No delay here - timing controlled by ESP Timer semaphore
+    }
+}
+
+/**
+ * @brief Control Task - 400Hz (2.5ms period)
+ *
+ * This task handles flight control (attitude/position control, motor mixing).
+ * It runs at 400Hz, synchronized with IMU updates via semaphore.
+ *
+ * ============================================================================
+ * STUB IMPLEMENTATION - Replace with your flight control code
+ * ============================================================================
+ *
+ * Typical flight control loop:
+ * 1. Read current state (attitude, position, velocity) from StampFlyState
+ * 2. Read control inputs (throttle, roll, pitch, yaw commands)
+ * 3. Compute control outputs using PID or other control algorithms
+ * 4. Apply motor mixing for X-quad configuration
+ * 5. Send PWM commands to motors
+ *
+ * See docs/developer_guide.md for detailed PID control example.
+ */
+static void ControlTask(void* pvParameters)
+{
+    ESP_LOGI(TAG, "ControlTask started (400Hz via semaphore)");
+
+    auto& state = stampfly::StampFlyState::getInstance();
+
+    // ========================================================================
+    // Motor Layout (X-quad configuration, viewed from above)
+    // ========================================================================
+    //
+    //               Front
+    //          FL (M4)   FR (M1)
+    //             ╲   ▲   ╱
+    //              ╲  │  ╱
+    //               ╲ │ ╱
+    //                ╲│╱
+    //                 ╳         ← Center of drone
+    //                ╱│╲
+    //               ╱ │ ╲
+    //              ╱  │  ╲
+    //             ╱   │   ╲
+    //          RL (M3)    RR (M2)
+    //                Rear
+    //
+    // Motor rotation:
+    //   M1 (FR): CCW (Counter-Clockwise)
+    //   M2 (RR): CW  (Clockwise)
+    //   M3 (RL): CCW (Counter-Clockwise)
+    //   M4 (FL): CW  (Clockwise)
+    //
+    // ========================================================================
+
+    while (true) {
+        // Wait for control semaphore (given by IMU task after ESKF update)
+        if (xSemaphoreTake(g_control_semaphore, portMAX_DELAY) != pdTRUE) {
+            continue;
+        }
+
+        // Get current flight state
+        stampfly::FlightState flight_state = state.getFlightState();
+
+        // Only run control when ARMED or FLYING
+        if (flight_state != stampfly::FlightState::ARMED &&
+            flight_state != stampfly::FlightState::FLYING) {
+            // Ensure motors are stopped when not armed
+            g_motor.setMotor(stampfly::MotorDriver::MOTOR_FR, 0);
+            g_motor.setMotor(stampfly::MotorDriver::MOTOR_RR, 0);
+            g_motor.setMotor(stampfly::MotorDriver::MOTOR_RL, 0);
+            g_motor.setMotor(stampfly::MotorDriver::MOTOR_FL, 0);
+            continue;
+        }
+
+        // Get control input from controller
+        // throttle: 0.0 ~ 1.0
+        // roll, pitch, yaw: -1.0 ~ +1.0 (not used in this simple example)
+        float throttle, roll, pitch, yaw;
+        state.getControlInput(throttle, roll, pitch, yaw);
+
+        // Simple throttle control: all motors receive same throttle value
+        // TODO: Add attitude control (PID) and motor mixing for stable flight
+        g_motor.setMotor(stampfly::MotorDriver::MOTOR_FR, throttle);  // M1
+        g_motor.setMotor(stampfly::MotorDriver::MOTOR_RR, throttle);  // M2
+        g_motor.setMotor(stampfly::MotorDriver::MOTOR_RL, throttle);  // M3
+        g_motor.setMotor(stampfly::MotorDriver::MOTOR_FL, throttle);  // M4
     }
 }
 
@@ -849,38 +951,53 @@ static void LEDTask(void* pvParameters)
     TickType_t last_wake_time = xTaskGetTickCount();
     const TickType_t period = pdMS_TO_TICKS(32);  // ~30Hz
 
+    // Low battery threshold for battery replace warning (cyan)
+    constexpr float LOW_BATTERY_THRESHOLD = 3.4f;
+
     auto& state = stampfly::StampFlyState::getInstance();
     stampfly::FlightState prev_flight_state = stampfly::FlightState::INIT;
+    bool prev_low_battery = false;
 
     while (true) {
+        // Check for low battery (< 3.4V = battery replace warning)
+        float voltage = state.getVoltage();
+        bool low_battery = (voltage > 0.5f) && (voltage < LOW_BATTERY_THRESHOLD);
+
         // Update LED pattern based on flight state
         stampfly::FlightState flight_state = state.getFlightState();
 
-        if (flight_state != prev_flight_state) {
-            switch (flight_state) {
-                case stampfly::FlightState::INIT:
-                    g_led.showInit();
-                    break;
-                case stampfly::FlightState::CALIBRATING:
-                    g_led.showCalibrating();
-                    break;
-                case stampfly::FlightState::IDLE:
-                    g_led.showIdle();
-                    break;
-                case stampfly::FlightState::ARMED:
-                    g_led.showArmed();
-                    break;
-                case stampfly::FlightState::FLYING:
-                    g_led.showFlying();
-                    break;
-                case stampfly::FlightState::LANDING:
-                    g_led.showLanding();
-                    break;
-                case stampfly::FlightState::ERROR:
-                    g_led.showError();
-                    break;
+        // Low battery takes priority over flight state
+        if (low_battery != prev_low_battery || flight_state != prev_flight_state) {
+            if (low_battery) {
+                // Battery replace warning - cyan blink
+                g_led.showLowBatteryCyan();
+            } else {
+                switch (flight_state) {
+                    case stampfly::FlightState::INIT:
+                        g_led.showInit();
+                        break;
+                    case stampfly::FlightState::CALIBRATING:
+                        g_led.showCalibrating();
+                        break;
+                    case stampfly::FlightState::IDLE:
+                        g_led.showIdle();
+                        break;
+                    case stampfly::FlightState::ARMED:
+                        g_led.showArmed();
+                        break;
+                    case stampfly::FlightState::FLYING:
+                        g_led.showFlying();
+                        break;
+                    case stampfly::FlightState::LANDING:
+                        g_led.showLanding();
+                        break;
+                    case stampfly::FlightState::ERROR:
+                        g_led.showError();
+                        break;
+                }
             }
             prev_flight_state = flight_state;
+            prev_low_battery = low_battery;
         }
 
         // Update LED animation
@@ -1078,7 +1195,7 @@ static void onControlPacket(const stampfly::ControlPacket& packet)
 {
     auto& state = stampfly::StampFlyState::getInstance();
 
-    // Update control inputs
+    // Update control inputs (raw ADC values)
     state.updateControlInput(
         packet.throttle,
         packet.roll,
@@ -1086,22 +1203,35 @@ static void onControlPacket(const stampfly::ControlPacket& packet)
         packet.yaw
     );
 
-    // Handle arm/disarm from controller
-    bool arm_requested = (packet.flags & stampfly::CTRL_FLAG_ARM) != 0;
+    // Update control flags
+    state.updateControlFlags(packet.flags);
 
-    if (arm_requested && state.getFlightState() == stampfly::FlightState::IDLE) {
-        if (state.requestArm()) {
-            // ARM時にmag_refを設定（現在の向き=Yaw 0°）
-            setMagReferenceFromBuffer();
-            g_buzzer.armTone();
-            ESP_LOGI(TAG, "Motors ARMED (from controller)");
-        }
-    } else if (!arm_requested && state.getFlightState() == stampfly::FlightState::ARMED) {
-        if (state.requestDisarm()) {
-            g_buzzer.disarmTone();
-            ESP_LOGI(TAG, "Motors DISARMED (from controller)");
+    // Handle arm/disarm toggle from controller (rising edge detection)
+    static bool prev_arm_flag = false;
+    bool arm_flag = (packet.flags & stampfly::CTRL_FLAG_ARM) != 0;
+
+    // Detect rising edge (button press)
+    if (arm_flag && !prev_arm_flag) {
+        stampfly::FlightState flight_state = state.getFlightState();
+        if (flight_state == stampfly::FlightState::IDLE ||
+            flight_state == stampfly::FlightState::ERROR) {
+            // IDLE/ERROR → ARM
+            if (state.requestArm()) {
+                g_motor.arm();  // Enable motor driver
+                setMagReferenceFromBuffer();
+                g_buzzer.armTone();
+                ESP_LOGI(TAG, "Motors ARMED (from controller)");
+            }
+        } else if (flight_state == stampfly::FlightState::ARMED) {
+            // ARMED → DISARM
+            if (state.requestDisarm()) {
+                g_motor.disarm();  // Disable motor driver and stop motors
+                g_buzzer.disarmTone();
+                ESP_LOGI(TAG, "Motors DISARMED (from controller)");
+            }
         }
     }
+    prev_arm_flag = arm_flag;
 }
 
 // =============================================================================
@@ -1268,6 +1398,7 @@ static esp_err_t initActuators()
             return ret;
         }
         ESP_LOGI(TAG, "Motor Driver initialized");
+        g_motor_ptr = &g_motor;  // Set pointer for CLI access
     }
 
     // LED
@@ -1281,6 +1412,7 @@ static esp_err_t initActuators()
             ESP_LOGW(TAG, "LED init failed: %s", esp_err_to_name(ret));
         } else {
             ESP_LOGI(TAG, "LED initialized");
+            g_led_ptr = &g_led;  // Set pointer for CLI access
         }
     }
 
@@ -1483,6 +1615,10 @@ static esp_err_t initCommunication()
         }
 
         g_comm.start();
+
+        // Set global pointer for CLI access
+        g_comm_ptr = &g_comm;
+
         ESP_LOGI(TAG, "ControllerComm initialized");
     }
 
@@ -1543,10 +1679,15 @@ static void startTasks()
     xTaskCreatePinnedToCore(PowerTask, "PowerTask", STACK_SIZE_POWER, nullptr,
                             PRIORITY_POWER_TASK, &g_power_task_handle, 0);
 
-    // Initialize IMU timer and semaphore for precise 400Hz timing
+    // Initialize IMU timer and semaphores for precise 400Hz timing
     g_imu_semaphore = xSemaphoreCreateBinary();
     if (g_imu_semaphore == nullptr) {
         ESP_LOGE(TAG, "Failed to create IMU semaphore");
+    }
+
+    g_control_semaphore = xSemaphoreCreateBinary();
+    if (g_control_semaphore == nullptr) {
+        ESP_LOGE(TAG, "Failed to create control semaphore");
     }
 
     esp_timer_create_args_t imu_timer_args = {
@@ -1572,6 +1713,10 @@ static void startTasks()
     // Sensor tasks (Core 1)
     xTaskCreatePinnedToCore(IMUTask, "IMUTask", STACK_SIZE_IMU, nullptr,
                             PRIORITY_IMU_TASK, &g_imu_task_handle, 1);
+
+    // Control task (Core 1) - runs at 400Hz, synchronized with IMU via semaphore
+    xTaskCreatePinnedToCore(ControlTask, "ControlTask", STACK_SIZE_CONTROL, nullptr,
+                            PRIORITY_CONTROL_TASK, &g_control_task_handle, 1);
 
     // I2C sensor tasks (Core 0) - moved from Core 1 to avoid contention with 400Hz IMU
     xTaskCreatePinnedToCore(MagTask, "MagTask", STACK_SIZE_MAG, nullptr,
@@ -1703,17 +1848,15 @@ extern "C" void app_main(void)
     ESP_LOGI(TAG, "ESKF ready - you can start logging now");
     ESP_LOGI(TAG, "Free heap: %lu bytes", esp_get_free_heap_size());
     ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "Suppressing ESP_LOG output for CLI. Use 'loglevel' to re-enable.");
+
+    // Suppress ESP_LOG after initialization to keep CLI clean
+    esp_log_level_set("*", ESP_LOG_NONE);
 
     // Main loop - just monitor system health
     while (true) {
-        // Log heap usage periodically (for debugging)
-        static uint32_t last_log_time = 0;
-        uint32_t now = xTaskGetTickCount() * portTICK_PERIOD_MS;
-        if (now - last_log_time > 30000) {  // Every 30 seconds
-            ESP_LOGI(TAG, "Free heap: %lu bytes, Min free: %lu bytes",
-                     esp_get_free_heap_size(), esp_get_minimum_free_heap_size());
-            last_log_time = now;
-        }
+        // Heap monitoring disabled by default (ESP_LOG suppressed)
+        // Use 'loglevel info' CLI command to re-enable if needed
 
         vTaskDelay(pdMS_TO_TICKS(1000));
     }

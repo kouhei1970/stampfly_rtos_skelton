@@ -87,6 +87,10 @@ public:
     void setError(ErrorCode code);
     void clearError();
 
+    // Debug mode (ignores errors for ARM)
+    void setDebugMode(bool enable) { debug_mode_ = enable; }
+    bool isDebugMode() const { return debug_mode_; }
+
     // Sensor data access (thread-safe)
     void getIMUData(Vec3& accel, Vec3& gyro) const;
     void getMagData(Vec3& mag) const;
@@ -139,7 +143,10 @@ public:
 
     // Control input
     void getControlInput(float& throttle, float& roll, float& pitch, float& yaw) const;
+    void getRawControlInput(uint16_t& throttle, uint16_t& roll, uint16_t& pitch, uint16_t& yaw) const;
     void updateControlInput(uint16_t throttle, uint16_t roll, uint16_t pitch, uint16_t yaw);
+    void updateControlFlags(uint8_t flags);
+    uint8_t getControlFlags() const;
 
 private:
     StampFlyState() = default;
@@ -183,11 +190,15 @@ private:
     float pitch_ = 0;
     float yaw_ = 0;
 
-    // Control input (normalized 0-1000)
+    // Control input (raw values from controller)
     uint16_t ctrl_throttle_ = 0;
-    uint16_t ctrl_roll_ = 500;
-    uint16_t ctrl_pitch_ = 500;
-    uint16_t ctrl_yaw_ = 500;
+    uint16_t ctrl_roll_ = 2048;   // ADC center
+    uint16_t ctrl_pitch_ = 2048;  // ADC center
+    uint16_t ctrl_yaw_ = 2048;    // ADC center
+    uint8_t ctrl_flags_ = 0;      // ARM, FLIP, MODE, ALT_MODE
+
+    // Debug mode
+    bool debug_mode_ = false;
 };
 
 }  // namespace stampfly

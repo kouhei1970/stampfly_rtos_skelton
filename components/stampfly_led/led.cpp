@@ -7,7 +7,12 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "led_strip.h"
+#include "nvs_flash.h"
 #include <cmath>
+
+// NVS namespace and key for LED settings
+static constexpr const char* NVS_NAMESPACE = "led";
+static constexpr const char* NVS_KEY_BRIGHTNESS = "brightness";
 
 static const char* TAG = "LED";
 
@@ -64,6 +69,11 @@ esp_err_t LED::init(const Config& config)
     initialized_ = true;
     last_update_ms_ = esp_timer_get_time() / 1000;
 
+    // Load saved brightness from NVS
+    if (loadFromNVS() == ESP_OK) {
+        ESP_LOGI(TAG, "LED brightness loaded from NVS: %d", brightness_);
+    }
+
     ESP_LOGI(TAG, "LED initialized successfully");
     return ESP_OK;
 }
@@ -89,16 +99,70 @@ void LED::setPattern(Pattern pattern, uint32_t color)
     current_color_ = color;
 }
 
+void LED::setBrightness(uint8_t brightness, bool save_to_nvs)
+{
+    brightness_ = brightness;
+    if (save_to_nvs) {
+        saveToNVS();
+    }
+}
+
+esp_err_t LED::saveToNVS()
+{
+    nvs_handle_t handle;
+    esp_err_t ret = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to open NVS: %s", esp_err_to_name(ret));
+        return ret;
+    }
+
+    ret = nvs_set_u8(handle, NVS_KEY_BRIGHTNESS, brightness_);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to write brightness: %s", esp_err_to_name(ret));
+        nvs_close(handle);
+        return ret;
+    }
+
+    ret = nvs_commit(handle);
+    nvs_close(handle);
+
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "Brightness saved to NVS: %d", brightness_);
+    }
+    return ret;
+}
+
+esp_err_t LED::loadFromNVS()
+{
+    nvs_handle_t handle;
+    esp_err_t ret = nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle);
+    if (ret != ESP_OK) {
+        // NVS not found is expected on first boot
+        return ret;
+    }
+
+    uint8_t brightness;
+    ret = nvs_get_u8(handle, NVS_KEY_BRIGHTNESS, &brightness);
+    nvs_close(handle);
+
+    if (ret == ESP_OK) {
+        brightness_ = brightness;
+    }
+    return ret;
+}
+
 void LED::update()
 {
     if (!initialized_ || s_led_strip == nullptr) return;
 
     uint32_t now_ms = esp_timer_get_time() / 1000;
     uint32_t elapsed = now_ms - last_update_ms_;
+    (void)elapsed;  // Suppress unused warning
 
-    uint8_t r = (current_color_ >> 16) & 0xFF;
-    uint8_t g = (current_color_ >> 8) & 0xFF;
-    uint8_t b = current_color_ & 0xFF;
+    // Extract color and apply brightness
+    uint8_t r = ((current_color_ >> 16) & 0xFF) * brightness_ / 255;
+    uint8_t g = ((current_color_ >> 8) & 0xFF) * brightness_ / 255;
+    uint8_t b = (current_color_ & 0xFF) * brightness_ / 255;
 
     switch (current_pattern_) {
         case Pattern::OFF:
@@ -138,12 +202,12 @@ void LED::update()
         }
 
         case Pattern::BREATHE: {
-            // Sine wave breathing effect
+            // Sine wave breathing effect (brightness already applied to r,g,b)
             float phase = (float)(now_ms % BREATHE_PERIOD_MS) / BREATHE_PERIOD_MS;
-            float brightness = (1.0f - std::cos(phase * 2.0f * M_PI)) / 2.0f;
-            uint8_t br = static_cast<uint8_t>(r * brightness);
-            uint8_t bg = static_cast<uint8_t>(g * brightness);
-            uint8_t bb = static_cast<uint8_t>(b * brightness);
+            float breath = (1.0f - std::cos(phase * 2.0f * M_PI)) / 2.0f;
+            uint8_t br = static_cast<uint8_t>(r * breath);
+            uint8_t bg = static_cast<uint8_t>(g * breath);
+            uint8_t bb = static_cast<uint8_t>(b * breath);
             for (int i = 0; i < config_.num_leds; i++) {
                 led_strip_set_pixel(s_led_strip, i, br, bg, bb);
             }
@@ -151,11 +215,12 @@ void LED::update()
         }
 
         case Pattern::RAINBOW: {
-            // HSV to RGB rainbow cycle
+            // HSV to RGB rainbow cycle with brightness
             float hue = (float)(now_ms % RAINBOW_PERIOD_MS) / RAINBOW_PERIOD_MS * 360.0f;
+            float bright_scale = brightness_ / 255.0f;
             for (int i = 0; i < config_.num_leds; i++) {
                 float h = fmodf(hue + (float)i * 360.0f / config_.num_leds, 360.0f);
-                // Simple HSV to RGB conversion (S=1, V=1)
+                // Simple HSV to RGB conversion (S=1, V=brightness)
                 float c = 1.0f;
                 float x = c * (1.0f - std::fabs(fmodf(h / 60.0f, 2.0f) - 1.0f));
                 float m = 0.0f;
@@ -168,9 +233,9 @@ void LED::update()
                 else if (h < 300) { rf = x; gf = 0; bf = c; }
                 else { rf = c; gf = 0; bf = x; }
 
-                uint8_t pr = static_cast<uint8_t>((rf + m) * 255);
-                uint8_t pg = static_cast<uint8_t>((gf + m) * 255);
-                uint8_t pb = static_cast<uint8_t>((bf + m) * 255);
+                uint8_t pr = static_cast<uint8_t>((rf + m) * 255 * bright_scale);
+                uint8_t pg = static_cast<uint8_t>((gf + m) * 255 * bright_scale);
+                uint8_t pb = static_cast<uint8_t>((bf + m) * 255 * bright_scale);
 
                 led_strip_set_pixel(s_led_strip, i, pr, pg, pb);
             }
@@ -186,10 +251,11 @@ void LED::showInit()      { setPattern(Pattern::BREATHE, 0x0000FF); }  // Blue b
 void LED::showCalibrating() { setPattern(Pattern::BLINK_FAST, 0xFFFF00); }  // Yellow fast blink
 void LED::showIdle()      { setPattern(Pattern::SOLID, 0x00FF00); }  // Green solid
 void LED::showArmed()     { setPattern(Pattern::BLINK_SLOW, 0x00FF00); }  // Green slow blink
-void LED::showFlying()    { setPattern(Pattern::SOLID, 0x00FF00); }  // Green solid
+void LED::showFlying()    { setPattern(Pattern::SOLID, 0xFFFF00); }  // Yellow solid
 void LED::showLanding()   { setPattern(Pattern::BLINK_FAST, 0x00FF00); }  // Green fast blink
 void LED::showError()     { setPattern(Pattern::BLINK_FAST, 0xFF0000); }  // Red fast blink
 void LED::showLowBattery() { setPattern(Pattern::BLINK_SLOW, 0xFF0000); }  // Red slow blink
+void LED::showLowBatteryCyan() { setPattern(Pattern::BLINK_SLOW, 0x00FFFF); }  // Cyan slow blink (battery replace)
 void LED::showPairing()   { setPattern(Pattern::BLINK_FAST, 0x0000FF); }  // Blue fast blink
 
 }  // namespace stampfly

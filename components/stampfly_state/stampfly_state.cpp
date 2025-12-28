@@ -55,10 +55,19 @@ bool StampFlyState::requestArm()
 {
     xSemaphoreTake(mutex_, portMAX_DELAY);
     bool success = false;
-    if (flight_state_ == FlightState::IDLE && error_code_ == ErrorCode::NONE) {
+    // In debug mode, ignore errors and allow ARM from IDLE or ERROR state
+    bool can_arm = (flight_state_ == FlightState::IDLE && error_code_ == ErrorCode::NONE);
+    if (debug_mode_) {
+        can_arm = (flight_state_ == FlightState::IDLE || flight_state_ == FlightState::ERROR);
+    }
+    if (can_arm) {
         flight_state_ = FlightState::ARMED;
         success = true;
-        ESP_LOGI(TAG, "Armed");
+        if (debug_mode_) {
+            ESP_LOGW(TAG, "Armed (DEBUG MODE - errors ignored)");
+        } else {
+            ESP_LOGI(TAG, "Armed");
+        }
     }
     xSemaphoreGive(mutex_);
     return success;
@@ -387,22 +396,50 @@ float StampFlyState::getBaroReferenceAltitude() const
 void StampFlyState::getControlInput(float& throttle, float& roll, float& pitch, float& yaw) const
 {
     xSemaphoreTake(mutex_, portMAX_DELAY);
-    // Convert from 0-1000 to normalized values
-    throttle = ctrl_throttle_ / 1000.0f;
-    roll = (ctrl_roll_ - 500) / 500.0f;      // -1 to +1
-    pitch = (ctrl_pitch_ - 500) / 500.0f;    // -1 to +1
-    yaw = (ctrl_yaw_ - 500) / 500.0f;        // -1 to +1
+    // Convert from ADC raw (0-4095, center 2048) to normalized values
+    // Throttle uses upper half only (2048-4095 -> 0 to 1), negative clipped
+    float throttle_raw = (ctrl_throttle_ - 2048) / 2048.0f;
+    throttle = (throttle_raw < 0) ? 0 : throttle_raw;  // 0 to 1 (clipped)
+    roll = (ctrl_roll_ - 2048) / 2048.0f;              // -1 to +1
+    pitch = (ctrl_pitch_ - 2048) / 2048.0f;            // -1 to +1
+    yaw = (ctrl_yaw_ - 2048) / 2048.0f;                // -1 to +1
+    xSemaphoreGive(mutex_);
+}
+
+void StampFlyState::getRawControlInput(uint16_t& throttle, uint16_t& roll, uint16_t& pitch, uint16_t& yaw) const
+{
+    xSemaphoreTake(mutex_, portMAX_DELAY);
+    throttle = ctrl_throttle_;
+    roll = ctrl_roll_;
+    pitch = ctrl_pitch_;
+    yaw = ctrl_yaw_;
     xSemaphoreGive(mutex_);
 }
 
 void StampFlyState::updateControlInput(uint16_t throttle, uint16_t roll, uint16_t pitch, uint16_t yaw)
 {
+    // Store raw ADC values (0-4095, center 2048)
     xSemaphoreTake(mutex_, portMAX_DELAY);
     ctrl_throttle_ = throttle;
     ctrl_roll_ = roll;
     ctrl_pitch_ = pitch;
     ctrl_yaw_ = yaw;
     xSemaphoreGive(mutex_);
+}
+
+void StampFlyState::updateControlFlags(uint8_t flags)
+{
+    xSemaphoreTake(mutex_, portMAX_DELAY);
+    ctrl_flags_ = flags;
+    xSemaphoreGive(mutex_);
+}
+
+uint8_t StampFlyState::getControlFlags() const
+{
+    xSemaphoreTake(mutex_, portMAX_DELAY);
+    uint8_t flags = ctrl_flags_;
+    xSemaphoreGive(mutex_);
+    return flags;
 }
 
 }  // namespace stampfly

@@ -138,6 +138,19 @@ public:
     bool isPairingMode() const { return pairing_mode_; }
 
     /**
+     * @brief Set WiFi channel
+     * @param channel WiFi channel (1-13)
+     * @return ESP_OK on success
+     */
+    esp_err_t setChannel(int channel);
+
+    /**
+     * @brief Get current WiFi channel
+     * @return Current channel
+     */
+    int getChannel() const { return config_.wifi_channel; }
+
+    /**
      * @brief Save pairing information to NVS
      * @return ESP_OK on success
      */
@@ -180,6 +193,16 @@ public:
     void onControlPacketReceived(const ControlPacket& packet, const uint8_t* mac);
     void onPairingComplete(const uint8_t* mac);
 
+    /**
+     * @brief Send pairing packet (called periodically during pairing mode)
+     */
+    void sendPairingPacket();
+
+    /**
+     * @brief Check if pairing broadcast is active
+     */
+    bool isPairingBroadcastActive() const { return pairing_broadcast_active_; }
+
 private:
     void addControllerPeer();
 
@@ -187,6 +210,7 @@ private:
     bool connected_ = false;
     bool paired_ = false;
     bool pairing_mode_ = false;
+    bool pairing_broadcast_active_ = false;
     Config config_;
     ControlCallback control_callback_;
     uint8_t controller_mac_[6] = {0};
