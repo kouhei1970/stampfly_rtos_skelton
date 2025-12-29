@@ -585,7 +585,7 @@ USBシリアル（115200bps）でCLIに接続できます。
 ```
      Front
  M4(FL)  M1(FR)
-     X
+       X
  M3(RL)  M2(RR)
      Rear
 ```
