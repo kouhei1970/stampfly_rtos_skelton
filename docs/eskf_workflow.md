@@ -9,7 +9,7 @@
 │  StampFly   │  USB Serial        │     PC      │
 │   (実機)    │ ────────────────>  │             │
 │             │  バイナリログ       │  1. キャプチャ (log_capture.py)
-│ センサ+ESKF │  128B @ 100Hz      │  2. リプレイ  (eskf_replay)
+│ センサ+ESKF │  128B @ 400Hz      │  2. リプレイ  (eskf_replay)
 └─────────────┘                    │  3. 可視化    (visualize_eskf.py)
                                    │  4. 最適化    (optimize_eskf.py)
                                    └─────────────┘
