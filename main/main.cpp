@@ -184,6 +184,16 @@ namespace {
     // 起動時のジャイロバイアス（binlog reset後に復元するため）
     stampfly::math::Vector3 g_initial_gyro_bias = stampfly::math::Vector3::zero();
 
+    // ESKF準備完了フラグ（センサー安定・キャリブレーション完了後にtrue）
+    volatile bool g_eskf_ready = false;
+
+    // センサータスク正常動作フラグ（各タスクが有効なデータを取得したらtrue）
+    volatile bool g_imu_task_healthy = false;
+    volatile bool g_tof_task_healthy = false;
+    volatile bool g_mag_task_healthy = false;
+    volatile bool g_optflow_task_healthy = false;
+    volatile bool g_baro_task_healthy = false;
+
     // センサ data_ready フラグ (ESKF updateをIMUTaskに集約するため)
     volatile bool g_mag_data_ready = false;
     volatile bool g_baro_data_ready = false;
@@ -371,7 +381,8 @@ static void IMUTask(void* pvParameters)
                 stampfly::math::Vector3 g(filtered_gyro[0], filtered_gyro[1], filtered_gyro[2]);
 
                 // Update ESKF predict step (400Hz)
-                if (g_eskf.isInitialized()) {
+                // g_eskf_ready: センサー安定・キャリブレーション完了後にtrue
+                if (g_eskf.isInitialized() && g_eskf_ready) {
                     static uint32_t flow_update_counter = 0;
                     static uint32_t eskf_error_counter = 0;
 
@@ -517,14 +528,22 @@ static void IMUTask(void* pvParameters)
                             }
                         } else {
                             eskf_error_counter++;
+
+                            // 発散時は常にリセット（binlog onと同じ処理）
+                            if (pos_diverged || vel_diverged) {
+                                g_eskf.reset();
+                                g_eskf.setGyroBias(g_initial_gyro_bias);
+                                setMagReferenceFromBuffer();
+                            }
+
+                            // ログ出力は100回に1回（スパム防止）
                             if (eskf_error_counter % 100 == 1) {
                                 if (!eskf_valid) {
                                     ESP_LOGW(TAG, "ESKF output NaN, errors=%lu", eskf_error_counter);
                                 } else {
-                                    ESP_LOGW(TAG, "ESKF diverged: pos=[%.1f,%.1f,%.1f] vel=[%.1f,%.1f,%.1f], resetting...",
+                                    ESP_LOGW(TAG, "ESKF diverged: pos=[%.1f,%.1f,%.1f] vel=[%.1f,%.1f,%.1f]",
                                              eskf_state.position.x, eskf_state.position.y, eskf_state.position.z,
                                              eskf_state.velocity.x, eskf_state.velocity.y, eskf_state.velocity.z);
-                                    g_eskf.reset();
                                 }
                             }
                         }
@@ -1923,17 +1942,21 @@ extern "C" void app_main(void)
     vTaskDelay(pdMS_TO_TICKS(1000));
     state.setFlightState(stampfly::FlightState::IDLE);
 
-    // Wait for ESKF to stabilize (sensor data accumulation)
-    ESP_LOGI(TAG, "Waiting for ESKF to stabilize...");
+    // Wait for sensors to stabilize (ESKF is NOT running during this period)
+    // g_eskf_ready = false なので IMUTask は ESKF 処理をスキップしている
+    ESP_LOGI(TAG, "Waiting for sensors to stabilize (ESKF paused)...");
     vTaskDelay(pdMS_TO_TICKS(2000));
 
-    // Reset ESKF after sensors have stabilized
-    // This fixes divergence issue where ESKF accumulates errors during initial sensor noise
+    // Initialize ESKF with fresh state and stable sensor data
+    // センサーが安定した状態でESKFをリセット・キャリブレーション
     if (g_eskf.isInitialized()) {
         g_eskf.reset();
         g_eskf.setGyroBias(g_initial_gyro_bias);
         setMagReferenceFromBuffer();
-        ESP_LOGI(TAG, "ESKF reset after sensor stabilization");
+
+        // ESKF処理を開始
+        g_eskf_ready = true;
+        ESP_LOGI(TAG, "ESKF initialized with stable sensor data, ready to run");
     }
 
     // ESKF ready notification - 3 short beeps + green LED
