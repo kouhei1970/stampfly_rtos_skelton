@@ -11,6 +11,7 @@
 #include "controller_comm.hpp"
 #include "esp_log.h"
 #include "esp_wifi.h"
+#include "esp_netif.h"
 #include "esp_now.h"
 #include "nvs_flash.h"
 #include "nvs.h"
@@ -85,7 +86,10 @@ esp_err_t ControllerComm::init(const Config& config)
     config_ = config;
     s_instance = this;
 
-    // WiFi初期化（STAモード）
+    // ネットワークインターフェース作成（APモード用）
+    esp_netif_create_default_wifi_ap();
+
+    // WiFi初期化
     wifi_init_config_t wifi_cfg = WIFI_INIT_CONFIG_DEFAULT();
     esp_err_t ret = esp_wifi_init(&wifi_cfg);
     if (ret != ESP_OK) {
