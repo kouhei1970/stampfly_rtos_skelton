@@ -149,78 +149,120 @@ flowchart TB
 
 ### ControlTaskについて
 
-**ControlTask**は既にスタブとして実装されています（`main.cpp`の563行目付近）。
+**ControlTask**は`main.cpp`の569行目付近に実装されています。
 このタスクは400HzでIMUTaskと同期して実行されます。
 
-スタブには以下のコメント付きサンプルコードが含まれています：
-- 姿勢・角速度の取得
-- コントローラー入力の取得
-- PD制御の計算
-- モーターミキシング
-
-### 実装手順
-
-`main.cpp`の`ControlTask`関数内のコメントを解除して、PIDゲインを調整するだけで飛行制御が実装できます。
-
-**Step 1: PIDゲインの定義（570行目付近）**
-
-コメントを解除してゲインを設定：
+現在のスタブ実装では、スロットル入力をそのまま全モーターに送っているだけです：
 
 ```cpp
-constexpr float KP_ROLL = 1.0f;
-constexpr float KD_ROLL = 0.1f;
-constexpr float KP_PITCH = 1.0f;
-constexpr float KD_PITCH = 0.1f;
-constexpr float KP_YAW = 0.5f;
+// Simple throttle control: all motors receive same throttle value
+g_motor.setMotor(stampfly::MotorDriver::MOTOR_FR, throttle);  // M1
+g_motor.setMotor(stampfly::MotorDriver::MOTOR_RR, throttle);  // M2
+g_motor.setMotor(stampfly::MotorDriver::MOTOR_RL, throttle);  // M3
+g_motor.setMotor(stampfly::MotorDriver::MOTOR_FL, throttle);  // M4
 ```
 
-**Step 2: 制御コードの実装（596-652行目付近）**
+この状態では姿勢制御が行われないため、**安定した飛行はできません**。
+飛行制御を実装するには、以下のステップで角速度制御を追加する必要があります。
 
-コメントを解除して制御を有効化：
+### Step 1: 角速度制御（Rate Control）の実装
+
+まず**角速度制御**を実装します。これはジャイロセンサから得られる角速度を目標角速度に追従させる制御です。
 
 ```cpp
-// Step 1: 現在の姿勢を取得
-float roll, pitch, yaw;
-state.getAttitudeEuler(roll, pitch, yaw);
+// 角速度制御ゲイン
+constexpr float KP_RATE_ROLL  = 0.5f;
+constexpr float KP_RATE_PITCH = 0.5f;
+constexpr float KP_RATE_YAW   = 0.3f;
 
-// Step 2: ジャイロ（角速度）を取得
+// ジャイロ（角速度）を取得
 stampfly::Vec3 accel, gyro;
 state.getIMUData(accel, gyro);
 
-// Step 3: コントローラー入力を取得 (正規化: throttle 0-1, others -1 to +1)
+// コントローラー入力を取得
+// throttle: 0.0 ~ 1.0, roll/pitch/yaw: -1.0 ~ +1.0
 float throttle_cmd, roll_cmd, pitch_cmd, yaw_cmd;
 state.getControlInput(throttle_cmd, roll_cmd, pitch_cmd, yaw_cmd);
 
-// Step 4: 目標姿勢計算
-constexpr float MAX_ANGLE = 30.0f * M_PI / 180.0f;  // 最大30度
-float roll_target = roll_cmd * MAX_ANGLE;
-float pitch_target = pitch_cmd * MAX_ANGLE;
-float yaw_rate_target = yaw_cmd * 2.0f;  // rad/s
+// 目標角速度 [rad/s]
+constexpr float MAX_RATE = 3.0f;  // 最大角速度 約170 deg/s
+float roll_rate_target  = roll_cmd  * MAX_RATE;
+float pitch_rate_target = pitch_cmd * MAX_RATE;
+float yaw_rate_target   = yaw_cmd   * MAX_RATE;
 
-// Step 5: PD制御
-float roll_error = roll_target - roll;
-float pitch_error = pitch_target - pitch;
-float roll_out = KP_ROLL * roll_error - KD_ROLL * gyro.x;
-float pitch_out = KP_PITCH * pitch_error - KD_PITCH * gyro.y;
-float yaw_out = KP_YAW * (yaw_rate_target - gyro.z);
+// 角速度誤差
+float roll_rate_error  = roll_rate_target  - gyro.x;
+float pitch_rate_error = pitch_rate_target - gyro.y;
+float yaw_rate_error   = yaw_rate_target   - gyro.z;
 
-// Step 6: モーターミキシング呼び出し
+// P制御（角速度フィードバック）
+float roll_out  = KP_RATE_ROLL  * roll_rate_error;
+float pitch_out = KP_RATE_PITCH * pitch_rate_error;
+float yaw_out   = KP_RATE_YAW   * yaw_rate_error;
+
+// モーターミキシング
 g_motor.setMixerOutput(throttle_cmd, roll_out, pitch_out, yaw_out);
-
-// Step 7: 状態遷移
-if (flight_state == stampfly::FlightState::ARMED && throttle_cmd > 0.1f) {
-    state.setFlightState(stampfly::FlightState::FLYING);
-}
 ```
 
-**Step 3: スタブ部分を削除**
+角速度制御のみでも、スティックを離せば角速度がゼロに収束するため、
+ある程度の安定性は得られます（アクロバットモード相当）。
 
-最後の行を削除：
+### Step 2: 姿勢制御（Attitude Control）の実装【課題】
+
+**姿勢制御の実装はユーザーへの課題とします。**
+
+姿勢制御を実装する際は、**カスケード制御（2重ループ制御）** を強く推奨します：
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    カスケード制御構造                            │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  目標姿勢    ┌────────────┐  目標角速度   ┌────────────┐        │
+│  ─────────→ │ 角度制御器  │ ──────────→ │ 角速度制御器 │ → モーター │
+│             │(アウター)   │              │(インナー)   │        │
+│             └────────────┘              └────────────┘        │
+│                   ↑                           ↑               │
+│                   │                           │               │
+│             現在姿勢(ESKF)               現在角速度(ジャイロ)     │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**なぜカスケード制御か？**
+
+1. **インナーループ（角速度制御）**: 高速応答（400Hz）、外乱抑制
+2. **アウターループ（角度制御）**: 目標姿勢への追従
+
+この構造により：
+- 角速度制御が高速に動作し、機体の安定性を確保
+- 角度制御は角速度制御を「アクチュエータ」として使用
+- チューニングが容易（まずインナー、次にアウター）
+
+**実装のヒント：**
 
 ```cpp
-// これを削除:
-g_motor.setMixerOutput(0, 0, 0, 0);
+// アウターループ（角度制御）
+float roll_error  = roll_target  - roll_current;
+float pitch_error = pitch_target - pitch_current;
+
+// アウターループの出力 = インナーループの目標角速度
+float roll_rate_target  = KP_ANGLE_ROLL  * roll_error;
+float pitch_rate_target = KP_ANGLE_PITCH * pitch_error;
+
+// インナーループ（角速度制御）
+float roll_rate_error  = roll_rate_target  - gyro.x;
+float pitch_rate_error = pitch_rate_target - gyro.y;
+
+float roll_out  = KP_RATE_ROLL  * roll_rate_error;
+float pitch_out = KP_RATE_PITCH * pitch_rate_error;
 ```
+
+**チューニング手順：**
+
+1. まずStep 1の角速度制御のみで飛行テスト
+2. 角速度制御が安定したら、アウターループ（角度制御）を追加
+3. アウターループのゲインは控えめから開始
 
 ### モーターミキシングAPI
 
@@ -238,19 +280,15 @@ g_motor.setMotor(stampfly::MotorDriver::MOTOR_FL, value);
 ### X-Quadモーター配置
 
 ```
-            前方
-             ▲
-
-    FL(M4)         FR(M1)
-      CW  ╲     ╱  CCW
-           ╲   ╱
-            ╳
-           ╱   ╲
-     CCW  ╱     ╲  CW
-    RL(M3)         RR(M2)
-
-             ▽
-            後方
+          前方
+           ▲
+    FL(M4)     FR(M1)
+      CW  ╲ ╱  CCW
+           X
+     CCW  ╱ ╲  CW
+    RL(M3)     RR(M2)
+           ▽
+          後方
 ```
 
 | モーター | 位置 | 回転方向 | GPIO |
