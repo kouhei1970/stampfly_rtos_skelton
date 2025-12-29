@@ -45,7 +45,6 @@ tools/scripts/visualize_accel_attitude*.py
 tools/scripts/visualize_attitude_3d.py
 tools/scripts/visualize_gyro*.py
 tools/scripts/visualize_mag_attitude.py
-logs/
 
 # Claude Code memory files
 CLAUDE.md
