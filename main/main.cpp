@@ -7,6 +7,7 @@
  */
 
 #include <stdio.h>
+#include <cmath>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
@@ -915,7 +916,13 @@ static void ToFTask(void* pvParameters)
     const int MAX_ERRORS = 10;
     // ヘルスチェック用カウンタ (Bottom ToFのみ、ESKFで使用)
     int tof_consecutive_valid = 0;
-    constexpr int TOF_HEALTHY_THRESHOLD = 5;  // 5連続成功でhealthy (~165ms)
+    int tof_consecutive_invalid = 0;  // 無効測定の連続カウンタ
+    constexpr int TOF_HEALTHY_THRESHOLD = 5;    // 5連続成功でhealthy (~165ms)
+    constexpr int TOF_UNHEALTHY_THRESHOLD = 10; // 10連続無効でunhealthy (~330ms)
+    // 距離の急激な変化検出用
+    float tof_last_valid_distance = 0.0f;
+    constexpr float TOF_MAX_CHANGE_RATE = 2.0f;  // 最大変化率 [m/s]（30Hz想定で1回あたり約6.7cm）
+    constexpr float TOF_MAX_CHANGE_PER_CYCLE = TOF_MAX_CHANGE_RATE / 30.0f;  // 約0.067m
     int bottom_errors = 0;
     int front_errors = 0;
     bool bottom_disabled = false;
@@ -940,26 +947,53 @@ static void ToFTask(void* pvParameters)
                     // Only update if valid measurement (status 0-4)
                     if (status <= 4) {
                         float distance_m = distance_mm * 0.001f;
+
+                        // 距離の急激な変化をチェック
+                        bool distance_jump_detected = false;
+                        if (tof_last_valid_distance > 0.01f) {
+                            float change = std::abs(distance_m - tof_last_valid_distance);
+                            if (change > TOF_MAX_CHANGE_PER_CYCLE) {
+                                distance_jump_detected = true;
+                                ESP_LOGW(TAG, "ToF distance jump: %.3f -> %.3f (change=%.3f)",
+                                         tof_last_valid_distance, distance_m, change);
+                            }
+                        }
+
                         state.updateToF(stampfly::ToFPosition::BOTTOM, distance_m, status);
 
-                        // ヘルスフラグ更新: 有効な測定でhealthy
-                        if (++tof_consecutive_valid >= TOF_HEALTHY_THRESHOLD) {
-                            g_tof_task_healthy = true;
+                        if (!distance_jump_detected) {
+                            // ヘルスフラグ更新: 有効な測定でhealthy
+                            tof_consecutive_invalid = 0;
+                            if (++tof_consecutive_valid >= TOF_HEALTHY_THRESHOLD) {
+                                g_tof_task_healthy = true;
+                            }
+
+                            // ESKF用データをキャッシュしてフラグを立てる（30Hz）
+                            // ESKF updateはIMUTask内で行う（レースコンディション防止）
+                            g_tof_data_cache = distance_m;
+                            g_tof_data_ready = true;
+
+                            // Fallback to simple altitude estimator (ESKF未使用時)
+                            if (!g_eskf.isInitialized() && g_altitude_est.isInitialized() && g_attitude_est.isInitialized()) {
+                                auto att = g_attitude_est.getState();
+                                g_altitude_est.updateToF(distance_m, att.pitch, att.roll);
+                            }
+                        } else {
+                            // 距離ジャンプ検出: unhealthy判定
+                            tof_consecutive_valid = 0;
+                            if (++tof_consecutive_invalid >= TOF_UNHEALTHY_THRESHOLD) {
+                                g_tof_task_healthy = false;
+                            }
                         }
 
-                        // ESKF用データをキャッシュしてフラグを立てる（30Hz）
-                        // ESKF updateはIMUTask内で行う（レースコンディション防止）
-                        g_tof_data_cache = distance_m;
-                        g_tof_data_ready = true;
-
-                        // Fallback to simple altitude estimator (ESKF未使用時)
-                        if (!g_eskf.isInitialized() && g_altitude_est.isInitialized() && g_attitude_est.isInitialized()) {
-                            auto att = g_attitude_est.getState();
-                            g_altitude_est.updateToF(distance_m, att.pitch, att.roll);
-                        }
+                        // 有効距離を記録（ジャンプ後も更新して追従可能に）
+                        tof_last_valid_distance = distance_m;
                     } else {
-                        // ステータス異常
+                        // ステータス異常: unhealthy判定カウント
                         tof_consecutive_valid = 0;
+                        if (++tof_consecutive_invalid >= TOF_UNHEALTHY_THRESHOLD) {
+                            g_tof_task_healthy = false;
+                        }
                     }
 
                     // Debug log every 30 readings (~1 second)

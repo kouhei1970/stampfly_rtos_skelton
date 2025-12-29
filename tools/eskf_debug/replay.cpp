@@ -300,6 +300,7 @@ void print_usage(const char* prog)
     printf("  --att_update_mode=N Attitude update mode (0=accel_mag, 1=adaptive_R, 2=gyro) (default: 1)\n");
     printf("  --k_adaptive=N      Adaptive R coefficient (mode 1) (default: 100)\n");
     printf("  --gyro_att_threshold=N Gyro threshold [rad/s] (mode 2) (default: 0.5)\n");
+    printf("  --flow_tilt_threshold=N Flow tilt threshold [rad] (default: 0.52)\n");
 }
 
 // Helper to parse --key=value arguments
@@ -343,6 +344,7 @@ int main(int argc, char* argv[])
     int att_update_mode = default_cfg.att_update_mode;
     float k_adaptive = default_cfg.k_adaptive;
     float gyro_att_threshold = default_cfg.gyro_att_threshold;
+    float flow_tilt_threshold = default_cfg.flow_tilt_threshold;
 
     for (int i = 3; i < argc; i++) {
         if (strcmp(argv[i], "--verbose") == 0) {
@@ -383,6 +385,8 @@ int main(int argc, char* argv[])
             k_adaptive = std::atof(argv[i] + 13);
         } else if (strncmp(argv[i], "--gyro_att_threshold=", 21) == 0) {
             gyro_att_threshold = std::atof(argv[i] + 21);
+        } else if (strncmp(argv[i], "--flow_tilt_threshold=", 22) == 0) {
+            flow_tilt_threshold = std::atof(argv[i] + 22);
         }
     }
 
@@ -427,6 +431,7 @@ int main(int argc, char* argv[])
     config.att_update_mode = att_update_mode;
     config.k_adaptive = k_adaptive;
     config.gyro_att_threshold = gyro_att_threshold;
+    config.flow_tilt_threshold = flow_tilt_threshold;
 
     // 地磁気更新を有効化（デバイスと合わせる）
     config.mag_enabled = true;

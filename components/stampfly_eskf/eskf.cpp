@@ -1194,14 +1194,12 @@ void ESKF::updateAccelAttitude(const Vector3& accel)
     if (!initialized_) return;
 
     // バイアス補正された加速度
-    float accel_corrected_x = accel.x - state_.accel_bias.x;
-    float accel_corrected_y = accel.y - state_.accel_bias.y;
-    float accel_corrected_z = accel.z - state_.accel_bias.z;
+    float ax = accel.x - state_.accel_bias.x;
+    float ay = accel.y - state_.accel_bias.y;
+    float az = accel.z - state_.accel_bias.z;
 
-    // 加速度ノルムをチェック（垂直方向の大きな加速を検出）
-    float accel_norm = std::sqrt(accel_corrected_x*accel_corrected_x +
-                                  accel_corrected_y*accel_corrected_y +
-                                  accel_corrected_z*accel_corrected_z);
+    // 加速度ノルムをチェック（運動中は更新スキップ）
+    float accel_norm = std::sqrt(ax*ax + ay*ay + az*az);
     float gravity_diff = std::abs(accel_norm - config_.gravity);
 
     if (gravity_diff > config_.accel_motion_threshold) {
@@ -1209,78 +1207,120 @@ void ESKF::updateAccelAttitude(const Vector3& accel)
     }
 
     // ========================================================================
-    // 疎行列展開による観測更新
-    // H行列の非ゼロ要素: H[0][7]=g, H[1][6]=-g のみ
+    // 3軸加速度観測によるカルマン更新
+    // H行列は姿勢誤差（ATT_X=6, ATT_Y=7, ATT_Z=8）に対してのみ非ゼロ
     // ========================================================================
 
-    // クォータニオンから必要な回転行列要素を直接計算
+    // クォータニオンから回転行列の第3行を計算
     const Quaternion& q = state_.orientation;
     float q0 = q.w, q1 = q.x, q2 = q.y, q3 = q.z;
 
-    // R^T の第3列 = R の第3行
     float R20 = 2*(q1*q3 - q0*q2);
     float R21 = 2*(q2*q3 + q0*q1);
+    float R22 = 1 - 2*(q1*q1 + q2*q2);
 
     // 期待される加速度計出力: g_expected = R^T * [0, 0, -g]
-    float neg_g = -config_.gravity;
-    float g_expected_x = R20 * neg_g;
-    float g_expected_y = R21 * neg_g;
-
-    // 観測残差 y = z - h（バイアス補正済み加速度を使用）
-    float y0 = accel_corrected_x - g_expected_x;
-    float y1 = accel_corrected_y - g_expected_y;
-
-    // H行列定数
     float g = config_.gravity;
-    float g2 = g * g;
+    float g_exp_x = -g * R20;
+    float g_exp_y = -g * R21;
+    float g_exp_z = -g * R22;
 
-    // Adaptive R（バイアス補正済み加速度を使用）
-    float horiz_accel_sq = accel_corrected_x * accel_corrected_x +
-                           accel_corrected_y * accel_corrected_y;
+    // 観測残差 y = z - h（3次元）
+    float y0 = ax - g_exp_x;
+    float y1 = ay - g_exp_y;
+    float y2 = az - g_exp_z;
+
+    // ========================================================================
+    // H行列（3x15）: 姿勢誤差部分のみ非ゼロ
+    // ∂h/∂δθ = [a_body]× where a_body = [g_exp_x, g_exp_y, g_exp_z]
+    //
+    // [a_body]× = |    0      -a_z     a_y  |
+    //             |   a_z       0     -a_x  |
+    //             |  -a_y      a_x      0   |
+    //
+    // a_x=-g*R20, a_y=-g*R21, a_z=-g*R22 を代入:
+    // H_att = |    0       g*R22   -g*R21 |
+    //         | -g*R22       0      g*R20 |
+    //         |  g*R21    -g*R20      0   |
+    // ========================================================================
+
+    float H06 = 0.0f,      H07 = g*R22,    H08 = -g*R21;
+    float H16 = -g*R22,    H17 = 0.0f,     H18 = g*R20;
+    float H26 = g*R21,     H27 = -g*R20,   H28 = 0.0f;
+
+    // Adaptive R（水平加速度でスケーリング）
+    float horiz_accel_sq = ax*ax + ay*ay;
     float R_scale = 1.0f + config_.k_adaptive * horiz_accel_sq;
     float base_noise_sq = config_.accel_att_noise * config_.accel_att_noise;
     float R_val = base_noise_sq * R_scale;
 
-    // S = H * P * H^T + R (2x2)
-    // S[0][0] = g^2 * P[7][7] + R_val
-    // S[0][1] = S[1][0] = -g^2 * P[6][7]
-    // S[1][1] = g^2 * P[6][6] + R_val
-    float P66 = P_(6, 6);
-    float P67 = P_(6, 7);
-    float P77 = P_(7, 7);
+    // ========================================================================
+    // P * H^T (15x3) - H行列は列6,7,8のみ非ゼロ
+    // PHT[i][m] = sum_j P[i][j] * H[m][j] = P[i][6]*Hm6 + P[i][7]*Hm7 + P[i][8]*Hm8
+    // ========================================================================
+    float PHT[15][3];
+    for (int i = 0; i < 15; i++) {
+        PHT[i][0] = P_(i,6)*H06 + P_(i,7)*H07 + P_(i,8)*H08;
+        PHT[i][1] = P_(i,6)*H16 + P_(i,7)*H17 + P_(i,8)*H18;
+        PHT[i][2] = P_(i,6)*H26 + P_(i,7)*H27 + P_(i,8)*H28;
+    }
 
-    float S00 = g2 * P77 + R_val;
-    float S01 = -g2 * P67;
-    float S11 = g2 * P66 + R_val;
+    // ========================================================================
+    // S = H * P * H^T + R (3x3)
+    // S[m][n] = sum_j H[m][j] * PHT[j][n] = Hm6*PHT[6][n] + Hm7*PHT[7][n] + Hm8*PHT[8][n]
+    // ========================================================================
+    float S[3][3];
+    S[0][0] = H06*PHT[6][0] + H07*PHT[7][0] + H08*PHT[8][0] + R_val;
+    S[0][1] = H06*PHT[6][1] + H07*PHT[7][1] + H08*PHT[8][1];
+    S[0][2] = H06*PHT[6][2] + H07*PHT[7][2] + H08*PHT[8][2];
+    S[1][0] = H16*PHT[6][0] + H17*PHT[7][0] + H18*PHT[8][0];
+    S[1][1] = H16*PHT[6][1] + H17*PHT[7][1] + H18*PHT[8][1] + R_val;
+    S[1][2] = H16*PHT[6][2] + H17*PHT[7][2] + H18*PHT[8][2];
+    S[2][0] = H26*PHT[6][0] + H27*PHT[7][0] + H28*PHT[8][0];
+    S[2][1] = H26*PHT[6][1] + H27*PHT[7][1] + H28*PHT[8][1];
+    S[2][2] = H26*PHT[6][2] + H27*PHT[7][2] + H28*PHT[8][2] + R_val;
 
-    // S^-1 (2x2 逆行列)
-    float det = S00 * S11 - S01 * S01;
+    // ========================================================================
+    // S^-1 (3x3 逆行列)
+    // ========================================================================
+    float det = S[0][0]*(S[1][1]*S[2][2] - S[1][2]*S[2][1])
+              - S[0][1]*(S[1][0]*S[2][2] - S[1][2]*S[2][0])
+              + S[0][2]*(S[1][0]*S[2][1] - S[1][1]*S[2][0]);
     if (std::abs(det) < 1e-10f) return;
     float inv_det = 1.0f / det;
-    float Si00 = S11 * inv_det;
-    float Si01 = -S01 * inv_det;
-    float Si11 = S00 * inv_det;
 
-    // カルマンゲイン K (15x2)
-    // PHT[i][0] = P[i][7] * g
-    // PHT[i][1] = P[i][6] * (-g)
-    // K[i][0] = PHT[i][0] * Si00 + PHT[i][1] * Si01
-    // K[i][1] = PHT[i][0] * Si01 + PHT[i][1] * Si11
-    float K[15][2];
+    float Si[3][3];
+    Si[0][0] = (S[1][1]*S[2][2] - S[1][2]*S[2][1]) * inv_det;
+    Si[0][1] = (S[0][2]*S[2][1] - S[0][1]*S[2][2]) * inv_det;
+    Si[0][2] = (S[0][1]*S[1][2] - S[0][2]*S[1][1]) * inv_det;
+    Si[1][0] = (S[1][2]*S[2][0] - S[1][0]*S[2][2]) * inv_det;
+    Si[1][1] = (S[0][0]*S[2][2] - S[0][2]*S[2][0]) * inv_det;
+    Si[1][2] = (S[0][2]*S[1][0] - S[0][0]*S[1][2]) * inv_det;
+    Si[2][0] = (S[1][0]*S[2][1] - S[1][1]*S[2][0]) * inv_det;
+    Si[2][1] = (S[0][1]*S[2][0] - S[0][0]*S[2][1]) * inv_det;
+    Si[2][2] = (S[0][0]*S[1][1] - S[0][1]*S[1][0]) * inv_det;
+
+    // ========================================================================
+    // カルマンゲイン K = P * H^T * S^-1 (15x3)
+    // ========================================================================
+    float K[15][3];
     for (int i = 0; i < 15; i++) {
-        float PHT_i0 = P_(i, 7) * g;
-        float PHT_i1 = P_(i, 6) * (-g);
-        K[i][0] = PHT_i0 * Si00 + PHT_i1 * Si01;
-        K[i][1] = PHT_i0 * Si01 + PHT_i1 * Si11;
+        K[i][0] = PHT[i][0]*Si[0][0] + PHT[i][1]*Si[1][0] + PHT[i][2]*Si[2][0];
+        K[i][1] = PHT[i][0]*Si[0][1] + PHT[i][1]*Si[1][1] + PHT[i][2]*Si[2][1];
+        K[i][2] = PHT[i][0]*Si[0][2] + PHT[i][1]*Si[1][2] + PHT[i][2]*Si[2][2];
     }
 
-    // dx = K * y
+    // ========================================================================
+    // dx = K * y (15次元)
+    // ========================================================================
     float dx[15];
     for (int i = 0; i < 15; i++) {
-        dx[i] = K[i][0] * y0 + K[i][1] * y1;
+        dx[i] = K[i][0]*y0 + K[i][1]*y1 + K[i][2]*y2;
     }
 
+    // ========================================================================
     // 状態注入
+    // ========================================================================
     state_.position.x += dx[POS_X];
     state_.position.y += dx[POS_Y];
     state_.position.z += dx[POS_Z];
@@ -1308,32 +1348,47 @@ void ESKF::updateAccelAttitude(const Vector3& accel)
     state_.accel_bias.y += dx[BA_Y];
     state_.accel_bias.z += dx[BA_Z];
 
+    // ========================================================================
     // Joseph形式共分散更新: P' = (I - K*H) * P * (I - K*H)^T + K * R * K^T
-    // I_KH[i][j] = delta_ij - K[i][0]*g*(j==7) + K[i][1]*g*(j==6)
+    // H行列は列6,7,8のみ非ゼロなので、(I-K*H)も列6,7,8のみ変化
+    // (I-K*H)[i][j] = δij - K[i][0]*H0j - K[i][1]*H1j - K[i][2]*H2j
+    // ========================================================================
+
+    // H行列の列ベクトル（転置の行）
+    // H[:,6] = [H06, H16, H26]^T
+    // H[:,7] = [H07, H17, H27]^T
+    // H[:,8] = [H08, H18, H28]^T
 
     // Step 1: temp1_ = (I - K*H) * P
-    // temp1_[i][j] = P[i][j] - K[i][0]*g*P[7][j] + K[i][1]*g*P[6][j]
     for (int i = 0; i < 15; i++) {
-        float Ki0_g = K[i][0] * g;
-        float Ki1_g = K[i][1] * g;
+        // (I-K*H)の行iを事前計算: 列6,7,8だけ非単位
+        float IKH_i6 = -K[i][0]*H06 - K[i][1]*H16 - K[i][2]*H26;
+        float IKH_i7 = -K[i][0]*H07 - K[i][1]*H17 - K[i][2]*H27;
+        float IKH_i8 = -K[i][0]*H08 - K[i][1]*H18 - K[i][2]*H28;
+
         for (int j = 0; j < 15; j++) {
-            temp1_(i, j) = P_(i, j) - Ki0_g * P_(7, j) + Ki1_g * P_(6, j);
+            // temp1_[i][j] = sum_k (I-K*H)[i][k] * P[k][j]
+            // (I-K*H)[i][k] = δik + IKH_ik (k=6,7,8のみ非ゼロ追加)
+            temp1_(i, j) = P_(i, j) + IKH_i6*P_(6, j) + IKH_i7*P_(7, j) + IKH_i8*P_(8, j);
         }
     }
 
     // Step 2: P' = temp1_ * (I - K*H)^T + K * R * K^T
-    // P'[i][j] = temp1_[i][j] - K[j][0]*g*temp1_[i][7] + K[j][1]*g*temp1_[i][6]
-    //          + R_val * (K[i][0]*K[j][0] + K[i][1]*K[j][1])
     for (int i = 0; i < 15; i++) {
-        float temp1_i6 = temp1_(i, 6);
-        float temp1_i7 = temp1_(i, 7);
-        float Ki0 = K[i][0];
-        float Ki1 = K[i][1];
+        float Ki0 = K[i][0], Ki1 = K[i][1], Ki2 = K[i][2];
+
         for (int j = 0; j < 15; j++) {
-            float Kj0_g = K[j][0] * g;
-            float Kj1_g = K[j][1] * g;
-            float val = temp1_(i, j) - Kj0_g * temp1_i7 + Kj1_g * temp1_i6;
-            val += R_val * (Ki0 * K[j][0] + Ki1 * K[j][1]);
+            // (I-K*H)^T の列j = (I-K*H)の行j
+            float IKH_j6 = -K[j][0]*H06 - K[j][1]*H16 - K[j][2]*H26;
+            float IKH_j7 = -K[j][0]*H07 - K[j][1]*H17 - K[j][2]*H27;
+            float IKH_j8 = -K[j][0]*H08 - K[j][1]*H18 - K[j][2]*H28;
+
+            // temp1_[i][j] * δjk + temp1_[i][6,7,8] * IKH_jk
+            float val = temp1_(i, j) + temp1_(i, 6)*IKH_j6 + temp1_(i, 7)*IKH_j7 + temp1_(i, 8)*IKH_j8;
+
+            // K * R * K^T (Rはスカラー×単位行列)
+            val += R_val * (Ki0*K[j][0] + Ki1*K[j][1] + Ki2*K[j][2]);
+
             P_(i, j) = val;
         }
     }
