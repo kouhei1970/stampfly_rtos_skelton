@@ -131,14 +131,16 @@ esp_err_t Telemetry::ws_handler(httpd_req_t* req)
         return ESP_FAIL;
     }
 
-    // Handle WebSocket handshake
-    if (req->method == HTTP_GET) {
-        ESP_LOGI(TAG, "WebSocket handshake from client");
-        return ESP_OK;
-    }
-
     // Get socket fd
     int fd = httpd_req_to_sockfd(req);
+
+    // Handle WebSocket handshake (HTTP GET request)
+    if (req->method == HTTP_GET) {
+        ESP_LOGI(TAG, "WebSocket handshake from client (fd=%d)", fd);
+        // Register client on successful handshake
+        s_instance->addClient(fd);
+        return ESP_OK;
+    }
 
     // Receive frame
     httpd_ws_frame_t ws_pkt;
@@ -149,6 +151,7 @@ esp_err_t Telemetry::ws_handler(httpd_req_t* req)
     esp_err_t ret = httpd_ws_recv_frame(req, &ws_pkt, 0);
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "httpd_ws_recv_frame failed: %s", esp_err_to_name(ret));
+        s_instance->removeClient(fd);
         return ret;
     }
 
@@ -156,13 +159,6 @@ esp_err_t Telemetry::ws_handler(httpd_req_t* req)
     if (ws_pkt.type == HTTPD_WS_TYPE_CLOSE) {
         ESP_LOGI(TAG, "Client disconnected (fd=%d)", fd);
         s_instance->removeClient(fd);
-        return ESP_OK;
-    }
-
-    // Handle connection established
-    if (ws_pkt.len == 0) {
-        // Empty frame on first connection
-        s_instance->addClient(fd);
         return ESP_OK;
     }
 
