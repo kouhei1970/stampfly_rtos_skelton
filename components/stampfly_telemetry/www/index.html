@@ -355,7 +355,7 @@ const history = {
 // Three.js 3D View
 // ============================================================================
 let scene, camera, renderer, controls;
-let droneModel, trajectoryLine, trajectoryPoints = [];
+let droneModel, trajectoryLine;
 let followMode = false;
 
 function init3D() {
@@ -551,6 +551,13 @@ function animate() {
     renderer.render(scene, camera);
 }
 
+// Pre-allocated trajectory buffer
+const MAX_TRAJECTORY = 500;
+let trajectoryBuffer = new Float32Array(MAX_TRAJECTORY * 3);
+let trajectoryIndex = 0;
+let trajectoryCount = 0;
+let trajectoryUpdateCounter = 0;
+
 function updateDrone(roll, pitch, yaw, x, y, z) {
     if (!droneModel) return;
 
@@ -560,21 +567,48 @@ function updateDrone(roll, pitch, yaw, x, y, z) {
     // Rotation (NED to Three.js)
     droneModel.rotation.set(roll, -yaw, pitch, 'ZYX');
 
-    // Add to trajectory
-    trajectoryPoints.push(new THREE.Vector3(x, y, -z));
-    if (trajectoryPoints.length > HISTORY_SIZE) {
-        trajectoryPoints.shift();
-    }
+    // Add to trajectory (ring buffer, update every 5 packets)
+    if (++trajectoryUpdateCounter >= 5) {
+        trajectoryUpdateCounter = 0;
 
-    // Update trajectory line
-    const positions = new Float32Array(trajectoryPoints.length * 3);
-    for (let i = 0; i < trajectoryPoints.length; i++) {
-        positions[i * 3] = trajectoryPoints[i].x;
-        positions[i * 3 + 1] = trajectoryPoints[i].y;
-        positions[i * 3 + 2] = trajectoryPoints[i].z;
+        const idx = trajectoryIndex * 3;
+        trajectoryBuffer[idx] = x;
+        trajectoryBuffer[idx + 1] = y;
+        trajectoryBuffer[idx + 2] = -z;
+
+        trajectoryIndex = (trajectoryIndex + 1) % MAX_TRAJECTORY;
+        if (trajectoryCount < MAX_TRAJECTORY) trajectoryCount++;
+
+        // Update trajectory line geometry
+        updateTrajectoryLine();
     }
-    trajectoryLine.geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    trajectoryLine.geometry.attributes.position.needsUpdate = true;
+}
+
+function updateTrajectoryLine() {
+    if (trajectoryCount === 0) return;
+
+    const positions = trajectoryLine.geometry.attributes.position;
+    if (!positions || positions.count !== trajectoryCount) {
+        // Need to recreate buffer attribute
+        const arr = new Float32Array(trajectoryCount * 3);
+        for (let i = 0; i < trajectoryCount; i++) {
+            const srcIdx = ((trajectoryIndex - trajectoryCount + i + MAX_TRAJECTORY) % MAX_TRAJECTORY) * 3;
+            arr[i * 3] = trajectoryBuffer[srcIdx];
+            arr[i * 3 + 1] = trajectoryBuffer[srcIdx + 1];
+            arr[i * 3 + 2] = trajectoryBuffer[srcIdx + 2];
+        }
+        trajectoryLine.geometry.setAttribute('position', new THREE.BufferAttribute(arr, 3));
+    } else {
+        // Update existing buffer
+        const arr = positions.array;
+        for (let i = 0; i < trajectoryCount; i++) {
+            const srcIdx = ((trajectoryIndex - trajectoryCount + i + MAX_TRAJECTORY) % MAX_TRAJECTORY) * 3;
+            arr[i * 3] = trajectoryBuffer[srcIdx];
+            arr[i * 3 + 1] = trajectoryBuffer[srcIdx + 1];
+            arr[i * 3 + 2] = trajectoryBuffer[srcIdx + 2];
+        }
+        positions.needsUpdate = true;
+    }
 }
 
 function resetCamera() {
@@ -588,7 +622,8 @@ function toggleFollow() {
 }
 
 function clearTrajectory() {
-    trajectoryPoints = [];
+    trajectoryIndex = 0;
+    trajectoryCount = 0;
     trajectoryLine.geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(0), 3));
 }
 
@@ -703,77 +738,88 @@ function connect() {
     };
 
     ws.onmessage = (event) => {
-        if (!(event.data instanceof ArrayBuffer)) return;
+        try {
+            if (!(event.data instanceof ArrayBuffer)) return;
+            if (event.data.byteLength < 48) return;
 
-        const data = new DataView(event.data);
-        if (data.byteLength < 48) return;
+            const data = new DataView(event.data);
+            if (data.getUint8(0) !== 0xAA) return;
 
-        // Check header
-        if (data.getUint8(0) !== 0xAA) return;
+            // Parse packet (little-endian)
+            const timestamp = data.getUint32(2, true);
+            const roll = data.getFloat32(6, true);
+            const pitch = data.getFloat32(10, true);
+            const yaw = data.getFloat32(14, true);
 
-        // Parse packet (little-endian)
-        const timestamp = data.getUint32(2, true);
-        const roll = data.getFloat32(6, true);
-        const pitch = data.getFloat32(10, true);
-        const yaw = data.getFloat32(14, true);
+            const pos_x = data.getFloat32(18, true);
+            const pos_y = data.getFloat32(22, true);
+            const pos_z = data.getFloat32(26, true);
 
-        const pos_x = data.getFloat32(18, true);
-        const pos_y = data.getFloat32(22, true);
-        const pos_z = data.getFloat32(26, true);
+            const vel_x = data.getFloat32(30, true);
+            const vel_y = data.getFloat32(34, true);
+            const vel_z = data.getFloat32(38, true);
 
-        const vel_x = data.getFloat32(30, true);
-        const vel_y = data.getFloat32(34, true);
-        const vel_z = data.getFloat32(38, true);
+            const voltage = data.getFloat32(42, true);
+            const state = data.getUint8(46);
 
-        const voltage = data.getFloat32(42, true);
-        const state = data.getUint8(46);
+            // Convert to degrees for display
+            const rollDeg = roll * RAD_TO_DEG;
+            const pitchDeg = pitch * RAD_TO_DEG;
+            const yawDeg = yaw * RAD_TO_DEG;
 
-        // Convert to degrees for display
-        const rollDeg = roll * RAD_TO_DEG;
-        const pitchDeg = pitch * RAD_TO_DEG;
-        const yawDeg = yaw * RAD_TO_DEG;
+            // Update history
+            history.time.push(timestamp);
+            history.roll.push(rollDeg);
+            history.pitch.push(pitchDeg);
+            history.yaw.push(yawDeg);
+            history.pos_x.push(pos_x);
+            history.pos_y.push(pos_y);
+            history.pos_z.push(pos_z);
+            history.vel_x.push(vel_x);
+            history.vel_y.push(vel_y);
+            history.vel_z.push(vel_z);
 
-        // Update history
-        history.time.push(timestamp);
-        history.roll.push(rollDeg);
-        history.pitch.push(pitchDeg);
-        history.yaw.push(yawDeg);
-        history.pos_x.push(pos_x);
-        history.pos_y.push(pos_y);
-        history.pos_z.push(pos_z);
-        history.vel_x.push(vel_x);
-        history.vel_y.push(vel_y);
-        history.vel_z.push(vel_z);
+            // Update 3D view (with error handling)
+            try {
+                updateDrone(roll, pitch, yaw, pos_x, pos_y, pos_z);
+            } catch (e) {
+                document.getElementById('state').textContent = '3D ERR: ' + e.message;
+            }
 
-        // Update 3D view
-        updateDrone(roll, pitch, yaw, pos_x, pos_y, pos_z);
+            // Update display
+            document.getElementById('roll').textContent = rollDeg.toFixed(1);
+            document.getElementById('pitch').textContent = pitchDeg.toFixed(1);
+            document.getElementById('yaw').textContent = yawDeg.toFixed(1);
 
-        // Update display
-        document.getElementById('roll').textContent = rollDeg.toFixed(1);
-        document.getElementById('pitch').textContent = pitchDeg.toFixed(1);
-        document.getElementById('yaw').textContent = yawDeg.toFixed(1);
+            document.getElementById('pos_x').textContent = pos_x.toFixed(3);
+            document.getElementById('pos_y').textContent = pos_y.toFixed(3);
+            document.getElementById('pos_z').textContent = pos_z.toFixed(3);
 
-        document.getElementById('pos_x').textContent = pos_x.toFixed(3);
-        document.getElementById('pos_y').textContent = pos_y.toFixed(3);
-        document.getElementById('pos_z').textContent = pos_z.toFixed(3);
+            document.getElementById('vel_x').textContent = vel_x.toFixed(2);
+            document.getElementById('vel_y').textContent = vel_y.toFixed(2);
+            document.getElementById('vel_z').textContent = vel_z.toFixed(2);
 
-        document.getElementById('vel_x').textContent = vel_x.toFixed(2);
-        document.getElementById('vel_y').textContent = vel_y.toFixed(2);
-        document.getElementById('vel_z').textContent = vel_z.toFixed(2);
+            document.getElementById('voltage').textContent = voltage.toFixed(2);
+            if (!document.getElementById('state').textContent.startsWith('3D ERR')) {
+                document.getElementById('state').textContent = STATES[state] || 'UNKNOWN';
+            }
 
-        document.getElementById('voltage').textContent = voltage.toFixed(2);
-        document.getElementById('state').textContent = STATES[state] || 'UNKNOWN';
+            // Update horizon visualization
+            const horizonLine = document.getElementById('horizon-line');
+            const clampedPitch = Math.max(-45, Math.min(45, pitchDeg));
+            const pitchOffset = (clampedPitch / 45) * 35;
+            horizonLine.style.transform = `translateY(${pitchOffset}px) rotate(${-rollDeg}deg)`;
 
-        // Update horizon visualization
-        const horizonLine = document.getElementById('horizon-line');
-        const clampedPitch = Math.max(-45, Math.min(45, pitchDeg));
-        const pitchOffset = (clampedPitch / 45) * 35;
-        horizonLine.style.transform = `translateY(${pitchOffset}px) rotate(${-rollDeg}deg)`;
-
-        // Update stats
-        packetCount++;
-        document.getElementById('packets').textContent = packetCount;
-        document.getElementById('history').textContent = history.pos_x.length;
+            // Update stats
+            packetCount++;
+            document.getElementById('packets').textContent = packetCount;
+            document.getElementById('history').textContent = history.pos_x.length;
+        } catch (e) {
+            // Show error in status
+            document.getElementById('state').textContent = 'ERR: ' + e.message;
+            packetCount++;
+            document.getElementById('packets').textContent = packetCount;
+        }
 
         // Calculate rate
         const now = Date.now();
