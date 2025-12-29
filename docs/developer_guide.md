@@ -275,13 +275,80 @@ float pitch_out = KP_RATE_PITCH * pitch_rate_error;
 2. 角速度制御が安定したら、アウターループ（角度制御）を追加
 3. アウターループのゲインは控えめから開始
 
-### モーターミキシングAPI
+### モーターミキシングとは
+
+クアッドコプターでは、4つのモーターを協調して動かすことで機体を制御します。
+パイロット（または制御器）からの入力は「スラスト・ロール・ピッチ・ヨー」の4つですが、
+これを4つの個別モーター出力に変換する必要があります。この変換を**モーターミキシング**と呼びます。
+
+```mermaid
+flowchart LR
+    subgraph input["制御入力"]
+        T["Thrust<br/>(上昇/下降)"]
+        R["Roll<br/>(左右傾き)"]
+        P["Pitch<br/>(前後傾き)"]
+        Y["Yaw<br/>(回転)"]
+    end
+
+    MIXER["ミキサー<br/>(混合計算)"]
+
+    subgraph output["モーター出力"]
+        M1["M1 (FR)"]
+        M2["M2 (RR)"]
+        M3["M3 (RL)"]
+        M4["M4 (FL)"]
+    end
+
+    T --> MIXER
+    R --> MIXER
+    P --> MIXER
+    Y --> MIXER
+    MIXER --> M1
+    MIXER --> M2
+    MIXER --> M3
+    MIXER --> M4
+```
+
+### X-Quadミキシングの原理
+
+X配置のクアッドコプターでは、各モーターが複数の軸に影響を与えます：
+
+| 動作 | FR (M1) | RR (M2) | RL (M3) | FL (M4) |
+|------|---------|---------|---------|---------|
+| Thrust（上昇） | ↑ | ↑ | ↑ | ↑ |
+| Roll（右傾き） | ↓ | ↓ | ↑ | ↑ |
+| Pitch（前傾き）| ↑ | ↓ | ↓ | ↑ |
+| Yaw（右回転） | ↑ | ↓ | ↑ | ↓ |
+
+これをまとめると、以下のミキシング式になります：
+
+```
+M1 (FR, CCW) = Thrust - Roll + Pitch + Yaw
+M2 (RR, CW)  = Thrust - Roll - Pitch - Yaw
+M3 (RL, CCW) = Thrust + Roll - Pitch + Yaw
+M4 (FL, CW)  = Thrust + Roll + Pitch - Yaw
+```
+
+> **Yawの符号について**: CCWモーターを強くするとCW方向に機体が回転し、
+> CWモーターを強くするとCCW方向に機体が回転します（反作用トルク）。
+
+### ミキシングAPI
+
+本プロジェクトでは、上記のミキシング計算を内部で行う高レベルAPIを提供しています：
 
 ```cpp
-// 推奨: 高レベルAPI（内部でX-quadミキシング）
+// 推奨: 高レベルAPI（ミキシング計算を自動で行う）
+// thrust: 0.0 ~ 1.0, roll/pitch/yaw: -1.0 ~ +1.0（制御出力）
 g_motor.setMixerOutput(thrust, roll, pitch, yaw);
+```
 
-// 低レベル: 個別モーター制御
+制御器からの出力をそのまま渡すだけで、適切なモーター出力に変換されます。
+
+低レベルAPIを使って個別にモーターを制御することも可能ですが、
+通常の飛行制御では`setMixerOutput()`の使用を推奨します：
+
+```cpp
+// 低レベル: 個別モーター制御（テスト用途など）
 g_motor.setMotor(stampfly::MotorDriver::MOTOR_FR, value);  // 0.0-1.0
 g_motor.setMotor(stampfly::MotorDriver::MOTOR_RR, value);
 g_motor.setMotor(stampfly::MotorDriver::MOTOR_RL, value);
