@@ -19,53 +19,48 @@
 
 `main/main.cpp`は以下のセクションで構成されています：
 
+```mermaid
+block-beta
+    columns 1
+    block:section1["1. インクルードと定数定義 (1-110行目)"]
+        A["GPIO定義 / タスク優先度 / スタックサイズ"]
+    end
+    block:section2["2. グローバルインスタンス (112-202行目)"]
+        B["センサードライバ (g_imu, g_mag, g_baro, etc.)"]
+        C["アクチュエータ / 推定器 / 通信 / タスクハンドル"]
+    end
+    block:section3["3. ヘルパー関数 (204-256行目)"]
+        D["setMagReferenceFromBuffer() / onBinlogStart()"]
+    end
+    block:section4["4. タイマーコールバック (258-273行目)"]
+        E["imu_timer_callback() - 400Hz精密タイミング"]
+    end
+    block:section5["5. タスク関数 (275-1140行目) ★重要"]
+        F["IMUTask (400Hz) - ESKF更新"]
+        G["ControlTask (400Hz) - 飛行制御 ★スタブ"]
+        H["OptFlow/Mag/Baro/ToF/Power/LED/Button/Comm/CLI"]
+    end
+    block:section6["6. イベントハンドラ (1039-1129行目)"]
+        I["onButtonEvent() / onControlPacket()"]
+    end
+    block:section7["7. 初期化関数 (1131-1627行目)"]
+        J["initI2C/Sensors/Actuators/Estimators/Communication/CLI"]
+    end
+    block:section8["8. エントリポイント (1629-1747行目)"]
+        K["app_main() - 初期化シーケンス"]
+    end
 ```
-┌─────────────────────────────────────────────────────────────┐
-│ 1. インクルードと定数定義 (1-110行目)                         │
-│    - GPIO定義                                                │
-│    - タスク優先度                                            │
-│    - スタックサイズ                                          │
-├─────────────────────────────────────────────────────────────┤
-│ 2. グローバルインスタンス (112-202行目)                       │
-│    - センサードライバ (g_imu, g_mag, g_baro, etc.)           │
-│    - アクチュエータ (g_motor, g_led, g_buzzer)               │
-│    - 推定器 (g_eskf, g_attitude_est)                         │
-│    - 通信 (g_comm, g_cli)                                    │
-│    - タスクハンドル                                          │
-├─────────────────────────────────────────────────────────────┤
-│ 3. ヘルパー関数 (204-256行目)                                 │
-│    - setMagReferenceFromBuffer()                             │
-│    - onBinlogStart()                                         │
-├─────────────────────────────────────────────────────────────┤
-│ 4. タイマーコールバック (258-273行目)                         │
-│    - imu_timer_callback() - 400Hz精密タイミング               │
-├─────────────────────────────────────────────────────────────┤
-│ 5. タスク関数 (275-1140行目)  ★重要                          │
-│    - IMUTask (400Hz) - ESKF更新、センサー融合                 │
-│    - ControlTask (400Hz) - 飛行制御 ★スタブ実装済み          │
-│    - OptFlowTask (100Hz) - オプティカルフロー                 │
-│    - MagTask (100Hz) - 地磁気センサー                         │
-│    - BaroTask (50Hz) - 気圧センサー                           │
-│    - ToFTask (30Hz) - ToFセンサー                             │
-│    - PowerTask (10Hz) - 電源監視                              │
-│    - LEDTask (30Hz) - LED制御                                 │
-│    - ButtonTask (100Hz) - ボタン入力                          │
-│    - CommTask (50Hz) - ESP-NOW通信                            │
-│    - CLITask - USBシリアルCLI                                 │
-├─────────────────────────────────────────────────────────────┤
-│ 6. イベントハンドラ (1039-1129行目)                           │
-│    - onButtonEvent() - ボタンイベント処理                     │
-│    - onControlPacket() - コントローラー入力処理               │
-├─────────────────────────────────────────────────────────────┤
-│ 7. 初期化関数 (1131-1627行目)                                 │
-│    - initI2C(), initSensors(), initActuators()               │
-│    - initEstimators(), initCommunication()                   │
-│    - initCLI(), initLogger(), startTasks()                   │
-├─────────────────────────────────────────────────────────────┤
-│ 8. エントリポイント (1629-1747行目)                           │
-│    - app_main() - 初期化シーケンス                           │
-└─────────────────────────────────────────────────────────────┘
-```
+
+| セクション | 行 | 内容 |
+|-----------|-----|------|
+| 1. 定数定義 | 1-110 | GPIO定義、タスク優先度、スタックサイズ |
+| 2. グローバル | 112-202 | センサー、アクチュエータ、推定器、通信 |
+| 3. ヘルパー | 204-256 | setMagReferenceFromBuffer(), onBinlogStart() |
+| 4. タイマー | 258-273 | imu_timer_callback() (400Hz) |
+| 5. タスク関数 | 275-1140 | IMU/Control/OptFlow/Mag/Baro/ToF/etc. ★重要 |
+| 6. イベント | 1039-1129 | onButtonEvent(), onControlPacket() |
+| 7. 初期化 | 1131-1627 | initI2C/Sensors/Actuators/etc. |
+| 8. エントリ | 1629-1747 | app_main() |
 
 ---
 
@@ -101,49 +96,64 @@
 
 ## データフロー
 
+```mermaid
+flowchart TB
+    subgraph Sensors["センサータスク"]
+        IMU["IMUTask<br/>(400Hz)"]
+        MAG["MagTask<br/>(100Hz)"]
+        BARO["BaroTask<br/>(50Hz)"]
+        TOF["ToFTask<br/>(30Hz)"]
+        FLOW["OptFlowTask<br/>(100Hz)"]
+    end
+
+    subgraph ESKF["ESKF (IMUTask内で実行)"]
+        PREDICT["g_eskf.predict()"]
+        UPDATE_MAG["g_eskf.updateMag()"]
+        UPDATE_BARO["g_eskf.updateBaro()"]
+        UPDATE_TOF["g_eskf.updateToF()"]
+        UPDATE_FLOW["g_eskf.updateFlow()"]
+    end
+
+    subgraph State["StampFlyState (共有状態)"]
+        SENSOR_DATA["センサーデータ<br/>accel, gyro, mag, baro, tof, flow"]
+        EST_STATE["推定状態<br/>position, velocity, roll, pitch, yaw"]
+        CTRL_INPUT["制御入力<br/>throttle, roll, pitch, yaw"]
+        SYS_STATE["システム状態<br/>flight_state, error_code"]
+    end
+
+    subgraph Control["ControlTask (400Hz)"]
+        GET_STATE["姿勢/入力取得"]
+        PID["PID計算"]
+        MOTOR["g_motor.setMixerOutput()"]
+    end
+
+    IMU -->|"400Hz"| PREDICT
+    MAG -->|"data_ready"| UPDATE_MAG
+    BARO -->|"data_ready"| UPDATE_BARO
+    TOF -->|"data_ready"| UPDATE_TOF
+    FLOW -->|"data_ready"| UPDATE_FLOW
+
+    PREDICT --> EST_STATE
+    UPDATE_MAG --> EST_STATE
+    UPDATE_BARO --> EST_STATE
+    UPDATE_TOF --> EST_STATE
+    UPDATE_FLOW --> EST_STATE
+
+    IMU -->|"セマフォ"| GET_STATE
+    EST_STATE --> GET_STATE
+    CTRL_INPUT --> GET_STATE
+    GET_STATE --> PID
+    PID --> MOTOR
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│                        センサータスク                              │
-├──────────────────────────────────────────────────────────────────┤
-│  IMUTask ─────► g_eskf.predict() ─────────────────────┐          │
-│  (400Hz)                                               │          │
-│                                                        ▼          │
-│  MagTask ─────► g_mag_data_cache ──► g_eskf.updateMag()          │
-│  (100Hz→10Hz)   + g_mag_data_ready                               │
-│                                                                   │
-│  BaroTask ────► g_baro_data_cache ─► g_eskf.updateBaro()         │
-│  (50Hz)         + g_baro_data_ready                              │
-│                                                                   │
-│  ToFTask ─────► g_tof_data_cache ──► g_eskf.updateToF()          │
-│  (30Hz)         + g_tof_data_ready                               │
-│                                                                   │
-│  OptFlowTask ─► state.updateOpticalFlow() ─► g_eskf.updateFlow() │
-│  (100Hz)                                                          │
-└──────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌──────────────────────────────────────────────────────────────────┐
-│                     StampFlyState (共有状態)                      │
-├──────────────────────────────────────────────────────────────────┤
-│  センサーデータ:  accel_, gyro_, mag_, baro_, tof_, flow_        │
-│  推定状態:        position_, velocity_, roll_, pitch_, yaw_      │
-│  制御入力:        ctrl_throttle_, ctrl_roll_, ctrl_pitch_, ...   │
-│  システム状態:    flight_state_, error_code_, pairing_state_     │
-└──────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌──────────────────────────────────────────────────────────────────┐
-│                      ControlTask (400Hz, スタブ)                  │
-├──────────────────────────────────────────────────────────────────┤
-│  IMUTask完了 ──► セマフォ ──► ControlTask起動                     │
-│                                │                                  │
-│                                ▼                                  │
-│                     姿勢/入力取得 → PID計算 → モーター出力         │
-│                                │                                  │
-│                                ▼                                  │
-│                     g_motor.setMixerOutput(thrust, r, p, y)       │
-└──────────────────────────────────────────────────────────────────┘
-```
+
+**StampFlyState の内容:**
+
+| カテゴリ | データ |
+|---------|--------|
+| センサーデータ | accel_, gyro_, mag_, baro_, tof_, flow_ |
+| 推定状態 | position_, velocity_, roll_, pitch_, yaw_ |
+| 制御入力 | ctrl_throttle_, ctrl_roll_, ctrl_pitch_, ctrl_yaw_ |
+| システム状態 | flight_state_, error_code_, pairing_state_ |
 
 ---
 
@@ -239,20 +249,37 @@ g_motor.setMotor(stampfly::MotorDriver::MOTOR_FL, value);
 
 ### X-Quadモーター配置
 
-```
-     前方
-   FL    FR
-    ╲  ╱
-     ╲╱
-     ╱╲
-    ╱  ╲
-   RL    RR
+```mermaid
+graph TB
+    subgraph quad[" "]
+        direction TB
+        FRONT["前方 ▲"]
+        FL["FL (M4)<br/>CW ↻"]
+        FR["FR (M1)<br/>CCW ↺"]
+        RL["RL (M3)<br/>CCW ↺"]
+        RR["RR (M2)<br/>CW ↻"]
+        REAR["後方"]
+    end
 
-FR(M1): CCW  (反時計回り)
-RR(M2): CW   (時計回り)
-RL(M3): CCW  (反時計回り)
-FL(M4): CW   (時計回り)
+    FL --- FR
+    FL --- RL
+    FR --- RR
+    RL --- RR
+
+    style FL fill:#f9f,stroke:#333
+    style FR fill:#9ff,stroke:#333
+    style RL fill:#9ff,stroke:#333
+    style RR fill:#f9f,stroke:#333
 ```
+
+| モーター | 位置 | 回転方向 | GPIO |
+|---------|------|---------|------|
+| M1 (FR) | 前右 | CCW (反時計回り) | 42 |
+| M2 (RR) | 後右 | CW (時計回り) | 41 |
+| M3 (RL) | 後左 | CCW (反時計回り) | 10 |
+| M4 (FL) | 前左 | CW (時計回り) | 5 |
+
+> **Note:** 同色のモーターは同じ回転方向（CW=ピンク、CCW=シアン）
 
 ---
 
@@ -329,10 +356,23 @@ g_myclass_ptr = &g_myclass;
 
 ### FlightState（飛行状態）
 
-```
-INIT ──► CALIBRATING ──► IDLE ◄──► ARMED ◄──► FLYING
-                           │                    │
-                           └──► ERROR ◄─────────┘
+```mermaid
+stateDiagram-v2
+    [*] --> INIT
+    INIT --> CALIBRATING : センサー準備完了
+    CALIBRATING --> IDLE : キャリブレーション完了
+
+    IDLE --> ARMED : ARMボタン
+    ARMED --> IDLE : DISARMボタン
+
+    ARMED --> FLYING : スロットル上げ
+    FLYING --> ARMED : 着陸
+
+    IDLE --> ERROR : エラー発生
+    ARMED --> ERROR : エラー発生
+    FLYING --> ERROR : エラー発生
+
+    ERROR --> IDLE : エラー解除
 ```
 
 | 状態 | 説明 | LED |
@@ -437,3 +477,5 @@ stampfly_rtos_skelton/
 4. **ESKF更新**: すべてのESKF更新はIMUTask内で行われます。他のセンサータスクはデータをキャッシュしてフラグを立てるだけです（レースコンディション防止）。
 
 5. **モーター安全**: `g_motor.setThrottle()`を呼ぶ前に、必ずフライト状態をチェックしてください。
+
+
