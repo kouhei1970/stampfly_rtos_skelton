@@ -10,9 +10,11 @@
 
 static const char* TAG = "Telemetry";
 
-// Embedded HTML file
+// Embedded files
 extern const uint8_t index_html_start[] asm("_binary_index_html_start");
 extern const uint8_t index_html_end[] asm("_binary_index_html_end");
+extern const uint8_t three_min_js_start[] asm("_binary_three_min_js_start");
+extern const uint8_t three_min_js_end[] asm("_binary_three_min_js_end");
 
 namespace stampfly {
 
@@ -73,6 +75,15 @@ esp_err_t Telemetry::init(const Config& config)
     };
     httpd_register_uri_handler(server_, &uri_root);
 
+    // Three.js library
+    httpd_uri_t uri_threejs = {
+        .uri = "/three.min.js",
+        .method = HTTP_GET,
+        .handler = http_get_threejs_handler,
+        .user_ctx = nullptr
+    };
+    httpd_register_uri_handler(server_, &uri_threejs);
+
     // WebSocket endpoint
     httpd_uri_t uri_ws = {
         .uri = "/ws",
@@ -122,6 +133,16 @@ esp_err_t Telemetry::http_get_handler(httpd_req_t* req)
     httpd_resp_set_type(req, "text/html");
     httpd_resp_send(req, (const char*)index_html_start,
                     index_html_end - index_html_start);
+    return ESP_OK;
+}
+
+esp_err_t Telemetry::http_get_threejs_handler(httpd_req_t* req)
+{
+    ESP_LOGI(TAG, "HTTP GET %s", req->uri);
+
+    httpd_resp_set_type(req, "application/javascript");
+    httpd_resp_send(req, (const char*)three_min_js_start,
+                    three_min_js_end - three_min_js_start);
     return ESP_OK;
 }
 

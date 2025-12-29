@@ -123,6 +123,7 @@ private:
     // HTTP/WebSocket handlers
     static esp_err_t ws_handler(httpd_req_t* req);
     static esp_err_t http_get_handler(httpd_req_t* req);
+    static esp_err_t http_get_threejs_handler(httpd_req_t* req);
 
     // Client management
     void addClient(int fd);
