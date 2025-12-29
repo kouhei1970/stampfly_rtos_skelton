@@ -1927,6 +1927,15 @@ extern "C" void app_main(void)
     ESP_LOGI(TAG, "Waiting for ESKF to stabilize...");
     vTaskDelay(pdMS_TO_TICKS(2000));
 
+    // Reset ESKF after sensors have stabilized
+    // This fixes divergence issue where ESKF accumulates errors during initial sensor noise
+    if (g_eskf.isInitialized()) {
+        g_eskf.reset();
+        g_eskf.setGyroBias(g_initial_gyro_bias);
+        setMagReferenceFromBuffer();
+        ESP_LOGI(TAG, "ESKF reset after sensor stabilization");
+    }
+
     // ESKF ready notification - 3 short beeps + green LED
     ESP_LOGI(TAG, "ESKF ready - playing notification...");
     g_buzzer.beep();
