@@ -305,7 +305,7 @@ StampFlyデバイスからUSBシリアル経由でバイナリログをキャプ
 
 > **注意**: V1は非推奨です。すべてのPythonツールはV2のみをサポートします。
 >
-> **詳細なフォーマット仕様**: [`docs/eskf_debug_plan.md`](../../docs/eskf_debug_plan.md#22-v2-パケット構造-128-bytes---現行フォーマット) を参照してください。
+> **詳細なフォーマット仕様**: [`docs/eskf_workflow.md`](../../docs/eskf_workflow.md#バイナリログ形式) および [`cli.hpp`](../../components/stampfly_cli/include/cli.hpp) の `BinaryLogPacketV2` を参照。
 
 ### ログキャプチャ
 
