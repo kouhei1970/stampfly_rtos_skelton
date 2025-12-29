@@ -560,12 +560,15 @@ int main(int argc, char* argv[])
     constexpr int FLOW_SQUAL_MIN = 30;   // OutlierDetector::isFlowValid相当
 
     uint32_t last_timestamp = packets[0].timestamp_ms;
-    int accel_att_counter = 0;
 
     // Flow update tracking (device updates at 100Hz = every 4 IMU packets)
     int16_t last_flow_dx = 0;
     int16_t last_flow_dy = 0;
     constexpr float FLOW_DT = 0.01f;  // 10ms = 100Hz (matches device)
+
+    // ToF/Mag update tracking (only when data changes, like device)
+    float last_tof = 0.0f;
+    float last_mag_x = 0.0f, last_mag_y = 0.0f, last_mag_z = 0.0f;
 
     for (size_t i = 0; i < packets.size(); i++) {
         const auto& pkt = packets[i];
@@ -587,13 +590,10 @@ int main(int argc, char* argv[])
         eskf.predict(accel, gyro, dt);
 
         // ====================================================================
-        // Accel Attitude Update (50Hz = every 2nd predict)
+        // Accel Attitude Update (400Hz = every predict, matches device)
+        // デバイスは400Hzで加速度姿勢更新を行う
         // ====================================================================
-        accel_att_counter++;
-        if (accel_att_counter >= 2) {
-            accel_att_counter = 0;
-            eskf.updateAccelAttitude(accel);
-        }
+        eskf.updateAccelAttitude(accel);
 
         // ====================================================================
         // Baro Update (50Hz = every 2nd packet)
@@ -610,23 +610,31 @@ int main(int argc, char* argv[])
         // }
 
         // ====================================================================
-        // ToF Update (33Hz ≈ 30Hz = every 3rd packet)
+        // ToF Update (only when data changes, ~30Hz like device)
+        // デバイスはToFセンサーからの新データ到着時のみ更新
         // ====================================================================
-        if (i % 3 == 0) {
-            if (pkt.tof_bottom > 0.01f && pkt.tof_bottom < 4.0f) {
+        if (pkt.tof_bottom > 0.01f && pkt.tof_bottom < 4.0f) {
+            if (std::abs(pkt.tof_bottom - last_tof) > 0.0001f) {
+                last_tof = pkt.tof_bottom;
                 eskf.updateToF(pkt.tof_bottom);
             }
         }
 
         // ====================================================================
-        // Mag Update (10Hz = every 10th packet)
+        // Mag Update (only when data changes, ~10Hz like device)
+        // デバイスはMagセンサーからの新データ到着時のみ更新
         // mag_ref計算に使用した最初の100サンプルはスキップ
-        // (初期yawと参照の不一致によるバイアス推定汚染を防止)
         // ====================================================================
-        if (i >= MAG_REF_SAMPLES && i % 10 == 0) {
+        if (i >= MAG_REF_SAMPLES) {
             Vector3 mag(pkt.mag_x, pkt.mag_y, pkt.mag_z);
             float mag_norm = std::sqrt(mag.x*mag.x + mag.y*mag.y + mag.z*mag.z);
-            if (mag_norm > 10.0f) {
+            bool mag_changed = (std::abs(mag.x - last_mag_x) > 0.01f) ||
+                               (std::abs(mag.y - last_mag_y) > 0.01f) ||
+                               (std::abs(mag.z - last_mag_z) > 0.01f);
+            if (mag_norm > 10.0f && mag_changed) {
+                last_mag_x = mag.x;
+                last_mag_y = mag.y;
+                last_mag_z = mag.z;
                 eskf.updateMag(mag);
             }
         }
