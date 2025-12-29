@@ -175,10 +175,12 @@ float roll_rate_error  = roll_rate_target  - gyro.x;
 float pitch_rate_error = pitch_rate_target - gyro.y;
 float yaw_rate_error   = yaw_rate_target   - gyro.z;
 
-// P制御（角速度フィードバック）
+// P制御（シンプルな例）
 float roll_out  = KP_RATE_ROLL  * roll_rate_error;
 float pitch_out = KP_RATE_PITCH * pitch_rate_error;
 float yaw_out   = KP_RATE_YAW   * yaw_rate_error;
+
+// ※ 実用的にはPID制御を推奨（Step 2参照）
 
 // モーターミキシング
 g_motor.setMixerOutput(throttle_cmd, roll_out, pitch_out, yaw_out);
@@ -197,13 +199,13 @@ g_motor.setMixerOutput(throttle_cmd, roll_out, pitch_out, yaw_out);
 flowchart LR
     subgraph outer["アウターループ"]
         TARGET["目標姿勢"]
-        ANGLE_CTRL["角度制御器<br/>(P制御)"]
+        ANGLE_CTRL["角度制御器<br/>(PID制御)"]
         TARGET --> ANGLE_CTRL
     end
 
     subgraph inner["インナーループ"]
         RATE_TARGET["目標角速度"]
-        RATE_CTRL["角速度制御器<br/>(P制御)"]
+        RATE_CTRL["角速度制御器<br/>(PID制御)"]
         RATE_TARGET --> RATE_CTRL
     end
 
@@ -233,27 +235,50 @@ flowchart LR
 **実装のヒント：**
 
 ```cpp
-// アウターループ（角度制御）
-float roll_error  = roll_target  - roll_current;
-float pitch_error = pitch_target - pitch_current;
+// PIDゲイン（例）
+constexpr float KP_ANGLE = 5.0f;   // 角度制御 P
+constexpr float KI_ANGLE = 0.5f;   // 角度制御 I
+constexpr float KP_RATE  = 0.5f;   // 角速度制御 P
+constexpr float KI_RATE  = 0.1f;   // 角速度制御 I
+constexpr float KD_RATE  = 0.01f;  // 角速度制御 D
+
+// 積分項（static変数で保持）
+static float roll_angle_integral = 0.0f;
+static float roll_rate_integral = 0.0f;
+static float prev_roll_rate_error = 0.0f;
+
+// --- アウターループ（角度制御：PI） ---
+float roll_error = roll_target - roll_current;
+roll_angle_integral += roll_error * dt;
 
 // アウターループの出力 = インナーループの目標角速度
-float roll_rate_target  = KP_ANGLE_ROLL  * roll_error;
-float pitch_rate_target = KP_ANGLE_PITCH * pitch_error;
+float roll_rate_target = KP_ANGLE * roll_error + KI_ANGLE * roll_angle_integral;
 
-// インナーループ（角速度制御）
-float roll_rate_error  = roll_rate_target  - gyro.x;
-float pitch_rate_error = pitch_rate_target - gyro.y;
+// --- インナーループ（角速度制御：PID） ---
+float roll_rate_error = roll_rate_target - gyro.x;
+roll_rate_integral += roll_rate_error * dt;
+float roll_rate_derivative = (roll_rate_error - prev_roll_rate_error) / dt;
+prev_roll_rate_error = roll_rate_error;
 
-float roll_out  = KP_RATE_ROLL  * roll_rate_error;
-float pitch_out = KP_RATE_PITCH * pitch_rate_error;
+float roll_out = KP_RATE * roll_rate_error
+               + KI_RATE * roll_rate_integral
+               + KD_RATE * roll_rate_derivative;
 ```
+
+> **Note:** 積分項のワインドアップ対策（上限値の設定）も実装してください。
 
 **チューニング手順：**
 
-1. まずStep 1の角速度制御のみで飛行テスト
-2. 角速度制御が安定したら、アウターループ（角度制御）を追加
-3. アウターループのゲインは控えめから開始
+1. **インナーループ（角速度制御）から開始**
+   - まずP項のみで調整（I, Dはゼロ）
+   - 振動しない範囲でKP_RATEを上げる
+   - 定常偏差があればKI_RATEを少しずつ追加
+   - 振動抑制にKD_RATEを追加（ノイズ注意）
+
+2. **アウターループ（角度制御）を追加**
+   - インナーが安定してから追加
+   - P項のみで開始、控えめなゲインから
+   - 必要に応じてI項を追加
 
 ### モーターミキシングとは
 
