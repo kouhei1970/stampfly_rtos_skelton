@@ -22,15 +22,17 @@ target_include_directories(stampfly_math INTERFACE
     ${CMAKE_CURRENT_SOURCE_DIR}/../../components/stampfly_math/include
 )
 
-# ESKF library (copied from original with ESP-IDF dependencies removed)
+# ESKF library (using actual component source with ESP-IDF stubs)
 add_library(stampfly_eskf
-    eskf_pc.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../components/stampfly_eskf/eskf.cpp
 )
 target_include_directories(stampfly_eskf PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/../../components/stampfly_eskf/include
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
-target_link_libraries(stampfly_eskf PUBLIC stampfly_math esp_stubs)
+# esp_stubs must come BEFORE other includes to override ESP-IDF headers
+target_include_directories(stampfly_eskf BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/stubs)
+target_link_libraries(stampfly_eskf PUBLIC stampfly_math)
 
 # Main debug executable (simple test)
 add_executable(eskf_debug main.cpp)
