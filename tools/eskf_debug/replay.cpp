@@ -562,13 +562,20 @@ int main(int argc, char* argv[])
     uint32_t last_timestamp = packets[0].timestamp_ms;
 
     // Flow update tracking (device updates at 100Hz = every 4 IMU packets)
-    int16_t last_flow_dx = 0;
-    int16_t last_flow_dy = 0;
+    // デバイスはflow_update_counter >= 4で更新（データ変化は関係ない）
+    size_t flow_update_counter = 0;
+    constexpr size_t FLOW_UPDATE_INTERVAL = 4;  // 400Hz / 100Hz = 4
     constexpr float FLOW_DT = 0.01f;  // 10ms = 100Hz (matches device)
 
-    // ToF/Mag update tracking (only when data changes, like device)
-    float last_tof = 0.0f;
-    float last_mag_x = 0.0f, last_mag_y = 0.0f, last_mag_z = 0.0f;
+    // ToF update tracking (30Hz fixed interval like device)
+    // デバイスはdata_readyフラグで30Hz更新（値が変化したかどうかは関係ない）
+    size_t tof_update_counter = 0;
+    constexpr size_t TOF_UPDATE_INTERVAL = 13;  // 400Hz / 30Hz ≈ 13.3
+
+    // Mag update tracking (10Hz fixed interval like device)
+    // デバイスはESKF_UPDATE_DIVISOR=10で10Hz更新
+    size_t mag_update_counter = 0;
+    constexpr size_t MAG_UPDATE_INTERVAL = 40;  // 400Hz / 10Hz = 40
 
     for (size_t i = 0; i < packets.size(); i++) {
         const auto& pkt = packets[i];
@@ -610,50 +617,46 @@ int main(int argc, char* argv[])
         // }
 
         // ====================================================================
-        // ToF Update (only when data changes, ~30Hz like device)
-        // デバイスはToFセンサーからの新データ到着時のみ更新
+        // ToF Update (30Hz fixed interval, matches device data_ready timing)
+        // デバイスはdata_readyフラグで30Hz更新（値が変化したかどうかは関係ない）
         // ====================================================================
-        if (pkt.tof_bottom > 0.01f && pkt.tof_bottom < 4.0f) {
-            if (std::abs(pkt.tof_bottom - last_tof) > 0.0001f) {
-                last_tof = pkt.tof_bottom;
+        tof_update_counter++;
+        if (tof_update_counter >= TOF_UPDATE_INTERVAL) {
+            tof_update_counter = 0;
+            if (pkt.tof_bottom > 0.01f && pkt.tof_bottom < 4.0f) {
                 eskf.updateToF(pkt.tof_bottom);
             }
         }
 
         // ====================================================================
-        // Mag Update (only when data changes, ~10Hz like device)
-        // デバイスはMagセンサーからの新データ到着時のみ更新
+        // Mag Update (10Hz fixed interval, matches device ESKF_UPDATE_DIVISOR)
+        // デバイスは10Hz固定間隔で更新
         // mag_ref計算に使用した最初の100サンプルはスキップ
         // ====================================================================
-        if (i >= MAG_REF_SAMPLES) {
-            Vector3 mag(pkt.mag_x, pkt.mag_y, pkt.mag_z);
-            float mag_norm = std::sqrt(mag.x*mag.x + mag.y*mag.y + mag.z*mag.z);
-            bool mag_changed = (std::abs(mag.x - last_mag_x) > 0.01f) ||
-                               (std::abs(mag.y - last_mag_y) > 0.01f) ||
-                               (std::abs(mag.z - last_mag_z) > 0.01f);
-            if (mag_norm > 10.0f && mag_changed) {
-                last_mag_x = mag.x;
-                last_mag_y = mag.y;
-                last_mag_z = mag.z;
-                eskf.updateMag(mag);
+        mag_update_counter++;
+        if (mag_update_counter >= MAG_UPDATE_INTERVAL) {
+            mag_update_counter = 0;
+            if (i >= MAG_REF_SAMPLES) {
+                Vector3 mag(pkt.mag_x, pkt.mag_y, pkt.mag_z);
+                float mag_norm = std::sqrt(mag.x*mag.x + mag.y*mag.y + mag.z*mag.z);
+                if (mag_norm > 10.0f) {
+                    eskf.updateMag(mag);
+                }
             }
         }
 
         // ====================================================================
-        // Flow Update (100Hz = only when flow data changes)
-        // デバイスは100Hz (= 400Hz IMU / 4) でフロー更新を行う
-        // dt = 10ms 固定で、フローデータが変化した時のみ更新
+        // Flow Update (100Hz fixed interval, matches device flow_update_counter)
+        // デバイスは100Hz (= 400Hz IMU / 4) で固定更新
+        // データ変化の有無は関係ない
         // ====================================================================
-        if (pkt.flow_squal >= FLOW_SQUAL_MIN) {
-            // Only update when flow data changes (device behavior)
-            bool flow_changed = (pkt.flow_dx != last_flow_dx) || (pkt.flow_dy != last_flow_dy);
-            if (flow_changed) {
-                last_flow_dx = pkt.flow_dx;
-                last_flow_dy = pkt.flow_dy;
-
+        flow_update_counter++;
+        if (flow_update_counter >= FLOW_UPDATE_INTERVAL) {
+            flow_update_counter = 0;
+            if (pkt.flow_squal >= FLOW_SQUAL_MIN) {
                 float distance = pkt.tof_bottom;
                 if (distance < 0.02f) distance = 0.02f;
-                if (distance > 0.02f) {
+                if (distance > 0.02f && distance < 4.0f) {
                     // 新API: 生カウントとdt、機体ジャイロを渡す
                     // ESKF内部で物理的に正しい変換を行う
                     // dt = 10ms 固定（デバイスと一致）
