@@ -13,7 +13,8 @@
 7. [状態管理](#状態管理)
 8. [デバッグ方法](#デバッグ方法)
 9. [StampFlyState APIリファレンス](#stampflystate-apiリファレンス)
-10. [座標系](#座標系)
+10. [列挙型（Enum）リファレンス](#列挙型enum-リファレンス)
+11. [座標系](#座標系)
 
 ---
 
@@ -712,6 +713,76 @@ if (flight_state == stampfly::FlightState::FLYING) {
 ```cpp
 auto gyro_bias = state.getGyroBias();
 // ESKFが推定したバイアス値（デバッグ用）
+```
+
+---
+
+## 列挙型（Enum）リファレンス
+
+### FlightState（飛行状態）
+
+```cpp
+enum class FlightState {
+    INIT,        // 初期化中
+    CALIBRATING, // キャリブレーション中
+    IDLE,        // 待機中（ARM可能）
+    ARMED,       // アーム済み（飛行準備完了）
+    FLYING,      // 飛行中
+    LANDING,     // 着陸中
+    ERROR        // エラー発生
+};
+```
+
+使用例：
+```cpp
+auto state = stampfly::StampFlyState::getInstance().getFlightState();
+if (state == stampfly::FlightState::ARMED) {
+    // アーム済みの処理
+}
+```
+
+### ErrorCode（エラーコード）
+
+```cpp
+enum class ErrorCode {
+    NONE,               // エラーなし
+    SENSOR_IMU,         // IMUセンサーエラー
+    SENSOR_MAG,         // 地磁気センサーエラー
+    SENSOR_BARO,        // 気圧センサーエラー
+    SENSOR_TOF,         // ToFセンサーエラー
+    SENSOR_FLOW,        // オプティカルフローエラー
+    SENSOR_POWER,       // 電源センサーエラー
+    LOW_BATTERY,        // 低バッテリー（<3.4V）
+    COMM_LOST,          // 通信途絶
+    CALIBRATION_FAILED  // キャリブレーション失敗
+};
+```
+
+### PairingState（ペアリング状態）
+
+```cpp
+enum class PairingState {
+    NOT_PAIRED,  // 未ペアリング
+    PAIRING,     // ペアリング中
+    PAIRED       // ペアリング完了
+};
+```
+
+### コントロールフラグ（ビットフラグ）
+
+```cpp
+constexpr uint8_t CTRL_FLAG_ARM      = 0x01;  // ARMボタン
+constexpr uint8_t CTRL_FLAG_FLIP     = 0x02;  // FLIPボタン
+constexpr uint8_t CTRL_FLAG_MODE     = 0x04;  // MODEボタン
+constexpr uint8_t CTRL_FLAG_ALT_MODE = 0x08;  // ALT_MODEボタン
+```
+
+使用例：
+```cpp
+uint8_t flags = state.getControlFlags();
+if (flags & stampfly::CTRL_FLAG_ARM) {
+    // ARMボタンが押されている
+}
 ```
 
 ---
