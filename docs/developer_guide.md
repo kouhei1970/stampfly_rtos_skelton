@@ -19,48 +19,36 @@
 
 `main/main.cpp`は以下のセクションで構成されています：
 
-```mermaid
-block-beta
-    columns 1
-    block:section1["1. インクルードと定数定義 (1-110行目)"]
-        A["GPIO定義 / タスク優先度 / スタックサイズ"]
-    end
-    block:section2["2. グローバルインスタンス (112-202行目)"]
-        B["センサードライバ (g_imu, g_mag, g_baro, etc.)"]
-        C["アクチュエータ / 推定器 / 通信 / タスクハンドル"]
-    end
-    block:section3["3. ヘルパー関数 (204-256行目)"]
-        D["setMagReferenceFromBuffer() / onBinlogStart()"]
-    end
-    block:section4["4. タイマーコールバック (258-273行目)"]
-        E["imu_timer_callback() - 400Hz精密タイミング"]
-    end
-    block:section5["5. タスク関数 (275-1140行目) ★重要"]
-        F["IMUTask (400Hz) - ESKF更新"]
-        G["ControlTask (400Hz) - 飛行制御 ★スタブ"]
-        H["OptFlow/Mag/Baro/ToF/Power/LED/Button/Comm/CLI"]
-    end
-    block:section6["6. イベントハンドラ (1039-1129行目)"]
-        I["onButtonEvent() / onControlPacket()"]
-    end
-    block:section7["7. 初期化関数 (1131-1627行目)"]
-        J["initI2C/Sensors/Actuators/Estimators/Communication/CLI"]
-    end
-    block:section8["8. エントリポイント (1629-1747行目)"]
-        K["app_main() - 初期化シーケンス"]
-    end
 ```
-
-| セクション | 行 | 内容 |
-|-----------|-----|------|
-| 1. 定数定義 | 1-110 | GPIO定義、タスク優先度、スタックサイズ |
-| 2. グローバル | 112-202 | センサー、アクチュエータ、推定器、通信 |
-| 3. ヘルパー | 204-256 | setMagReferenceFromBuffer(), onBinlogStart() |
-| 4. タイマー | 258-273 | imu_timer_callback() (400Hz) |
-| 5. タスク関数 | 275-1140 | IMU/Control/OptFlow/Mag/Baro/ToF/etc. ★重要 |
-| 6. イベント | 1039-1129 | onButtonEvent(), onControlPacket() |
-| 7. 初期化 | 1131-1627 | initI2C/Sensors/Actuators/etc. |
-| 8. エントリ | 1629-1747 | app_main() |
+┌─────────────────────────────────────────────────────────────┐
+│ 1. インクルードと定数定義 (1-110行目)                       │
+│    - GPIO定義、タスク優先度、スタックサイズ                 │
+├─────────────────────────────────────────────────────────────┤
+│ 2. グローバルインスタンス (112-202行目)                     │
+│    - センサードライバ (g_imu, g_mag, g_baro, etc.)          │
+│    - アクチュエータ、推定器、通信、タスクハンドル           │
+├─────────────────────────────────────────────────────────────┤
+│ 3. ヘルパー関数 (204-256行目)                               │
+│    - setMagReferenceFromBuffer(), onBinlogStart()           │
+├─────────────────────────────────────────────────────────────┤
+│ 4. タイマーコールバック (258-273行目)                       │
+│    - imu_timer_callback() - 400Hz精密タイミング             │
+├─────────────────────────────────────────────────────────────┤
+│ 5. タスク関数 (275-1140行目) ★重要                         │
+│    - IMUTask (400Hz) - ESKF更新                             │
+│    - ControlTask (400Hz) - 飛行制御 ★スタブ                │
+│    - OptFlow/Mag/Baro/ToF/Power/LED/Button/Comm/CLI         │
+├─────────────────────────────────────────────────────────────┤
+│ 6. イベントハンドラ (1039-1129行目)                         │
+│    - onButtonEvent(), onControlPacket()                     │
+├─────────────────────────────────────────────────────────────┤
+│ 7. 初期化関数 (1131-1627行目)                               │
+│    - initI2C/Sensors/Actuators/Estimators/Communication/CLI │
+├─────────────────────────────────────────────────────────────┤
+│ 8. エントリポイント (1629-1747行目)                         │
+│    - app_main() - 初期化シーケンス                          │
+└─────────────────────────────────────────────────────────────┘
+```
 
 ---
 
@@ -249,27 +237,20 @@ g_motor.setMotor(stampfly::MotorDriver::MOTOR_FL, value);
 
 ### X-Quadモーター配置
 
-```mermaid
-graph TB
-    subgraph quad[" "]
-        direction TB
-        FRONT["前方 ▲"]
-        FL["FL (M4)<br/>CW ↻"]
-        FR["FR (M1)<br/>CCW ↺"]
-        RL["RL (M3)<br/>CCW ↺"]
-        RR["RR (M2)<br/>CW ↻"]
-        REAR["後方"]
-    end
+```
+            前方
+             ▲
 
-    FL --- FR
-    FL --- RL
-    FR --- RR
-    RL --- RR
+    FL(M4)         FR(M1)
+      CW  ╲     ╱  CCW
+           ╲   ╱
+            ╳
+           ╱   ╲
+     CCW  ╱     ╲  CW
+    RL(M3)         RR(M2)
 
-    style FL fill:#f9f,stroke:#333
-    style FR fill:#9ff,stroke:#333
-    style RL fill:#9ff,stroke:#333
-    style RR fill:#f9f,stroke:#333
+             ▽
+            後方
 ```
 
 | モーター | 位置 | 回転方向 | GPIO |
@@ -279,7 +260,7 @@ graph TB
 | M3 (RL) | 後左 | CCW (反時計回り) | 10 |
 | M4 (FL) | 前左 | CW (時計回り) | 5 |
 
-> **Note:** 同色のモーターは同じ回転方向（CW=ピンク、CCW=シアン）
+> **Note:** 対角のモーターは同じ回転方向（FL-RR=CW、FR-RL=CCW）
 
 ---
 
