@@ -4,79 +4,157 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>StampFly Telemetry</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             background: #1a1a2e;
             color: #eee;
-            padding: 16px;
-            min-height: 100vh;
+            overflow: hidden;
+            height: 100vh;
+        }
+        .container {
+            display: grid;
+            grid-template-columns: 1fr 300px;
+            grid-template-rows: auto 1fr auto;
+            height: 100vh;
+            gap: 8px;
+            padding: 8px;
+        }
+        .header {
+            grid-column: 1 / -1;
+            display: flex;
+            align-items: center;
+            gap: 16px;
         }
         h1 {
-            font-size: 24px;
-            margin-bottom: 16px;
+            font-size: 20px;
             color: #00ff88;
         }
         #status {
-            display: inline-block;
             padding: 4px 12px;
             border-radius: 4px;
-            font-size: 12px;
+            font-size: 11px;
             font-weight: bold;
-            margin-bottom: 16px;
         }
         .connected { background: #00ff88; color: #000; }
         .disconnected { background: #ff4444; color: #fff; }
         .connecting { background: #ffaa00; color: #000; }
+        .main-view {
+            display: grid;
+            grid-template-rows: 1fr 1fr;
+            gap: 8px;
+        }
+        .view-3d {
+            background: #0f0f1a;
+            border-radius: 8px;
+            position: relative;
+            overflow: hidden;
+        }
+        #canvas3d {
+            width: 100%;
+            height: 100%;
+        }
+        .view-3d-controls {
+            position: absolute;
+            top: 8px;
+            left: 8px;
+            display: flex;
+            gap: 4px;
+        }
+        .view-3d-controls button {
+            background: rgba(0,255,136,0.2);
+            border: 1px solid #00ff88;
+            color: #00ff88;
+            padding: 4px 8px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 11px;
+        }
+        .view-3d-controls button:hover {
+            background: rgba(0,255,136,0.4);
+        }
+        .view-3d-info {
+            position: absolute;
+            bottom: 8px;
+            left: 8px;
+            font-size: 11px;
+            color: #666;
+        }
+        .graphs {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 8px;
+        }
+        .graph-card {
+            background: #16213e;
+            border-radius: 6px;
+            padding: 8px;
+        }
+        .graph-title {
+            font-size: 11px;
+            color: #888;
+            margin-bottom: 4px;
+        }
+        .graph-canvas {
+            width: 100%;
+            height: 80px;
+            background: #0a0a15;
+            border-radius: 4px;
+        }
+        .sidebar {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            overflow-y: auto;
+        }
         .card {
             background: #16213e;
-            padding: 16px;
-            margin-bottom: 12px;
+            padding: 12px;
             border-radius: 8px;
-            border-left: 4px solid #00ff88;
+            border-left: 3px solid #00ff88;
         }
         .card-title {
             color: #888;
-            font-size: 12px;
+            font-size: 10px;
             text-transform: uppercase;
-            margin-bottom: 12px;
+            margin-bottom: 8px;
         }
         .row {
             display: flex;
             justify-content: space-between;
-            margin-bottom: 8px;
+            margin-bottom: 4px;
+            font-size: 13px;
         }
         .row:last-child { margin-bottom: 0; }
         .label { color: #aaa; }
         .value {
-            font-size: 18px;
             font-weight: bold;
             color: #00ff88;
             font-family: 'Courier New', monospace;
         }
-        .unit { color: #666; font-size: 14px; margin-left: 4px; }
-        .stats {
+        .unit { color: #666; font-size: 11px; margin-left: 2px; }
+        .footer {
+            grid-column: 1 / -1;
             display: flex;
             gap: 16px;
-            font-size: 12px;
+            font-size: 11px;
             color: #666;
-            margin-top: 16px;
         }
-        .attitude-viz {
+        .horizon-container {
             display: flex;
             justify-content: center;
-            gap: 24px;
-            margin-top: 16px;
+            margin-top: 8px;
         }
         .horizon {
-            width: 100px;
-            height: 100px;
+            width: 80px;
+            height: 80px;
             border: 2px solid #00ff88;
             border-radius: 50%;
             position: relative;
             overflow: hidden;
-            background: linear-gradient(to bottom, #87CEEB 50%, #8B4513 50%);
+            background: linear-gradient(to bottom, #4a90a4 50%, #8B6914 50%);
         }
         .horizon-line {
             position: absolute;
@@ -86,95 +164,506 @@
             top: 50%;
             transform-origin: center;
         }
-        .horizon-label {
-            text-align: center;
-            font-size: 11px;
-            color: #888;
+        .legend {
+            display: flex;
+            gap: 8px;
+            font-size: 10px;
             margin-top: 4px;
+        }
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+        .legend-color {
+            width: 12px;
+            height: 3px;
+            border-radius: 1px;
         }
     </style>
 </head>
 <body>
-    <h1>StampFly Telemetry</h1>
-    <div id="status" class="disconnected">Disconnected</div>
+    <div class="container">
+        <div class="header">
+            <h1>StampFly Telemetry</h1>
+            <div id="status" class="disconnected">Disconnected</div>
+        </div>
 
-    <div class="card">
-        <div class="card-title">Attitude</div>
-        <div class="row">
-            <span class="label">Roll</span>
-            <span><span id="roll" class="value">---</span><span class="unit">deg</span></span>
-        </div>
-        <div class="row">
-            <span class="label">Pitch</span>
-            <span><span id="pitch" class="value">---</span><span class="unit">deg</span></span>
-        </div>
-        <div class="row">
-            <span class="label">Yaw</span>
-            <span><span id="yaw" class="value">---</span><span class="unit">deg</span></span>
-        </div>
-        <div class="attitude-viz">
-            <div>
-                <div class="horizon" id="horizon-rp">
-                    <div class="horizon-line" id="horizon-line"></div>
+        <div class="main-view">
+            <div class="view-3d">
+                <canvas id="canvas3d"></canvas>
+                <div class="view-3d-controls">
+                    <button onclick="resetCamera()">Reset View</button>
+                    <button onclick="toggleFollow()">Follow: <span id="followState">OFF</span></button>
+                    <button onclick="clearTrajectory()">Clear Path</button>
                 </div>
-                <div class="horizon-label">Roll / Pitch</div>
+                <div class="view-3d-info">Drag to rotate, Scroll to zoom</div>
+            </div>
+            <div class="graphs">
+                <div class="graph-card">
+                    <div class="graph-title">Attitude [deg]</div>
+                    <canvas class="graph-canvas" id="graphAttitude"></canvas>
+                    <div class="legend">
+                        <div class="legend-item"><div class="legend-color" style="background:#ff6b6b"></div>Roll</div>
+                        <div class="legend-item"><div class="legend-color" style="background:#4ecdc4"></div>Pitch</div>
+                        <div class="legend-item"><div class="legend-color" style="background:#ffe66d"></div>Yaw</div>
+                    </div>
+                </div>
+                <div class="graph-card">
+                    <div class="graph-title">Position [m]</div>
+                    <canvas class="graph-canvas" id="graphPosition"></canvas>
+                    <div class="legend">
+                        <div class="legend-item"><div class="legend-color" style="background:#ff6b6b"></div>X</div>
+                        <div class="legend-item"><div class="legend-color" style="background:#4ecdc4"></div>Y</div>
+                        <div class="legend-item"><div class="legend-color" style="background:#ffe66d"></div>Z</div>
+                    </div>
+                </div>
+                <div class="graph-card">
+                    <div class="graph-title">Velocity [m/s]</div>
+                    <canvas class="graph-canvas" id="graphVelocity"></canvas>
+                    <div class="legend">
+                        <div class="legend-item"><div class="legend-color" style="background:#ff6b6b"></div>Vx</div>
+                        <div class="legend-item"><div class="legend-color" style="background:#4ecdc4"></div>Vy</div>
+                        <div class="legend-item"><div class="legend-color" style="background:#ffe66d"></div>Vz</div>
+                    </div>
+                </div>
             </div>
         </div>
-    </div>
 
-    <div class="card">
-        <div class="card-title">Position (NED)</div>
-        <div class="row">
-            <span class="label">X (North)</span>
-            <span><span id="pos_x" class="value">---</span><span class="unit">m</span></span>
-        </div>
-        <div class="row">
-            <span class="label">Y (East)</span>
-            <span><span id="pos_y" class="value">---</span><span class="unit">m</span></span>
-        </div>
-        <div class="row">
-            <span class="label">Z (Down)</span>
-            <span><span id="pos_z" class="value">---</span><span class="unit">m</span></span>
-        </div>
-    </div>
+        <div class="sidebar">
+            <div class="card">
+                <div class="card-title">Attitude</div>
+                <div class="row">
+                    <span class="label">Roll</span>
+                    <span><span id="roll" class="value">---</span><span class="unit">°</span></span>
+                </div>
+                <div class="row">
+                    <span class="label">Pitch</span>
+                    <span><span id="pitch" class="value">---</span><span class="unit">°</span></span>
+                </div>
+                <div class="row">
+                    <span class="label">Yaw</span>
+                    <span><span id="yaw" class="value">---</span><span class="unit">°</span></span>
+                </div>
+                <div class="horizon-container">
+                    <div class="horizon">
+                        <div class="horizon-line" id="horizon-line"></div>
+                    </div>
+                </div>
+            </div>
 
-    <div class="card">
-        <div class="card-title">Velocity</div>
-        <div class="row">
-            <span class="label">Vx</span>
-            <span><span id="vel_x" class="value">---</span><span class="unit">m/s</span></span>
-        </div>
-        <div class="row">
-            <span class="label">Vy</span>
-            <span><span id="vel_y" class="value">---</span><span class="unit">m/s</span></span>
-        </div>
-        <div class="row">
-            <span class="label">Vz</span>
-            <span><span id="vel_z" class="value">---</span><span class="unit">m/s</span></span>
-        </div>
-    </div>
+            <div class="card">
+                <div class="card-title">Position</div>
+                <div class="row">
+                    <span class="label">X</span>
+                    <span><span id="pos_x" class="value">---</span><span class="unit">m</span></span>
+                </div>
+                <div class="row">
+                    <span class="label">Y</span>
+                    <span><span id="pos_y" class="value">---</span><span class="unit">m</span></span>
+                </div>
+                <div class="row">
+                    <span class="label">Z</span>
+                    <span><span id="pos_z" class="value">---</span><span class="unit">m</span></span>
+                </div>
+            </div>
 
-    <div class="card">
-        <div class="card-title">System</div>
-        <div class="row">
-            <span class="label">Battery</span>
-            <span><span id="voltage" class="value">---</span><span class="unit">V</span></span>
-        </div>
-        <div class="row">
-            <span class="label">State</span>
-            <span id="state" class="value">---</span>
-        </div>
-    </div>
+            <div class="card">
+                <div class="card-title">Velocity</div>
+                <div class="row">
+                    <span class="label">Vx</span>
+                    <span><span id="vel_x" class="value">---</span><span class="unit">m/s</span></span>
+                </div>
+                <div class="row">
+                    <span class="label">Vy</span>
+                    <span><span id="vel_y" class="value">---</span><span class="unit">m/s</span></span>
+                </div>
+                <div class="row">
+                    <span class="label">Vz</span>
+                    <span><span id="vel_z" class="value">---</span><span class="unit">m/s</span></span>
+                </div>
+            </div>
 
-    <div class="stats">
-        <span>Packets: <span id="packets">0</span></span>
-        <span>Rate: <span id="rate">0</span> Hz</span>
+            <div class="card">
+                <div class="card-title">System</div>
+                <div class="row">
+                    <span class="label">Battery</span>
+                    <span><span id="voltage" class="value">---</span><span class="unit">V</span></span>
+                </div>
+                <div class="row">
+                    <span class="label">State</span>
+                    <span id="state" class="value">---</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="footer">
+            <span>Packets: <span id="packets">0</span></span>
+            <span>Rate: <span id="rate">0</span> Hz</span>
+            <span>History: <span id="history">0</span> pts</span>
+        </div>
     </div>
 
 <script>
+// ============================================================================
+// Constants
+// ============================================================================
 const STATES = ['INIT', 'CALIBRATING', 'IDLE', 'ARMED', 'FLYING', 'LANDING', 'ERROR'];
 const RAD_TO_DEG = 180 / Math.PI;
+const HISTORY_SIZE = 500;  // 10 seconds at 50Hz
+const GRAPH_HISTORY = 500;
 
+// ============================================================================
+// Data History (Ring Buffer)
+// ============================================================================
+class RingBuffer {
+    constructor(size) {
+        this.size = size;
+        this.data = [];
+    }
+    push(item) {
+        this.data.push(item);
+        if (this.data.length > this.size) {
+            this.data.shift();
+        }
+    }
+    clear() {
+        this.data = [];
+    }
+    get length() { return this.data.length; }
+    get(i) { return this.data[i]; }
+    last() { return this.data[this.data.length - 1]; }
+}
+
+const history = {
+    time: new RingBuffer(HISTORY_SIZE),
+    roll: new RingBuffer(GRAPH_HISTORY),
+    pitch: new RingBuffer(GRAPH_HISTORY),
+    yaw: new RingBuffer(GRAPH_HISTORY),
+    pos_x: new RingBuffer(HISTORY_SIZE),
+    pos_y: new RingBuffer(HISTORY_SIZE),
+    pos_z: new RingBuffer(HISTORY_SIZE),
+    vel_x: new RingBuffer(GRAPH_HISTORY),
+    vel_y: new RingBuffer(GRAPH_HISTORY),
+    vel_z: new RingBuffer(GRAPH_HISTORY),
+};
+
+// ============================================================================
+// Three.js 3D View
+// ============================================================================
+let scene, camera, renderer, controls;
+let droneModel, trajectoryLine, trajectoryPoints = [];
+let followMode = false;
+
+function init3D() {
+    const container = document.getElementById('canvas3d');
+    const rect = container.parentElement.getBoundingClientRect();
+
+    // Scene
+    scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x0a0a15);
+
+    // Camera
+    camera = new THREE.PerspectiveCamera(60, rect.width / rect.height, 0.1, 1000);
+    camera.position.set(2, 2, 2);
+    camera.lookAt(0, 0, 0);
+
+    // Renderer
+    renderer = new THREE.WebGLRenderer({ canvas: container, antialias: true });
+    renderer.setSize(rect.width, rect.height);
+    renderer.setPixelRatio(window.devicePixelRatio);
+
+    // Grid (XY plane, Z is up in display but down in NED)
+    const gridHelper = new THREE.GridHelper(4, 20, 0x444444, 0x222222);
+    gridHelper.rotation.x = Math.PI / 2;  // Rotate to XY plane
+    scene.add(gridHelper);
+
+    // Axes helper (RGB = XYZ)
+    const axesHelper = new THREE.AxesHelper(1);
+    scene.add(axesHelper);
+
+    // Axis labels
+    addAxisLabels();
+
+    // Drone model (simple representation)
+    createDroneModel();
+
+    // Trajectory line
+    const trajectoryGeometry = new THREE.BufferGeometry();
+    const trajectoryMaterial = new THREE.LineBasicMaterial({
+        color: 0x00ff88,
+        linewidth: 2
+    });
+    trajectoryLine = new THREE.Line(trajectoryGeometry, trajectoryMaterial);
+    scene.add(trajectoryLine);
+
+    // Origin marker
+    const originGeometry = new THREE.SphereGeometry(0.02, 16, 16);
+    const originMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff });
+    const originMarker = new THREE.Mesh(originGeometry, originMaterial);
+    scene.add(originMarker);
+
+    // Lights
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+    scene.add(ambientLight);
+    const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+    directionalLight.position.set(5, 5, 5);
+    scene.add(directionalLight);
+
+    // Simple orbit controls (manual implementation)
+    setupControls(container);
+
+    // Handle resize
+    window.addEventListener('resize', onWindowResize);
+
+    // Animation loop
+    animate();
+}
+
+function addAxisLabels() {
+    // Create sprite labels for axes
+    const labels = [
+        { text: 'X (N)', pos: [1.2, 0, 0], color: '#ff6b6b' },
+        { text: 'Y (E)', pos: [0, 1.2, 0], color: '#4ecdc4' },
+        { text: 'Z (D)', pos: [0, 0, -1.2], color: '#ffe66d' }
+    ];
+    // Note: Simplified - labels would need canvas textures for proper implementation
+}
+
+function createDroneModel() {
+    // Drone body
+    const bodyGeometry = new THREE.BoxGeometry(0.1, 0.1, 0.03);
+    const bodyMaterial = new THREE.MeshLambertMaterial({ color: 0x00ff88 });
+    droneModel = new THREE.Mesh(bodyGeometry, bodyMaterial);
+
+    // Arms
+    const armGeometry = new THREE.BoxGeometry(0.2, 0.02, 0.01);
+    const armMaterial = new THREE.MeshLambertMaterial({ color: 0x888888 });
+
+    const arm1 = new THREE.Mesh(armGeometry, armMaterial);
+    arm1.rotation.z = Math.PI / 4;
+    droneModel.add(arm1);
+
+    const arm2 = new THREE.Mesh(armGeometry, armMaterial);
+    arm2.rotation.z = -Math.PI / 4;
+    droneModel.add(arm2);
+
+    // Direction indicator (front)
+    const frontGeometry = new THREE.ConeGeometry(0.02, 0.05, 8);
+    const frontMaterial = new THREE.MeshLambertMaterial({ color: 0xff4444 });
+    const frontIndicator = new THREE.Mesh(frontGeometry, frontMaterial);
+    frontIndicator.rotation.x = -Math.PI / 2;
+    frontIndicator.position.set(0.06, 0, 0);
+    droneModel.add(frontIndicator);
+
+    scene.add(droneModel);
+}
+
+// Simple orbit controls
+let isDragging = false;
+let previousMousePosition = { x: 0, y: 0 };
+let spherical = { radius: 3, theta: Math.PI / 4, phi: Math.PI / 4 };
+
+function setupControls(container) {
+    container.addEventListener('mousedown', (e) => {
+        isDragging = true;
+        previousMousePosition = { x: e.clientX, y: e.clientY };
+    });
+
+    container.addEventListener('mousemove', (e) => {
+        if (!isDragging) return;
+
+        const deltaX = e.clientX - previousMousePosition.x;
+        const deltaY = e.clientY - previousMousePosition.y;
+
+        spherical.theta -= deltaX * 0.01;
+        spherical.phi = Math.max(0.1, Math.min(Math.PI - 0.1, spherical.phi - deltaY * 0.01));
+
+        updateCameraPosition();
+        previousMousePosition = { x: e.clientX, y: e.clientY };
+    });
+
+    container.addEventListener('mouseup', () => { isDragging = false; });
+    container.addEventListener('mouseleave', () => { isDragging = false; });
+
+    container.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        spherical.radius = Math.max(1, Math.min(20, spherical.radius + e.deltaY * 0.01));
+        updateCameraPosition();
+    });
+
+    // Touch support
+    container.addEventListener('touchstart', (e) => {
+        if (e.touches.length === 1) {
+            isDragging = true;
+            previousMousePosition = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+        }
+    });
+
+    container.addEventListener('touchmove', (e) => {
+        if (!isDragging || e.touches.length !== 1) return;
+
+        const deltaX = e.touches[0].clientX - previousMousePosition.x;
+        const deltaY = e.touches[0].clientY - previousMousePosition.y;
+
+        spherical.theta -= deltaX * 0.01;
+        spherical.phi = Math.max(0.1, Math.min(Math.PI - 0.1, spherical.phi - deltaY * 0.01));
+
+        updateCameraPosition();
+        previousMousePosition = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+    });
+
+    container.addEventListener('touchend', () => { isDragging = false; });
+
+    updateCameraPosition();
+}
+
+function updateCameraPosition() {
+    const target = followMode && droneModel ? droneModel.position.clone() : new THREE.Vector3(0, 0, 0);
+
+    camera.position.x = target.x + spherical.radius * Math.sin(spherical.phi) * Math.cos(spherical.theta);
+    camera.position.y = target.y + spherical.radius * Math.sin(spherical.phi) * Math.sin(spherical.theta);
+    camera.position.z = target.z + spherical.radius * Math.cos(spherical.phi);
+
+    camera.lookAt(target);
+}
+
+function onWindowResize() {
+    const container = document.getElementById('canvas3d').parentElement;
+    const rect = container.getBoundingClientRect();
+    camera.aspect = rect.width / rect.height;
+    camera.updateProjectionMatrix();
+    renderer.setSize(rect.width, rect.height);
+}
+
+function animate() {
+    requestAnimationFrame(animate);
+    if (followMode) {
+        updateCameraPosition();
+    }
+    renderer.render(scene, camera);
+}
+
+function updateDrone(roll, pitch, yaw, x, y, z) {
+    if (!droneModel) return;
+
+    // Position (NED to Three.js: X=X, Y=Y, Z=-Z for display)
+    droneModel.position.set(x, y, -z);
+
+    // Rotation (NED to Three.js)
+    droneModel.rotation.set(roll, -yaw, pitch, 'ZYX');
+
+    // Add to trajectory
+    trajectoryPoints.push(new THREE.Vector3(x, y, -z));
+    if (trajectoryPoints.length > HISTORY_SIZE) {
+        trajectoryPoints.shift();
+    }
+
+    // Update trajectory line
+    const positions = new Float32Array(trajectoryPoints.length * 3);
+    for (let i = 0; i < trajectoryPoints.length; i++) {
+        positions[i * 3] = trajectoryPoints[i].x;
+        positions[i * 3 + 1] = trajectoryPoints[i].y;
+        positions[i * 3 + 2] = trajectoryPoints[i].z;
+    }
+    trajectoryLine.geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    trajectoryLine.geometry.attributes.position.needsUpdate = true;
+}
+
+function resetCamera() {
+    spherical = { radius: 3, theta: Math.PI / 4, phi: Math.PI / 4 };
+    updateCameraPosition();
+}
+
+function toggleFollow() {
+    followMode = !followMode;
+    document.getElementById('followState').textContent = followMode ? 'ON' : 'OFF';
+}
+
+function clearTrajectory() {
+    trajectoryPoints = [];
+    trajectoryLine.geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(0), 3));
+}
+
+// ============================================================================
+// Canvas Graphs
+// ============================================================================
+function drawGraph(canvasId, data1, data2, data3, range) {
+    const canvas = document.getElementById(canvasId);
+    const ctx = canvas.getContext('2d');
+    const rect = canvas.getBoundingClientRect();
+
+    // Set canvas resolution
+    canvas.width = rect.width * window.devicePixelRatio;
+    canvas.height = rect.height * window.devicePixelRatio;
+    ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
+
+    const w = rect.width;
+    const h = rect.height;
+
+    // Clear
+    ctx.fillStyle = '#0a0a15';
+    ctx.fillRect(0, 0, w, h);
+
+    // Grid
+    ctx.strokeStyle = '#222';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(0, h/2);
+    ctx.lineTo(w, h/2);
+    ctx.stroke();
+
+    // Auto-range if not specified
+    if (!range) {
+        let min = 0, max = 0;
+        [data1, data2, data3].forEach(d => {
+            if (d && d.length > 0) {
+                d.data.forEach(v => {
+                    if (v < min) min = v;
+                    if (v > max) max = v;
+                });
+            }
+        });
+        const padding = Math.max(0.1, (max - min) * 0.1);
+        range = [-Math.max(Math.abs(min), Math.abs(max)) - padding,
+                  Math.max(Math.abs(min), Math.abs(max)) + padding];
+    }
+
+    // Draw each series
+    const colors = ['#ff6b6b', '#4ecdc4', '#ffe66d'];
+    [data1, data2, data3].forEach((data, idx) => {
+        if (!data || data.length < 2) return;
+
+        ctx.strokeStyle = colors[idx];
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+
+        for (let i = 0; i < data.length; i++) {
+            const x = (i / (data.length - 1)) * w;
+            const y = h - ((data.get(i) - range[0]) / (range[1] - range[0])) * h;
+
+            if (i === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+    });
+
+    // Range labels
+    ctx.fillStyle = '#666';
+    ctx.font = '9px sans-serif';
+    ctx.fillText(range[1].toFixed(1), 2, 10);
+    ctx.fillText(range[0].toFixed(1), 2, h - 2);
+}
+
+function updateGraphs() {
+    drawGraph('graphAttitude', history.roll, history.pitch, history.yaw, [-45, 45]);
+    drawGraph('graphPosition', history.pos_x, history.pos_y, history.pos_z, null);
+    drawGraph('graphVelocity', history.vel_x, history.vel_y, history.vel_z, [-1, 1]);
+}
+
+// ============================================================================
+// WebSocket Connection
+// ============================================================================
 let ws = null;
 let packetCount = 0;
 let lastRateTime = Date.now();
@@ -219,9 +708,10 @@ function connect() {
         if (data.getUint8(0) !== 0xAA) return;
 
         // Parse packet (little-endian)
-        const roll = data.getFloat32(6, true) * RAD_TO_DEG;
-        const pitch = data.getFloat32(10, true) * RAD_TO_DEG;
-        const yaw = data.getFloat32(14, true) * RAD_TO_DEG;
+        const timestamp = data.getUint32(2, true);
+        const roll = data.getFloat32(6, true);
+        const pitch = data.getFloat32(10, true);
+        const yaw = data.getFloat32(14, true);
 
         const pos_x = data.getFloat32(18, true);
         const pos_y = data.getFloat32(22, true);
@@ -234,14 +724,34 @@ function connect() {
         const voltage = data.getFloat32(42, true);
         const state = data.getUint8(46);
 
-        // Update display
-        document.getElementById('roll').textContent = roll.toFixed(1);
-        document.getElementById('pitch').textContent = pitch.toFixed(1);
-        document.getElementById('yaw').textContent = yaw.toFixed(1);
+        // Convert to degrees for display
+        const rollDeg = roll * RAD_TO_DEG;
+        const pitchDeg = pitch * RAD_TO_DEG;
+        const yawDeg = yaw * RAD_TO_DEG;
 
-        document.getElementById('pos_x').textContent = pos_x.toFixed(2);
-        document.getElementById('pos_y').textContent = pos_y.toFixed(2);
-        document.getElementById('pos_z').textContent = pos_z.toFixed(2);
+        // Update history
+        history.time.push(timestamp);
+        history.roll.push(rollDeg);
+        history.pitch.push(pitchDeg);
+        history.yaw.push(yawDeg);
+        history.pos_x.push(pos_x);
+        history.pos_y.push(pos_y);
+        history.pos_z.push(pos_z);
+        history.vel_x.push(vel_x);
+        history.vel_y.push(vel_y);
+        history.vel_z.push(vel_z);
+
+        // Update 3D view
+        updateDrone(roll, pitch, yaw, pos_x, pos_y, pos_z);
+
+        // Update display
+        document.getElementById('roll').textContent = rollDeg.toFixed(1);
+        document.getElementById('pitch').textContent = pitchDeg.toFixed(1);
+        document.getElementById('yaw').textContent = yawDeg.toFixed(1);
+
+        document.getElementById('pos_x').textContent = pos_x.toFixed(3);
+        document.getElementById('pos_y').textContent = pos_y.toFixed(3);
+        document.getElementById('pos_z').textContent = pos_z.toFixed(3);
 
         document.getElementById('vel_x').textContent = vel_x.toFixed(2);
         document.getElementById('vel_y').textContent = vel_y.toFixed(2);
@@ -252,13 +762,14 @@ function connect() {
 
         // Update horizon visualization
         const horizonLine = document.getElementById('horizon-line');
-        const clampedPitch = Math.max(-45, Math.min(45, pitch));
-        const pitchOffset = (clampedPitch / 45) * 40;
-        horizonLine.style.transform = `translateY(${pitchOffset}px) rotate(${-roll}deg)`;
+        const clampedPitch = Math.max(-45, Math.min(45, pitchDeg));
+        const pitchOffset = (clampedPitch / 45) * 35;
+        horizonLine.style.transform = `translateY(${pitchOffset}px) rotate(${-rollDeg}deg)`;
 
         // Update stats
         packetCount++;
         document.getElementById('packets').textContent = packetCount;
+        document.getElementById('history').textContent = history.pos_x.length;
 
         // Calculate rate
         const now = Date.now();
@@ -271,8 +782,16 @@ function connect() {
     };
 }
 
-// Start connection
-connect();
+// ============================================================================
+// Initialization
+// ============================================================================
+window.onload = () => {
+    init3D();
+    connect();
+
+    // Update graphs at 10Hz (less frequent than data to save CPU)
+    setInterval(updateGraphs, 100);
+};
 </script>
 </body>
 </html>
