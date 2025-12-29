@@ -314,6 +314,8 @@ static void IMUTask(void* pvParameters)
 
     static uint32_t imu_loop_counter = 0;
     static uint32_t imu_read_fail_counter = 0;
+    static uint32_t imu_consecutive_success = 0;
+    constexpr uint32_t IMU_HEALTHY_THRESHOLD = 10;  // 10連続成功でhealthy
 
     while (true) {
         // Wait for timer semaphore (precise 2.5ms = 400Hz timing)
@@ -335,6 +337,12 @@ static void IMUTask(void* pvParameters)
             stampfly::GyroData gyro;
 
             if (g_imu.readSensorData(accel, gyro) == ESP_OK) {
+                // ヘルスフラグ更新: 連続成功でhealthy
+                imu_read_fail_counter = 0;
+                if (++imu_consecutive_success >= IMU_HEALTHY_THRESHOLD) {
+                    g_imu_task_healthy = true;
+                }
+
                 // ============================================================
                 // BMI270座標系 → 機体座標系(NED) 変換
                 // 図より:
@@ -397,46 +405,56 @@ static void IMUTask(void* pvParameters)
                         g_eskf.updateAccelAttitude(a);
 
                         // オプティカルフロー更新（100Hz = 400Hz / 4）
+                        // ヘルスチェック: Flow + ToF が両方healthy必要（距離スケーリングに必要）
                         flow_update_counter++;
                         if (flow_update_counter >= 4) {
                             flow_update_counter = 0;
-                            int16_t flow_dx, flow_dy;
-                            uint8_t flow_squal;
-                            state.getFlowRawData(flow_dx, flow_dy, flow_squal);
+                            if (g_optflow_task_healthy && g_tof_task_healthy) {
+                                int16_t flow_dx, flow_dy;
+                                uint8_t flow_squal;
+                                state.getFlowRawData(flow_dx, flow_dy, flow_squal);
 
-                            if (stampfly::OutlierDetector::isFlowValid(flow_squal)) {
-                                float tof_bottom, tof_front;
-                                state.getToFData(tof_bottom, tof_front);
-                                float distance = tof_bottom;
-                                if (distance < 0.02f) distance = 0.02f;
-                                if (distance > 0.02f) {
-                                    // 新API: 生カウントとdt、機体ジャイロを渡す
-                                    // ESKF内部で物理的に正しい変換を行う
-                                    constexpr float dt = 0.01f;  // 100Hz (フローセンサーレート)
-                                    g_eskf.updateFlowRaw(flow_dx, flow_dy, distance, dt, g.x, g.y);
+                                if (stampfly::OutlierDetector::isFlowValid(flow_squal)) {
+                                    float tof_bottom, tof_front;
+                                    state.getToFData(tof_bottom, tof_front);
+                                    float distance = tof_bottom;
+                                    if (distance < 0.02f) distance = 0.02f;
+                                    if (distance > 0.02f && distance < 4.0f) {
+                                        // 新API: 生カウントとdt、機体ジャイロを渡す
+                                        // ESKF内部で物理的に正しい変換を行う
+                                        constexpr float dt = 0.01f;  // 100Hz (フローセンサーレート)
+                                        g_eskf.updateFlowRaw(flow_dx, flow_dy, distance, dt, g.x, g.y);
+                                    }
                                 }
                             }
                         }
 
                         // Baro更新（data_readyフラグで制御、50Hz）
+                        // ヘルスチェック: Baro healthy必要
                         // TODO: 気圧センサの値が確認できたら有効化
                         if (g_baro_data_ready) {
                             g_baro_data_ready = false;
-                            // g_eskf.updateBaro(g_baro_data_cache);
+                            if (g_baro_task_healthy) {
+                                // g_eskf.updateBaro(g_baro_data_cache);
+                            }
                         }
 
                         // ToF更新（data_readyフラグで制御、30Hz）
+                        // ヘルスチェック: ToF healthy必要
                         if (g_tof_data_ready) {
                             g_tof_data_ready = false;
-                            if (g_tof_data_cache > 0.01f && g_tof_data_cache < 4.0f) {
+                            if (g_tof_task_healthy && g_tof_data_cache > 0.01f && g_tof_data_cache < 4.0f) {
                                 g_eskf.updateToF(g_tof_data_cache);
                             }
                         }
 
                         // Mag更新（data_readyフラグで制御、10Hz）
+                        // ヘルスチェック: Mag healthy必要
                         if (g_mag_data_ready && g_mag_ref_set) {
                             g_mag_data_ready = false;
-                            g_eskf.updateMag(g_mag_data_cache);
+                            if (g_mag_task_healthy) {
+                                g_eskf.updateMag(g_mag_data_cache);
+                            }
                         }
 
                         // Update StampFlyState with ESKF estimated state
@@ -561,7 +579,11 @@ static void IMUTask(void* pvParameters)
                 // Wake up ControlTask (runs at same 400Hz rate)
                 xSemaphoreGive(g_control_semaphore);
             } else {
-                imu_read_fail_counter++;
+                // ヘルスフラグ更新: 連続失敗でunhealthy
+                imu_consecutive_success = 0;
+                if (++imu_read_fail_counter >= 3) {
+                    g_imu_task_healthy = false;
+                }
                 // 連続失敗時にログ出力
                 if (imu_read_fail_counter % 400 == 1) {
                     ESP_LOGW(TAG, "IMU read failed, consecutive fails=%lu", imu_read_fail_counter);
@@ -670,12 +692,24 @@ static void OptFlowTask(void* pvParameters)
 
     auto& state = stampfly::StampFlyState::getInstance();
 
+    // ヘルスチェック用カウンタ
+    int consecutive_valid = 0;
+    int consecutive_invalid = 0;
+    constexpr int HEALTHY_THRESHOLD = 10;   // 10連続成功でhealthy (100ms)
+    constexpr int UNHEALTHY_THRESHOLD = 10; // 10連続失敗でunhealthy (100ms)
+
     while (true) {
         if (g_optflow != nullptr) {
             try {
                 auto burst = g_optflow->readMotionBurst();
                 // Check quality
                 if (stampfly::OutlierDetector::isFlowValid(burst.squal)) {
+                    // ヘルスフラグ更新: 連続成功でhealthy
+                    consecutive_invalid = 0;
+                    if (++consecutive_valid >= HEALTHY_THRESHOLD) {
+                        g_optflow_task_healthy = true;
+                    }
+
                     // ============================================================
                     // PMW3901座標系 → 中間座標系 変換（第1段階）
                     // この変換はbinlog出力と互換性を保つためのもの
@@ -686,9 +720,19 @@ static void OptFlowTask(void* pvParameters)
 
                     state.updateOpticalFlow(flow_body_x, flow_body_y, burst.squal);
                     // ESKF updateはIMUTask内で行う（レースコンディション防止）
+                } else {
+                    // 品質不良
+                    consecutive_valid = 0;
+                    if (++consecutive_invalid >= UNHEALTHY_THRESHOLD) {
+                        g_optflow_task_healthy = false;
+                    }
                 }
             } catch (const stampfly::PMW3901Exception& e) {
-                // Sensor read error, continue
+                // Sensor read error
+                consecutive_valid = 0;
+                if (++consecutive_invalid >= UNHEALTHY_THRESHOLD) {
+                    g_optflow_task_healthy = false;
+                }
             }
         }
 
@@ -712,10 +756,21 @@ static void MagTask(void* pvParameters)
     int eskf_update_counter = 0;
     constexpr int ESKF_UPDATE_DIVISOR = 10;  // 100Hz / 10 = 10Hz
 
+    // ヘルスチェック用カウンタ
+    int consecutive_success = 0;
+    int consecutive_fail = 0;
+    constexpr int HEALTHY_THRESHOLD = 10;   // 10連続成功でhealthy (100ms)
+    constexpr int UNHEALTHY_THRESHOLD = 10; // 10連続失敗でunhealthy (100ms)
+
     while (true) {
         if (g_mag.isInitialized()) {
             stampfly::MagData mag;
             if (g_mag.read(mag) == ESP_OK) {
+                // ヘルスフラグ更新: 連続成功でhealthy
+                consecutive_fail = 0;
+                if (++consecutive_success >= HEALTHY_THRESHOLD) {
+                    g_mag_task_healthy = true;
+                }
                 // ============================================================
                 // BMM150座標系 → 機体座標系(NED) 変換
                 // 実測により確認:
@@ -767,6 +822,12 @@ static void MagTask(void* pvParameters)
                         g_mag_data_ready = true;
                     }
                 }
+            } else {
+                // ヘルスフラグ更新: 連続失敗でunhealthy
+                consecutive_success = 0;
+                if (++consecutive_fail >= UNHEALTHY_THRESHOLD) {
+                    g_mag_task_healthy = false;
+                }
             }
         }
 
@@ -786,10 +847,21 @@ static void BaroTask(void* pvParameters)
 
     auto& state = stampfly::StampFlyState::getInstance();
 
+    // ヘルスチェック用カウンタ
+    int consecutive_success = 0;
+    int consecutive_fail = 0;
+    constexpr int HEALTHY_THRESHOLD = 5;   // 5連続成功でhealthy (100ms)
+    constexpr int UNHEALTHY_THRESHOLD = 10; // 10連続失敗でunhealthy (200ms)
+
     while (true) {
         if (g_baro.isInitialized()) {
             stampfly::BaroData baro;
             if (g_baro.read(baro) == ESP_OK) {
+                // ヘルスフラグ更新: 連続成功でhealthy
+                consecutive_fail = 0;
+                if (++consecutive_success >= HEALTHY_THRESHOLD) {
+                    g_baro_task_healthy = true;
+                }
                 // Use altitude from read() directly (already calculated)
                 state.updateBaro(baro.pressure_pa, baro.temperature_c, baro.altitude_m);
 
@@ -813,6 +885,12 @@ static void BaroTask(void* pvParameters)
                 if (!g_eskf.isInitialized() && g_altitude_est.isInitialized()) {
                     g_altitude_est.updateBaro(baro.altitude_m);
                 }
+            } else {
+                // ヘルスフラグ更新: 連続失敗でunhealthy
+                consecutive_success = 0;
+                if (++consecutive_fail >= UNHEALTHY_THRESHOLD) {
+                    g_baro_task_healthy = false;
+                }
             }
         }
 
@@ -835,6 +913,9 @@ static void ToFTask(void* pvParameters)
 
     // Error counters for sensor disable on repeated failures
     const int MAX_ERRORS = 10;
+    // ヘルスチェック用カウンタ (Bottom ToFのみ、ESKFで使用)
+    int tof_consecutive_valid = 0;
+    constexpr int TOF_HEALTHY_THRESHOLD = 5;  // 5連続成功でhealthy (~165ms)
     int bottom_errors = 0;
     int front_errors = 0;
     bool bottom_disabled = false;
@@ -861,6 +942,11 @@ static void ToFTask(void* pvParameters)
                         float distance_m = distance_mm * 0.001f;
                         state.updateToF(stampfly::ToFPosition::BOTTOM, distance_m, status);
 
+                        // ヘルスフラグ更新: 有効な測定でhealthy
+                        if (++tof_consecutive_valid >= TOF_HEALTHY_THRESHOLD) {
+                            g_tof_task_healthy = true;
+                        }
+
                         // ESKF用データをキャッシュしてフラグを立てる（30Hz）
                         // ESKF updateはIMUTask内で行う（レースコンディション防止）
                         g_tof_data_cache = distance_m;
@@ -871,6 +957,9 @@ static void ToFTask(void* pvParameters)
                             auto att = g_attitude_est.getState();
                             g_altitude_est.updateToF(distance_m, att.pitch, att.roll);
                         }
+                    } else {
+                        // ステータス異常
+                        tof_consecutive_valid = 0;
                     }
 
                     // Debug log every 30 readings (~1 second)
@@ -882,7 +971,10 @@ static void ToFTask(void* pvParameters)
                     // Clear interrupt and start next measurement
                     g_tof_bottom.clearInterruptAndStartMeasurement();
                 } else {
+                    // ヘルスフラグ更新: エラーでunhealthy
+                    tof_consecutive_valid = 0;
                     if (++bottom_errors >= MAX_ERRORS) {
+                        g_tof_task_healthy = false;
                         ESP_LOGW(TAG, "Bottom ToF disabled: err=%s", esp_err_to_name(ret));
                         bottom_disabled = true;
                     }
