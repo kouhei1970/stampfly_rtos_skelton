@@ -213,20 +213,31 @@ g_motor.setMixerOutput(throttle_cmd, roll_out, pitch_out, yaw_out);
 
 姿勢制御を実装する際は、**カスケード制御（2重ループ制御）** を強く推奨します：
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    カスケード制御構造                            │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  目標姿勢    ┌────────────┐  目標角速度   ┌────────────┐        │
-│  ─────────→ │ 角度制御器  │ ──────────→ │ 角速度制御器 │ → モーター │
-│             │(アウター)   │              │(インナー)   │        │
-│             └────────────┘              └────────────┘        │
-│                   ↑                           ↑               │
-│                   │                           │               │
-│             現在姿勢(ESKF)               現在角速度(ジャイロ)     │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart LR
+    subgraph outer["アウターループ"]
+        TARGET["目標姿勢"]
+        ANGLE_CTRL["角度制御器<br/>(P制御)"]
+        TARGET --> ANGLE_CTRL
+    end
+
+    subgraph inner["インナーループ"]
+        RATE_TARGET["目標角速度"]
+        RATE_CTRL["角速度制御器<br/>(P制御)"]
+        RATE_TARGET --> RATE_CTRL
+    end
+
+    ANGLE_CTRL --> RATE_TARGET
+    RATE_CTRL --> MOTOR["モーター"]
+
+    ESKF["現在姿勢<br/>(ESKF)"]
+    GYRO["現在角速度<br/>(ジャイロ)"]
+
+    ESKF -.->|"フィードバック"| ANGLE_CTRL
+    GYRO -.->|"フィードバック"| RATE_CTRL
+
+    style outer fill:#e8f4e8,stroke:#4a4
+    style inner fill:#e8e8f4,stroke:#44a
 ```
 
 **なぜカスケード制御か？**
