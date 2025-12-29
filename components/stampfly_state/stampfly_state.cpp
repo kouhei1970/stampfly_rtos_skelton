@@ -130,6 +130,19 @@ void StampFlyState::getIMUData(Vec3& accel, Vec3& gyro) const
     xSemaphoreGive(mutex_);
 }
 
+void StampFlyState::getIMUCorrected(Vec3& accel, Vec3& gyro) const
+{
+    xSemaphoreTake(mutex_, portMAX_DELAY);
+    // Apply bias correction (same as ESKF internal processing)
+    accel.x = accel_.x - accel_bias_.x;
+    accel.y = accel_.y - accel_bias_.y;
+    accel.z = accel_.z - accel_bias_.z;
+    gyro.x = gyro_.x - gyro_bias_.x;
+    gyro.y = gyro_.y - gyro_bias_.y;
+    gyro.z = gyro_.z - gyro_bias_.z;
+    xSemaphoreGive(mutex_);
+}
+
 void StampFlyState::getMagData(Vec3& mag) const
 {
     xSemaphoreTake(mutex_, portMAX_DELAY);

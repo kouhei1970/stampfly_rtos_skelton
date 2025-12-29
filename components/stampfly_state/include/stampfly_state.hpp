@@ -92,7 +92,8 @@ public:
     bool isDebugMode() const { return debug_mode_; }
 
     // Sensor data access (thread-safe)
-    void getIMUData(Vec3& accel, Vec3& gyro) const;
+    void getIMUData(Vec3& accel, Vec3& gyro) const;        // Raw (filtered, no bias correction)
+    void getIMUCorrected(Vec3& accel, Vec3& gyro) const;   // Bias-corrected (for control)
     void getMagData(Vec3& mag) const;
     void getBaroData(float& altitude, float& pressure) const;
     void getToFData(float& bottom, float& front) const;

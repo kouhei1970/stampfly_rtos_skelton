@@ -145,6 +145,18 @@ g_motor.setMotor(stampfly::MotorDriver::MOTOR_FL, throttle);  // M4
 この状態では姿勢制御が行われないため、**安定した飛行はできません**。
 飛行制御を実装するには、以下のステップで角速度制御を追加する必要があります。
 
+### IMUデータ取得API
+
+制御に使用するIMUデータには2種類のAPIがあります：
+
+| API | 内容 | 用途 |
+|-----|------|------|
+| `getIMUData()` | フィルタ済み生データ | ログ、デバッグ |
+| `getIMUCorrected()` | バイアス補正済み | **制御用（推奨）** |
+
+ESKFが推定したジャイロ/加速度バイアスが`getIMUCorrected()`に反映されます。
+制御には必ずバイアス補正済みのデータを使用してください。
+
 ### Step 1: 角速度制御（Rate Control）の実装
 
 まず**角速度制御**を実装します。これはジャイロセンサから得られる角速度を目標角速度に追従させる制御です。
@@ -155,9 +167,9 @@ constexpr float KP_RATE_ROLL  = 0.5f;
 constexpr float KP_RATE_PITCH = 0.5f;
 constexpr float KP_RATE_YAW   = 0.3f;
 
-// ジャイロ（角速度）を取得
+// ジャイロ（角速度）を取得（バイアス補正済み）
 stampfly::Vec3 accel, gyro;
-state.getIMUData(accel, gyro);
+state.getIMUCorrected(accel, gyro);  // 制御用にはこちらを使用
 
 // コントローラー入力を取得
 // throttle: 0.0 ~ 1.0, roll/pitch/yaw: -1.0 ~ +1.0
