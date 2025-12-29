@@ -151,7 +151,8 @@ components/
 ├── stampfly_state/         # 状態管理・SystemManager [新規実装]
 ├── stampfly_comm/          # ESP-NOW コントローラ通信 [新規実装]
 ├── stampfly_cli/           # CLI コンソール [新規実装]
-└── stampfly_logger/        # バイナリログシステム [新規実装]
+├── stampfly_logger/        # バイナリログシステム [新規実装]
+└── stampfly_pid/           # PID制御器（不完全微分・アンチワインドアップ）[新規実装]
 ```
 
 **既存リポジトリ:**
