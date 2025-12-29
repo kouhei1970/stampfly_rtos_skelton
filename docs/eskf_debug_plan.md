@@ -329,7 +329,7 @@ stampfly_rtos_skelton/
 # 実機に接続してログ開始
 python tools/scripts/log_capture.py \
     --port /dev/tty.usbmodem14101 \
-    --output data/test_flight_001.bin \
+    --output logs/test_flight_001.bin \
     --duration 120
 
 # CLI経由でログ開始 (実機側)
@@ -348,7 +348,7 @@ cmake ..
 make
 
 # ログファイルでESKFを実行
-./eskf_replay ../../data/test_flight_001.bin output_states.csv
+./eskf_replay ../../logs/test_flight_001.bin output_states.csv
 ```
 
 ### Step 3: 可視化・解析
@@ -359,8 +359,8 @@ pip install -r tools/scripts/requirements.txt
 
 # 可視化
 python tools/scripts/visualize_eskf.py \
-    --log data/test_flight_001.bin \
-    --eskf data/output_states.csv \
+    --log logs/test_flight_001.bin \
+    --eskf logs/output_states.csv \
     --output plots/
 ```
 
@@ -494,7 +494,7 @@ def tune_R_from_innovation(innovations, H, P, R_init):
 # 機体を平らな場所に置いて60秒間記録
 python tools/scripts/log_capture.py \
     --port /dev/tty.usbmodem* \
-    --output data/static_calibration.bin \
+    --output logs/static_calibration.bin \
     --duration 60
 ```
 
@@ -502,7 +502,7 @@ python tools/scripts/log_capture.py \
 
 ```bash
 python tools/scripts/estimate_qr.py \
-    --input data/static_calibration.bin \
+    --input logs/static_calibration.bin \
     --output config/eskf_params.json \
     --plot plots/noise_analysis.png
 ```
@@ -538,7 +538,7 @@ python tools/scripts/estimate_qr.py \
 
 ```bash
 ./eskf_replay \
-    --log data/test_flight.bin \
+    --log logs/test_flight.bin \
     --params config/eskf_params.json \
     --output results/tuned_states.csv
 ```

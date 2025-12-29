@@ -150,7 +150,8 @@ components/
 ├── stampfly_eskf/          # ESKF統合推定器 [既存リポジトリ]
 ├── stampfly_state/         # 状態管理・SystemManager [新規実装]
 ├── stampfly_comm/          # ESP-NOW コントローラ通信 [新規実装]
-└── stampfly_cli/           # CLI コンソール [新規実装]
+├── stampfly_cli/           # CLI コンソール [新規実装]
+└── stampfly_logger/        # バイナリログシステム [新規実装]
 ```
 
 **既存リポジトリ:**
