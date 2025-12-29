@@ -522,19 +522,106 @@ state.setFlightState(stampfly::FlightState::FLYING);
 
 ## デバッグ方法
 
-### 1. CLIコマンド
+### CLIコマンド一覧
+
+USBシリアル（115200bps）でCLIに接続できます。
+
+#### システム情報
 
 | コマンド | 説明 |
 |----------|------|
-| `status` | システム状態表示 |
-| `sensor all` | 全センサーデータ表示 |
-| `ctrl watch` | コントローラー入力監視 |
-| `loglevel info` | ESP_LOGを有効化 |
-| `teleplot on` | Teleplot形式出力 |
-| `binlog on` | 400Hzバイナリログ開始 |
-| `debug on` | エラー無視モード |
+| `help` | 利用可能なコマンド一覧 |
+| `status` | システム状態（FlightState, Error, バッテリー等） |
+| `version` | ESP-IDFバージョン、チップ情報 |
+| `reset` | システムリセット |
 
-### 2. ESP_LOGの使用
+#### センサーデータ
+
+| コマンド | 説明 |
+|----------|------|
+| `sensor imu` | 加速度・ジャイロ表示 |
+| `sensor mag` | 地磁気表示 |
+| `sensor baro` | 気圧・高度表示 |
+| `sensor tof` | ToF距離表示 |
+| `sensor flow` | オプティカルフロー表示 |
+| `sensor power` | 電圧・電流表示 |
+| `sensor all` | 全センサーデータ表示 |
+| `attitude` | 姿勢角表示 |
+
+#### コントローラー
+
+| コマンド | 説明 |
+|----------|------|
+| `ctrl` | コントローラー入力（1回表示） |
+| `ctrl watch` | 入力監視（10秒間、10Hz） |
+| `ctrl watch 30` | 入力監視（30秒間） |
+
+#### ログ・データ出力
+
+| コマンド | 説明 |
+|----------|------|
+| `teleplot on` | Teleplot形式出力開始（VSCode拡張対応） |
+| `teleplot off` | Teleplot出力停止 |
+| `log on` | CSVログ開始（20Hz） |
+| `log off` | CSVログ停止 |
+| `log header` | CSVヘッダー出力 |
+| `binlog on` | 400Hzバイナリログ開始（128B/pkt） |
+| `binlog off` | バイナリログ停止 |
+| `binlog freq 100` | ログ周波数設定（10-1000Hz） |
+| `loglevel info` | ESP_LOGレベル設定（全コンポーネント） |
+| `loglevel debug ESKF` | 特定タグのログレベル設定 |
+
+ログレベル: `none`, `error`, `warn`, `info`, `debug`, `verbose`
+
+#### モーター制御
+
+| コマンド | 説明 |
+|----------|------|
+| `motor test 1 50` | モーター1を50%で回転（1-4, 0-100%） |
+| `motor all 30` | 全モーター30%回転 |
+| `motor stop` | 全モーター停止 |
+
+モーター配置:
+```
+     Front
+ M4(FL)  M1(FR)
+     X
+ M3(RL)  M2(RR)
+     Rear
+```
+
+#### キャリブレーション
+
+| コマンド | 説明 |
+|----------|------|
+| `calib gyro` | ジャイロキャリブレーション |
+| `calib accel` | 加速度キャリブレーション |
+| `magcal start` | 地磁気キャリブレーション開始（8の字回転） |
+| `magcal stop` | キャリブレーション終了・計算 |
+| `magcal status` | キャリブレーション状態表示 |
+| `magcal save` | NVSに保存 |
+| `magcal clear` | 保存済みキャリブレーションをクリア |
+
+#### ペアリング（ESP-NOW）
+
+| コマンド | 説明 |
+|----------|------|
+| `pair` | ペアリング状態表示 |
+| `pair start` | ペアリングモード開始 |
+| `pair stop` | ペアリングモード終了 |
+| `pair channel 6` | WiFiチャンネル設定（1-13） |
+| `unpair` | ペアリング解除 |
+
+#### デバッグ・その他
+
+| コマンド | 説明 |
+|----------|------|
+| `debug on` | デバッグモード（ARM時エラー無視） |
+| `debug off` | デバッグモード解除 |
+| `led brightness 128` | LED明るさ設定（0-255、NVS保存） |
+| `gain kp_roll 1.5` | 制御ゲイン設定（スタブ） |
+
+### ESP_LOGの使用
 
 ```cpp
 ESP_LOGI(TAG, "Info message: %d", value);
