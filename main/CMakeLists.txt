@@ -17,4 +17,5 @@ idf_component_register(
         stampfly_state
         stampfly_comm
         stampfly_cli
+        stampfly_telemetry
 )

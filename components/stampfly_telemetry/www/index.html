@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>StampFly Telemetry</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            padding: 16px;
+            min-height: 100vh;
+        }
+        h1 {
+            font-size: 24px;
+            margin-bottom: 16px;
+            color: #00ff88;
+        }
+        #status {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: bold;
+            margin-bottom: 16px;
+        }
+        .connected { background: #00ff88; color: #000; }
+        .disconnected { background: #ff4444; color: #fff; }
+        .connecting { background: #ffaa00; color: #000; }
+        .card {
+            background: #16213e;
+            padding: 16px;
+            margin-bottom: 12px;
+            border-radius: 8px;
+            border-left: 4px solid #00ff88;
+        }
+        .card-title {
+            color: #888;
+            font-size: 12px;
+            text-transform: uppercase;
+            margin-bottom: 12px;
+        }
+        .row {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 8px;
+        }
+        .row:last-child { margin-bottom: 0; }
+        .label { color: #aaa; }
+        .value {
+            font-size: 18px;
+            font-weight: bold;
+            color: #00ff88;
+            font-family: 'Courier New', monospace;
+        }
+        .unit { color: #666; font-size: 14px; margin-left: 4px; }
+        .stats {
+            display: flex;
+            gap: 16px;
+            font-size: 12px;
+            color: #666;
+            margin-top: 16px;
+        }
+        .attitude-viz {
+            display: flex;
+            justify-content: center;
+            gap: 24px;
+            margin-top: 16px;
+        }
+        .horizon {
+            width: 100px;
+            height: 100px;
+            border: 2px solid #00ff88;
+            border-radius: 50%;
+            position: relative;
+            overflow: hidden;
+            background: linear-gradient(to bottom, #87CEEB 50%, #8B4513 50%);
+        }
+        .horizon-line {
+            position: absolute;
+            width: 100%;
+            height: 2px;
+            background: #fff;
+            top: 50%;
+            transform-origin: center;
+        }
+        .horizon-label {
+            text-align: center;
+            font-size: 11px;
+            color: #888;
+            margin-top: 4px;
+        }
+    </style>
+</head>
+<body>
+    <h1>StampFly Telemetry</h1>
+    <div id="status" class="disconnected">Disconnected</div>
+
+    <div class="card">
+        <div class="card-title">Attitude</div>
+        <div class="row">
+            <span class="label">Roll</span>
+            <span><span id="roll" class="value">---</span><span class="unit">deg</span></span>
+        </div>
+        <div class="row">
+            <span class="label">Pitch</span>
+            <span><span id="pitch" class="value">---</span><span class="unit">deg</span></span>
+        </div>
+        <div class="row">
+            <span class="label">Yaw</span>
+            <span><span id="yaw" class="value">---</span><span class="unit">deg</span></span>
+        </div>
+        <div class="attitude-viz">
+            <div>
+                <div class="horizon" id="horizon-rp">
+                    <div class="horizon-line" id="horizon-line"></div>
+                </div>
+                <div class="horizon-label">Roll / Pitch</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="card-title">Position (NED)</div>
+        <div class="row">
+            <span class="label">X (North)</span>
+            <span><span id="pos_x" class="value">---</span><span class="unit">m</span></span>
+        </div>
+        <div class="row">
+            <span class="label">Y (East)</span>
+            <span><span id="pos_y" class="value">---</span><span class="unit">m</span></span>
+        </div>
+        <div class="row">
+            <span class="label">Z (Down)</span>
+            <span><span id="pos_z" class="value">---</span><span class="unit">m</span></span>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="card-title">Velocity</div>
+        <div class="row">
+            <span class="label">Vx</span>
+            <span><span id="vel_x" class="value">---</span><span class="unit">m/s</span></span>
+        </div>
+        <div class="row">
+            <span class="label">Vy</span>
+            <span><span id="vel_y" class="value">---</span><span class="unit">m/s</span></span>
+        </div>
+        <div class="row">
+            <span class="label">Vz</span>
+            <span><span id="vel_z" class="value">---</span><span class="unit">m/s</span></span>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="card-title">System</div>
+        <div class="row">
+            <span class="label">Battery</span>
+            <span><span id="voltage" class="value">---</span><span class="unit">V</span></span>
+        </div>
+        <div class="row">
+            <span class="label">State</span>
+            <span id="state" class="value">---</span>
+        </div>
+    </div>
+
+    <div class="stats">
+        <span>Packets: <span id="packets">0</span></span>
+        <span>Rate: <span id="rate">0</span> Hz</span>
+    </div>
+
+<script>
+const STATES = ['INIT', 'CALIBRATING', 'IDLE', 'ARMED', 'FLYING', 'LANDING', 'ERROR'];
+const RAD_TO_DEG = 180 / Math.PI;
+
+let ws = null;
+let packetCount = 0;
+let lastRateTime = Date.now();
+let lastRateCount = 0;
+
+function updateStatus(status, text) {
+    const el = document.getElementById('status');
+    el.className = status;
+    el.textContent = text;
+}
+
+function connect() {
+    updateStatus('connecting', 'Connecting...');
+
+    const host = window.location.host || '192.168.4.1';
+    ws = new WebSocket('ws://' + host + '/ws');
+    ws.binaryType = 'arraybuffer';
+
+    ws.onopen = () => {
+        updateStatus('connected', 'Connected');
+        console.log('WebSocket connected');
+    };
+
+    ws.onclose = () => {
+        updateStatus('disconnected', 'Disconnected');
+        console.log('WebSocket disconnected, reconnecting in 2s...');
+        setTimeout(connect, 2000);
+    };
+
+    ws.onerror = (err) => {
+        console.error('WebSocket error:', err);
+        ws.close();
+    };
+
+    ws.onmessage = (event) => {
+        if (!(event.data instanceof ArrayBuffer)) return;
+
+        const data = new DataView(event.data);
+        if (data.byteLength < 48) return;
+
+        // Check header
+        if (data.getUint8(0) !== 0xAA) return;
+
+        // Parse packet (little-endian)
+        const roll = data.getFloat32(6, true) * RAD_TO_DEG;
+        const pitch = data.getFloat32(10, true) * RAD_TO_DEG;
+        const yaw = data.getFloat32(14, true) * RAD_TO_DEG;
+
+        const pos_x = data.getFloat32(18, true);
+        const pos_y = data.getFloat32(22, true);
+        const pos_z = data.getFloat32(26, true);
+
+        const vel_x = data.getFloat32(30, true);
+        const vel_y = data.getFloat32(34, true);
+        const vel_z = data.getFloat32(38, true);
+
+        const voltage = data.getFloat32(42, true);
+        const state = data.getUint8(46);
+
+        // Update display
+        document.getElementById('roll').textContent = roll.toFixed(1);
+        document.getElementById('pitch').textContent = pitch.toFixed(1);
+        document.getElementById('yaw').textContent = yaw.toFixed(1);
+
+        document.getElementById('pos_x').textContent = pos_x.toFixed(2);
+        document.getElementById('pos_y').textContent = pos_y.toFixed(2);
+        document.getElementById('pos_z').textContent = pos_z.toFixed(2);
+
+        document.getElementById('vel_x').textContent = vel_x.toFixed(2);
+        document.getElementById('vel_y').textContent = vel_y.toFixed(2);
+        document.getElementById('vel_z').textContent = vel_z.toFixed(2);
+
+        document.getElementById('voltage').textContent = voltage.toFixed(2);
+        document.getElementById('state').textContent = STATES[state] || 'UNKNOWN';
+
+        // Update horizon visualization
+        const horizonLine = document.getElementById('horizon-line');
+        const clampedPitch = Math.max(-45, Math.min(45, pitch));
+        const pitchOffset = (clampedPitch / 45) * 40;
+        horizonLine.style.transform = `translateY(${pitchOffset}px) rotate(${-roll}deg)`;
+
+        // Update stats
+        packetCount++;
+        document.getElementById('packets').textContent = packetCount;
+
+        // Calculate rate
+        const now = Date.now();
+        if (now - lastRateTime >= 1000) {
+            const rate = (packetCount - lastRateCount) / ((now - lastRateTime) / 1000);
+            document.getElementById('rate').textContent = rate.toFixed(0);
+            lastRateTime = now;
+            lastRateCount = packetCount;
+        }
+    };
+}
+
+// Start connection
+connect();
+</script>
+</body>
+</html>

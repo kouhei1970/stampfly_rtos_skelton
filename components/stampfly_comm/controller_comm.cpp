@@ -93,11 +93,26 @@ esp_err_t ControllerComm::init(const Config& config)
         return ret;
     }
 
-    ret = esp_wifi_set_mode(WIFI_MODE_STA);
+    ret = esp_wifi_set_mode(WIFI_MODE_APSTA);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to set WiFi mode: %s", esp_err_to_name(ret));
         return ret;
     }
+
+    // AP設定（テレメトリ用）
+    wifi_config_t ap_config = {};
+    strcpy((char*)ap_config.ap.ssid, "StampFly");
+    ap_config.ap.ssid_len = 8;
+    ap_config.ap.channel = config.wifi_channel;
+    ap_config.ap.max_connection = 4;
+    ap_config.ap.authmode = WIFI_AUTH_OPEN;
+    ret = esp_wifi_set_config(WIFI_IF_AP, &ap_config);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to set AP config: %s", esp_err_to_name(ret));
+    }
+
+    // 電力節約無効化（レイテンシ改善）
+    esp_wifi_set_ps(WIFI_PS_NONE);
 
     ret = esp_wifi_start();
     if (ret != ESP_OK) {
@@ -145,6 +160,7 @@ esp_err_t ControllerComm::init(const Config& config)
 
     initialized_ = true;
     ESP_LOGI(TAG, "ESP-NOW communication initialized");
+    ESP_LOGI(TAG, "WiFi AP 'StampFly' started on channel %d (http://192.168.4.1)", config.wifi_channel);
 
     return ESP_OK;
 }

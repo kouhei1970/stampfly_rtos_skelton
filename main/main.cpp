@@ -47,6 +47,9 @@
 // Logger
 #include "logger.hpp"
 
+// Telemetry
+#include "telemetry.hpp"
+
 static const char* TAG = "main";
 
 // =============================================================================
@@ -94,6 +97,7 @@ static constexpr UBaseType_t PRIORITY_POWER_TASK = 12;
 static constexpr UBaseType_t PRIORITY_BUTTON_TASK = 10;
 static constexpr UBaseType_t PRIORITY_LED_TASK = 8;
 static constexpr UBaseType_t PRIORITY_CLI_TASK = 5;
+static constexpr UBaseType_t PRIORITY_TELEMETRY_TASK = 13;  // Core 0, below ToF
 
 // =============================================================================
 // Task Stack Sizes
@@ -110,6 +114,7 @@ static constexpr uint32_t STACK_SIZE_LED = 4096;
 static constexpr uint32_t STACK_SIZE_BUTTON = 4096;
 static constexpr uint32_t STACK_SIZE_COMM = 4096;
 static constexpr uint32_t STACK_SIZE_CLI = 4096;
+static constexpr uint32_t STACK_SIZE_TELEMETRY = 4096;
 
 // =============================================================================
 // Global Component Instances
@@ -201,6 +206,7 @@ namespace {
     TaskHandle_t g_button_task_handle = nullptr;
     TaskHandle_t g_comm_task_handle = nullptr;
     TaskHandle_t g_cli_task_handle = nullptr;
+    TaskHandle_t g_telemetry_task_handle = nullptr;
 
     // ESP Timer for precise 400Hz (2.5ms) IMU timing
     esp_timer_handle_t g_imu_timer = nullptr;
@@ -1133,6 +1139,66 @@ static void CLITask(void* pvParameters)
 }
 
 // =============================================================================
+// Telemetry Task - WebSocket data broadcast at 50Hz
+// =============================================================================
+
+static void TelemetryTask(void* pvParameters)
+{
+    ESP_LOGI(TAG, "TelemetryTask started");
+
+    auto& telemetry = stampfly::Telemetry::getInstance();
+    auto& state = stampfly::StampFlyState::getInstance();
+
+    TickType_t last_wake_time = xTaskGetTickCount();
+    const TickType_t period = pdMS_TO_TICKS(20);  // 50Hz
+
+    while (true) {
+        // Only broadcast when clients are connected
+        if (telemetry.hasClients()) {
+            stampfly::TelemetryWSPacket pkt = {};
+            pkt.header = 0xAA;
+            pkt.packet_type = 0x10;
+            pkt.timestamp_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
+
+            // Get attitude from state
+            state.getAttitudeEuler(pkt.roll, pkt.pitch, pkt.yaw);
+
+            // Get position and velocity
+            auto pos = state.getPosition();
+            pkt.pos_x = pos.x;
+            pkt.pos_y = pos.y;
+            pkt.pos_z = pos.z;
+
+            auto vel = state.getVelocity();
+            pkt.vel_x = vel.x;
+            pkt.vel_y = vel.y;
+            pkt.vel_z = vel.z;
+
+            // Get battery voltage
+            float voltage, current;
+            state.getPowerData(voltage, current);
+            pkt.voltage = voltage;
+
+            // Get flight state
+            pkt.flight_state = static_cast<uint8_t>(state.getFlightState());
+
+            // Calculate checksum (XOR of all bytes)
+            uint8_t checksum = 0;
+            const uint8_t* data = reinterpret_cast<const uint8_t*>(&pkt);
+            for (size_t i = 0; i < sizeof(pkt) - 1; i++) {
+                checksum ^= data[i];
+            }
+            pkt.checksum = checksum;
+
+            // Broadcast to all connected clients
+            telemetry.broadcast(&pkt, sizeof(pkt));
+        }
+
+        vTaskDelayUntil(&last_wake_time, period);
+    }
+}
+
+// =============================================================================
 // Button Event Handler
 // =============================================================================
 
@@ -1665,6 +1731,25 @@ static esp_err_t initLogger()
     return ESP_OK;
 }
 
+static esp_err_t initTelemetry()
+{
+    ESP_LOGI(TAG, "Initializing Telemetry...");
+
+    auto& telemetry = stampfly::Telemetry::getInstance();
+    stampfly::Telemetry::Config cfg;
+    cfg.port = 80;
+    cfg.rate_hz = 50;
+
+    esp_err_t ret = telemetry.init(cfg);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "Telemetry init failed: %s", esp_err_to_name(ret));
+        return ret;
+    }
+
+    ESP_LOGI(TAG, "Telemetry initialized - Connect to WiFi 'StampFly', open http://192.168.4.1");
+    return ESP_OK;
+}
+
 static void startTasks()
 {
     ESP_LOGI(TAG, "Starting FreeRTOS tasks...");
@@ -1738,6 +1823,10 @@ static void startTasks()
     // CLI task (Core 0)
     xTaskCreatePinnedToCore(CLITask, "CLITask", STACK_SIZE_CLI, nullptr,
                             PRIORITY_CLI_TASK, &g_cli_task_handle, 0);
+
+    // Telemetry task (Core 0) - WebSocket broadcast at 50Hz
+    xTaskCreatePinnedToCore(TelemetryTask, "TelemetryTask", STACK_SIZE_TELEMETRY, nullptr,
+                            PRIORITY_TELEMETRY_TASK, &g_telemetry_task_handle, 0);
 
     ESP_LOGI(TAG, "All tasks started");
 }
@@ -1821,6 +1910,10 @@ extern "C" void app_main(void)
     // Initialize Logger (400Hz binary log)
     ESP_LOGI(TAG, "Initializing Logger...");
     initLogger();
+
+    // Initialize Telemetry (WebSocket server)
+    ESP_LOGI(TAG, "Initializing Telemetry...");
+    initTelemetry();
 
     // Start all tasks
     ESP_LOGI(TAG, "Starting tasks...");
