@@ -234,15 +234,6 @@ int Telemetry::broadcast(const void* data, size_t len)
         int fd = client_fds_[i];
         if (fd == -1) continue;
 
-        // Check if client is still connected
-        httpd_ws_client_info_t client_info = httpd_ws_get_fd_info(server_, fd);
-        if (client_info != HTTPD_WS_CLIENT_WEBSOCKET) {
-            // Client disconnected
-            client_fds_[i] = -1;
-            client_count_--;
-            continue;
-        }
-
         // Send binary frame
         httpd_ws_frame_t ws_pkt;
         memset(&ws_pkt, 0, sizeof(httpd_ws_frame_t));
@@ -254,12 +245,13 @@ int Telemetry::broadcast(const void* data, size_t len)
         esp_err_t ret = httpd_ws_send_frame_async(server_, fd, &ws_pkt);
         if (ret == ESP_OK) {
             sent_count++;
-        } else {
-            ESP_LOGW(TAG, "Failed to send to fd=%d: %s", fd, esp_err_to_name(ret));
-            // Mark for removal on next broadcast
+        } else if (ret == ESP_ERR_INVALID_ARG) {
+            // Client no longer valid - remove
+            ESP_LOGI(TAG, "Client fd=%d no longer valid, removing", fd);
             client_fds_[i] = -1;
             client_count_--;
         }
+        // Other errors (e.g., EAGAIN) - keep client, retry next time
     }
 
     xSemaphoreGive(client_mutex_);
