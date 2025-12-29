@@ -12,6 +12,8 @@
 6. [CLIコマンドの追加](#cliコマンドの追加)
 7. [状態管理](#状態管理)
 8. [デバッグ方法](#デバッグ方法)
+9. [StampFlyState APIリファレンス](#stampflystate-apiリファレンス)
+10. [座標系](#座標系)
 
 ---
 
@@ -594,5 +596,140 @@ stampfly_rtos_skelton/
 4. **ESKF更新**: すべてのESKF更新はIMUTask内で行われます。他のセンサータスクはデータをキャッシュしてフラグを立てるだけです（レースコンディション防止）。
 
 5. **モーター安全**: `g_motor.setThrottle()`を呼ぶ前に、必ずフライト状態をチェックしてください。
+
+---
+
+## StampFlyState APIリファレンス
+
+制御に必要なセンサー値や推定値は`StampFlyState`シングルトンから取得します。
+すべてのAPIはスレッドセーフです。
+
+```cpp
+auto& state = stampfly::StampFlyState::getInstance();
+```
+
+### IMUデータ（加速度・ジャイロ）
+
+| API | 戻り値 | 説明 |
+|-----|--------|------|
+| `getIMUData(accel, gyro)` | void | フィルタ済み生データ（ログ用） |
+| `getIMUCorrected(accel, gyro)` | void | **バイアス補正済み（制御用推奨）** |
+
+```cpp
+stampfly::Vec3 accel, gyro;
+state.getIMUCorrected(accel, gyro);  // 制御用
+// accel: [m/s²], gyro: [rad/s], 機体座標系(NED)
+```
+
+### 姿勢（ESKF推定値）
+
+| API | 戻り値 | 説明 |
+|-----|--------|------|
+| `getAttitudeEuler(roll, pitch, yaw)` | void | オイラー角 [rad] |
+| `getAttitude()` | StateVector3 | {roll, pitch, yaw} [rad] |
+
+```cpp
+float roll, pitch, yaw;
+state.getAttitudeEuler(roll, pitch, yaw);
+// roll: 右翼下げ正, pitch: 機首上げ正, yaw: 右回り正
+```
+
+### 位置・速度（ESKF推定値）
+
+| API | 戻り値 | 説明 |
+|-----|--------|------|
+| `getPosition()` | StateVector3 | 位置 [m] NED座標系 |
+| `getVelocity()` | StateVector3 | 速度 [m/s] NED座標系 |
+| `getAltitude()` | float | 高度 [m]（気圧基準） |
+
+```cpp
+auto pos = state.getPosition();   // {x, y, z} [m]
+auto vel = state.getVelocity();   // {vx, vy, vz} [m/s]
+float alt = state.getAltitude();  // [m]
+```
+
+### センサーデータ
+
+| API | 戻り値 | 説明 |
+|-----|--------|------|
+| `getMagData(mag)` | void | 地磁気 [μT] |
+| `getBaroData(alt, pressure)` | void | 高度 [m], 気圧 [Pa] |
+| `getToFData(bottom, front)` | void | ToF距離 [m] |
+| `getFlowData(vx, vy)` | void | フロー速度 [m/s] |
+| `getPowerData(voltage, current)` | void | 電圧 [V], 電流 [A] |
+
+```cpp
+stampfly::Vec3 mag;
+state.getMagData(mag);  // [μT]
+
+float alt, pressure;
+state.getBaroData(alt, pressure);  // [m], [Pa]
+
+float tof_bottom, tof_front;
+state.getToFData(tof_bottom, tof_front);  // [m]
+
+float voltage, current;
+state.getPowerData(voltage, current);  // [V], [A]
+```
+
+### コントローラー入力
+
+| API | 戻り値 | 説明 |
+|-----|--------|------|
+| `getControlInput(t, r, p, y)` | void | 正規化済み入力 |
+| `getRawControlInput(t, r, p, y)` | void | 生ADC値 |
+| `getControlFlags()` | uint8_t | フラグビット |
+
+```cpp
+float throttle, roll, pitch, yaw;
+state.getControlInput(throttle, roll, pitch, yaw);
+// throttle: 0.0~1.0, roll/pitch/yaw: -1.0~+1.0
+```
+
+### システム状態
+
+| API | 戻り値 | 説明 |
+|-----|--------|------|
+| `getFlightState()` | FlightState | 飛行状態 |
+| `getErrorCode()` | ErrorCode | エラーコード |
+| `isESKFInitialized()` | bool | ESKF初期化済みか |
+| `getVoltage()` | float | バッテリー電圧 [V] |
+
+```cpp
+auto flight_state = state.getFlightState();
+if (flight_state == stampfly::FlightState::FLYING) {
+    // 飛行中の処理
+}
+```
+
+### バイアス値（ESKF推定）
+
+| API | 戻り値 | 説明 |
+|-----|--------|------|
+| `getGyroBias()` | StateVector3 | ジャイロバイアス [rad/s] |
+| `getAccelBias()` | StateVector3 | 加速度バイアス [m/s²] |
+
+```cpp
+auto gyro_bias = state.getGyroBias();
+// ESKFが推定したバイアス値（デバッグ用）
+```
+
+---
+
+## 座標系
+
+本プロジェクトでは**NED座標系**（North-East-Down）を採用しています：
+
+| 軸 | 方向 | 正の向き |
+|----|------|---------|
+| X | 前方 | 機首方向 |
+| Y | 右方 | 右翼方向 |
+| Z | 下方 | 地面方向 |
+
+| 回転 | 軸 | 正の向き |
+|------|-----|---------|
+| Roll | X軸周り | 右翼下げ |
+| Pitch | Y軸周り | 機首上げ |
+| Yaw | Z軸周り | 右回り（時計回り） |
 
 
