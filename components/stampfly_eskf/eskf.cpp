@@ -893,12 +893,22 @@ void ESKF::updateFlow(float flow_x, float flow_y, float height)
     updateFlowWithGyro(flow_x, flow_y, height, 0.0f, 0.0f);
 }
 
-void ESKF::updateFlowWithGyro(float flow_x, float flow_y, float height,
+void ESKF::updateFlowWithGyro(float flow_x, float flow_y, float distance,
                                float gyro_x, float gyro_y)
 {
-    if (!initialized_ || height < config_.flow_min_height) return;
+    if (!initialized_ || distance < config_.flow_min_height) return;
 
-    // ジャイロバイアス補正（predict()と同様）
+    // ========================================================================
+    // 傾きチェック: R22 = cos(roll) × cos(pitch)
+    // ========================================================================
+    const Quaternion& q = state_.orientation;
+    float R22 = 1.0f - 2.0f * (q.x*q.x + q.y*q.y);
+
+    if (R22 < config_.flow_tilt_cos_threshold) return;  // 傾きすぎ
+
+    // ========================================================================
+    // ジャイロ補償
+    // ========================================================================
     float gyro_x_corrected = gyro_x - state_.gyro_bias.x;
     float gyro_y_corrected = gyro_y - state_.gyro_bias.y;
 
@@ -909,48 +919,67 @@ void ESKF::updateFlowWithGyro(float flow_x, float flow_y, float height,
     constexpr float k_yx = -2.65f * flow_scale;
     constexpr float k_yy = 0.0f * flow_scale;
 
-    // フローオフセット補正（動的検討時に再評価）
-    constexpr float flow_dx_offset = 0.0f;
-    constexpr float flow_dy_offset = 0.0f;
-
-    float flow_x_comp = flow_x - k_xx * gyro_x_corrected - k_xy * gyro_y_corrected - flow_dx_offset;
-    float flow_y_comp = flow_y - k_yx * gyro_x_corrected - k_yy * gyro_y_corrected - flow_dy_offset;
-
-    // ボディ座標系での速度
-    float vx_body = flow_x_comp * height;
-    float vy_body = flow_y_comp * height;
-
-    // Body→NED変換
-    float cos_yaw = std::cos(state_.yaw);
-    float sin_yaw = std::sin(state_.yaw);
-
-    float vx_ned = cos_yaw * vx_body - sin_yaw * vy_body;
-    float vy_ned = sin_yaw * vx_body + cos_yaw * vy_body;
+    float flow_x_comp = flow_x - k_xx * gyro_x_corrected - k_xy * gyro_y_corrected;
+    float flow_y_comp = flow_y - k_yx * gyro_x_corrected - k_yy * gyro_y_corrected;
 
     // ========================================================================
-    // 疎行列展開による観測更新
-    // H行列の非ゼロ要素: H[0][3]=1 (VEL_X), H[1][4]=1 (VEL_Y) のみ
+    // ボディフレームでの観測速度
+    // distance: ToFセンサーの視線方向距離（傾き補正不要）
     // ========================================================================
+    float vx_body_obs = flow_x_comp * distance;
+    float vy_body_obs = flow_y_comp * distance;
 
-    // 観測残差 y = z - h
-    float y0 = vx_ned - state_.velocity.x;
-    float y1 = vy_ned - state_.velocity.y;
+    // ========================================================================
+    // 回転行列要素（Body→NED）: R^T[i][j] = R[j][i]
+    // v_body = R^T × v_ned より:
+    //   vx_body = R00*vn + R10*ve + R20*vd
+    //   vy_body = R01*vn + R11*ve + R21*vd
+    // ========================================================================
+    float R00 = 1.0f - 2.0f*(q.y*q.y + q.z*q.z);
+    float R01 = 2.0f*(q.x*q.y - q.w*q.z);
+    float R10 = 2.0f*(q.x*q.y + q.w*q.z);
+    float R11 = 1.0f - 2.0f*(q.x*q.x + q.z*q.z);
+    float R20 = 2.0f*(q.x*q.z - q.w*q.y);
+    float R21 = 2.0f*(q.y*q.z + q.w*q.x);
+
+    // 状態からボディ速度を計算（期待値）
+    float vn = state_.velocity.x;
+    float ve = state_.velocity.y;
+    float vd = state_.velocity.z;
+
+    float vx_body_exp = R00*vn + R10*ve + R20*vd;
+    float vy_body_exp = R01*vn + R11*ve + R21*vd;
+
+    // ========================================================================
+    // 観測残差 y = z - h（ボディフレーム）
+    // ========================================================================
+    float y0 = vx_body_obs - vx_body_exp;
+    float y1 = vy_body_obs - vy_body_exp;
 
     float R_val = config_.flow_noise * config_.flow_noise;
 
-    // S = H * P * H^T + R (2x2)
-    // S[0][0] = P[3][3] + R_val
-    // S[0][1] = S[1][0] = P[3][4]
-    // S[1][1] = P[4][4] + R_val
-    float P33 = P_(3, 3);
-    float P34 = P_(3, 4);
-    float P44 = P_(4, 4);
+    // ========================================================================
+    // H行列（2×15）: 速度部分のみ非ゼロ
+    // H[0][3]=R00, H[0][4]=R10, H[0][5]=R20
+    // H[1][3]=R01, H[1][4]=R11, H[1][5]=R21
+    // ========================================================================
+    float H03 = R00, H04 = R10, H05 = R20;
+    float H13 = R01, H14 = R11, H15 = R21;
 
-    float S00 = P33 + R_val;
-    float S01 = P34;
-    float S11 = P44 + R_val;
+    // ========================================================================
+    // S = H * P * H^T + R (2×2)
+    // ========================================================================
+    float PHT[15][2];
+    for (int i = 0; i < 15; i++) {
+        PHT[i][0] = P_(i,3)*H03 + P_(i,4)*H04 + P_(i,5)*H05;
+        PHT[i][1] = P_(i,3)*H13 + P_(i,4)*H14 + P_(i,5)*H15;
+    }
 
-    // S^-1 (2x2 逆行列)
+    float S00 = H03*PHT[3][0] + H04*PHT[4][0] + H05*PHT[5][0] + R_val;
+    float S01 = H03*PHT[3][1] + H04*PHT[4][1] + H05*PHT[5][1];
+    float S11 = H13*PHT[3][1] + H14*PHT[4][1] + H15*PHT[5][1] + R_val;
+
+    // S^-1 (2×2逆行列)
     float det = S00 * S11 - S01 * S01;
     if (std::abs(det) < 1e-10f) return;
     float inv_det = 1.0f / det;
@@ -958,18 +987,18 @@ void ESKF::updateFlowWithGyro(float flow_x, float flow_y, float height,
     float Si01 = -S01 * inv_det;
     float Si11 = S00 * inv_det;
 
-    // カルマンゲイン K (15x2)
-    // K[i][0] = P[i][3]*Si00 + P[i][4]*Si01
-    // K[i][1] = P[i][3]*Si01 + P[i][4]*Si11
+    // ========================================================================
+    // カルマンゲイン K = P * H^T * S^-1 (15×2)
+    // ========================================================================
     float K[15][2];
     for (int i = 0; i < 15; i++) {
-        float Pi3 = P_(i, 3);
-        float Pi4 = P_(i, 4);
-        K[i][0] = Pi3 * Si00 + Pi4 * Si01;
-        K[i][1] = Pi3 * Si01 + Pi4 * Si11;
+        K[i][0] = PHT[i][0]*Si00 + PHT[i][1]*Si01;
+        K[i][1] = PHT[i][0]*Si01 + PHT[i][1]*Si11;
     }
 
-    // dx = K * y
+    // ========================================================================
+    // 状態更新 dx = K * y
+    // ========================================================================
     float dx[15];
     for (int i = 0; i < 15; i++) {
         dx[i] = K[i][0] * y0 + K[i][1] * y1;
@@ -1003,29 +1032,36 @@ void ESKF::updateFlowWithGyro(float flow_x, float flow_y, float height,
     state_.accel_bias.y += dx[BA_Y];
     state_.accel_bias.z += dx[BA_Z];
 
+    // ========================================================================
     // Joseph形式共分散更新: P' = (I - K*H) * P * (I - K*H)^T + K * R * K^T
-    // I_KH[i][j] = delta_ij - K[i][0]*(j==3) - K[i][1]*(j==4)
+    // H行列は列3,4,5が非ゼロ
+    // ========================================================================
 
     // Step 1: temp1_ = (I - K*H) * P
-    // temp1_[i][j] = P[i][j] - K[i][0]*P[3][j] - K[i][1]*P[4][j]
     for (int i = 0; i < 15; i++) {
-        float Ki0 = K[i][0];
-        float Ki1 = K[i][1];
+        float IKH_i3 = -K[i][0]*H03 - K[i][1]*H13;
+        float IKH_i4 = -K[i][0]*H04 - K[i][1]*H14;
+        float IKH_i5 = -K[i][0]*H05 - K[i][1]*H15;
+
         for (int j = 0; j < 15; j++) {
-            temp1_(i, j) = P_(i, j) - Ki0 * P_(3, j) - Ki1 * P_(4, j);
+            temp1_(i, j) = P_(i, j) + IKH_i3*P_(3, j) + IKH_i4*P_(4, j) + IKH_i5*P_(5, j);
         }
     }
 
     // Step 2: P' = temp1_ * (I - K*H)^T + K * R * K^T
-    // P'[i][j] = temp1_[i][j] - K[j][0]*temp1_[i][3] - K[j][1]*temp1_[i][4]
-    //          + R_val * (K[i][0]*K[j][0] + K[i][1]*K[j][1])
     for (int i = 0; i < 15; i++) {
         float temp1_i3 = temp1_(i, 3);
         float temp1_i4 = temp1_(i, 4);
+        float temp1_i5 = temp1_(i, 5);
         float Ki0 = K[i][0];
         float Ki1 = K[i][1];
+
         for (int j = 0; j < 15; j++) {
-            float val = temp1_(i, j) - K[j][0] * temp1_i3 - K[j][1] * temp1_i4;
+            float IKH_j3 = -K[j][0]*H03 - K[j][1]*H13;
+            float IKH_j4 = -K[j][0]*H04 - K[j][1]*H14;
+            float IKH_j5 = -K[j][0]*H05 - K[j][1]*H15;
+
+            float val = temp1_(i, j) + temp1_i3*IKH_j3 + temp1_i4*IKH_j4 + temp1_i5*IKH_j5;
             val += R_val * (Ki0 * K[j][0] + Ki1 * K[j][1]);
             P_(i, j) = val;
         }

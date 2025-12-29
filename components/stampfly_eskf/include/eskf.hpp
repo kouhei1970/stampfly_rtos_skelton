@@ -65,8 +65,9 @@ public:
         float flow_min_height;
         float flow_max_height;
 
-        // オプティカルフロー傾き閾値 [rad] (これ以上傾いていると更新スキップ)
-        float flow_tilt_threshold;
+        // オプティカルフロー傾き閾値 (R22 = cos(roll)*cos(pitch) の下限)
+        // この値未満だと更新スキップ。cos(30°) = 0.866
+        float flow_tilt_cos_threshold;
 
         // オプティカルフローキャリブレーション
         // PMW3901: FOV=42°, 35pixels → 0.0209 rad/pixel
@@ -110,14 +111,14 @@ public:
             cfg.gyro_noise = 0.009655f;        // rad/s/√Hz
             cfg.accel_noise = 0.062885f;       // m/s²/√Hz
             cfg.gyro_bias_noise = 0.000013f;   // rad/s/√s
-            cfg.accel_bias_noise = 0.050771f;  // m/s²/√s
+            cfg.accel_bias_noise = 0.0001f;    // m/s²/√s（姿勢発散防止）
 
             // 観測ノイズ (R) - 両データセット最適化
             cfg.baro_noise = 0.1f;             // m
             cfg.tof_noise = 0.002540f;         // m
             cfg.mag_noise = 2.0f;              // uT（姿勢への影響を抑制）
             cfg.flow_noise = 0.005232f;        // m/s (フロー信頼度高)
-            cfg.accel_att_noise = 0.2f;        // m/s²（観測信頼度向上）
+            cfg.accel_att_noise = 0.02f;       // m/s²（加速度姿勢補正の信頼度向上）
 
             // 初期共分散
             cfg.init_pos_std = 1.0f;
@@ -136,7 +137,7 @@ public:
             cfg.accel_motion_threshold = 1.0f; // m/s² (緩めて補正を効かせる)
             cfg.flow_min_height = 0.02f;       // m（机上テスト対応）
             cfg.flow_max_height = 4.0f;        // ToFの最大レンジ
-            cfg.flow_tilt_threshold = 0.52f;   // ~30度（傾き時のFlow誤測定防止）
+            cfg.flow_tilt_cos_threshold = 0.866f;  // cos(30°)、傾き30°以上でスキップ
 
             // オプティカルフローキャリブレーション
             // PMW3901: FOV≈42°, Npix=35, センサ出力は10倍値

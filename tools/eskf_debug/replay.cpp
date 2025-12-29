@@ -300,7 +300,8 @@ void print_usage(const char* prog)
     printf("  --att_update_mode=N Attitude update mode (0=accel_mag, 1=adaptive_R, 2=gyro) (default: 1)\n");
     printf("  --k_adaptive=N      Adaptive R coefficient (mode 1) (default: 100)\n");
     printf("  --gyro_att_threshold=N Gyro threshold [rad/s] (mode 2) (default: 0.5)\n");
-    printf("  --flow_tilt_threshold=N Flow tilt threshold [rad] (default: 0.52)\n");
+    printf("  --flow_tilt_cos_threshold=N Flow tilt cos threshold (default: 0.866 = cos(30deg))\n");
+    printf("  --no_mag                Disable magnetometer updates\n");
 }
 
 // Helper to parse --key=value arguments
@@ -344,7 +345,8 @@ int main(int argc, char* argv[])
     int att_update_mode = default_cfg.att_update_mode;
     float k_adaptive = default_cfg.k_adaptive;
     float gyro_att_threshold = default_cfg.gyro_att_threshold;
-    float flow_tilt_threshold = default_cfg.flow_tilt_threshold;
+    float flow_tilt_cos_threshold = default_cfg.flow_tilt_cos_threshold;
+    bool mag_enabled = true;
 
     for (int i = 3; i < argc; i++) {
         if (strcmp(argv[i], "--verbose") == 0) {
@@ -385,8 +387,10 @@ int main(int argc, char* argv[])
             k_adaptive = std::atof(argv[i] + 13);
         } else if (strncmp(argv[i], "--gyro_att_threshold=", 21) == 0) {
             gyro_att_threshold = std::atof(argv[i] + 21);
-        } else if (strncmp(argv[i], "--flow_tilt_threshold=", 22) == 0) {
-            flow_tilt_threshold = std::atof(argv[i] + 22);
+        } else if (strncmp(argv[i], "--flow_tilt_cos_threshold=", 26) == 0) {
+            flow_tilt_cos_threshold = std::atof(argv[i] + 26);
+        } else if (strcmp(argv[i], "--no_mag") == 0) {
+            mag_enabled = false;
         }
     }
 
@@ -431,10 +435,10 @@ int main(int argc, char* argv[])
     config.att_update_mode = att_update_mode;
     config.k_adaptive = k_adaptive;
     config.gyro_att_threshold = gyro_att_threshold;
-    config.flow_tilt_threshold = flow_tilt_threshold;
+    config.flow_tilt_cos_threshold = flow_tilt_cos_threshold;
 
-    // 地磁気更新を有効化（デバイスと合わせる）
-    config.mag_enabled = true;
+    // 地磁気更新設定
+    config.mag_enabled = mag_enabled;
     eskf.init(config);
     eskf.reset();
 
@@ -558,6 +562,11 @@ int main(int argc, char* argv[])
     uint32_t last_timestamp = packets[0].timestamp_ms;
     int accel_att_counter = 0;
 
+    // Flow update tracking (device updates at 100Hz = every 4 IMU packets)
+    int16_t last_flow_dx = 0;
+    int16_t last_flow_dy = 0;
+    constexpr float FLOW_DT = 0.01f;  // 10ms = 100Hz (matches device)
+
     for (size_t i = 0; i < packets.size(); i++) {
         const auto& pkt = packets[i];
 
@@ -623,15 +632,25 @@ int main(int argc, char* argv[])
         }
 
         // ====================================================================
-        // Flow Update (100Hz, physical conversion)
+        // Flow Update (100Hz = only when flow data changes)
+        // デバイスは100Hz (= 400Hz IMU / 4) でフロー更新を行う
+        // dt = 10ms 固定で、フローデータが変化した時のみ更新
         // ====================================================================
         if (pkt.flow_squal >= FLOW_SQUAL_MIN) {
-            float distance = pkt.tof_bottom;
-            if (distance < 0.02f) distance = 0.02f;
-            if (distance > 0.02f) {
-                // 新API: 生カウントとdt、機体ジャイロを渡す
-                // ESKF内部で物理的に正しい変換を行う
-                eskf.updateFlowRaw(pkt.flow_dx, pkt.flow_dy, distance, dt, gyro.x, gyro.y);
+            // Only update when flow data changes (device behavior)
+            bool flow_changed = (pkt.flow_dx != last_flow_dx) || (pkt.flow_dy != last_flow_dy);
+            if (flow_changed) {
+                last_flow_dx = pkt.flow_dx;
+                last_flow_dy = pkt.flow_dy;
+
+                float distance = pkt.tof_bottom;
+                if (distance < 0.02f) distance = 0.02f;
+                if (distance > 0.02f) {
+                    // 新API: 生カウントとdt、機体ジャイロを渡す
+                    // ESKF内部で物理的に正しい変換を行う
+                    // dt = 10ms 固定（デバイスと一致）
+                    eskf.updateFlowRaw(pkt.flow_dx, pkt.flow_dy, distance, FLOW_DT, gyro.x, gyro.y);
+                }
             }
         }
 
