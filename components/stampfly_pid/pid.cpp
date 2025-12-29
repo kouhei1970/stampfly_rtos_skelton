@@ -7,7 +7,7 @@
 
 namespace stampfly {
 
-void PID::init(const PIDConfig& config, float dt)
+void PID::init(const PIDConfig& config)
 {
     Kp_ = config.Kp;
     Ti_ = config.Ti;
@@ -16,7 +16,6 @@ void PID::init(const PIDConfig& config, float dt)
     output_min_ = config.output_min;
     output_max_ = config.output_max;
     derivative_on_measurement_ = config.derivative_on_measurement;
-    dt_ = dt;
 
     // Tracking time constant for anti-windup
     // Default: sqrt(Ti * Td), but at least Ti if Td is 0
@@ -28,18 +27,6 @@ void PID::init(const PIDConfig& config, float dt)
         Tt_ = Ti_;
     } else {
         Tt_ = 1.0f;  // Fallback
-    }
-
-    // Precompute derivative filter coefficients
-    // D(z) from bilinear transform of Td·s / (η·Td·s + 1)
-    // D[k] = -a * D[k-1] + b * (input[k] - input[k-1])
-    if (Td_ > 0.0f && dt_ > 0.0f) {
-        float alpha = 2.0f * eta_ * Td_ / dt_;
-        deriv_a_ = (alpha - 1.0f) / (alpha + 1.0f);
-        deriv_b_ = 2.0f * Td_ / ((alpha + 1.0f) * dt_);
-    } else {
-        deriv_a_ = 0.0f;
-        deriv_b_ = 0.0f;
     }
 
     reset();
@@ -58,7 +45,7 @@ void PID::reset()
     error_ = 0.0f;
 }
 
-float PID::update(float setpoint, float measurement)
+float PID::update(float setpoint, float measurement, float dt)
 {
     // 1. Compute error
     error_ = setpoint - measurement;
@@ -67,10 +54,10 @@ float PID::update(float setpoint, float measurement)
     P_ = Kp_ * error_;
 
     // 3. Integral term (trapezoidal integration)
-    I_ = updateIntegral(error_);
+    I_ = updateIntegral(error_, dt);
 
     // 4. Derivative term (incomplete derivative with D-on-M option)
-    D_ = updateDerivative(error_, measurement);
+    D_ = updateDerivative(error_, measurement, dt);
 
     // 5. Compute unlimited output
     float output_unlimited = P_ + I_ + D_;
@@ -79,7 +66,7 @@ float PID::update(float setpoint, float measurement)
     float output = clamp(output_unlimited);
 
     // 7. Apply back-calculation anti-windup
-    applyAntiWindup(output_unlimited, output);
+    applyAntiWindup(output_unlimited, output, dt);
 
     // 8. Update previous values for next iteration
     prev_error_ = error_;
@@ -87,7 +74,7 @@ float PID::update(float setpoint, float measurement)
     return output;
 }
 
-float PID::updateIntegral(float error)
+float PID::updateIntegral(float error, float dt)
 {
     // Skip integral if Ti <= 0
     if (Ti_ <= 0.0f) {
@@ -97,16 +84,16 @@ float PID::updateIntegral(float error)
     // Trapezoidal integration (bilinear transform of 1/(Ti·s))
     // I[k] = I[k-1] + (T / (2·Ti)) * (e[k] + e[k-1])
     if (!first_run_) {
-        integral_ += (dt_ / (2.0f * Ti_)) * (error + prev_error_);
+        integral_ += (dt / (2.0f * Ti_)) * (error + prev_error_);
     }
 
     return Kp_ * integral_;
 }
 
-float PID::updateDerivative(float error, float measurement)
+float PID::updateDerivative(float error, float measurement, float dt)
 {
-    // Skip derivative if Td <= 0
-    if (Td_ <= 0.0f) {
+    // Skip derivative if Td <= 0 or dt <= 0
+    if (Td_ <= 0.0f || dt <= 0.0f) {
         return 0.0f;
     }
 
@@ -127,10 +114,16 @@ float PID::updateDerivative(float error, float measurement)
         return 0.0f;
     }
 
-    // Incomplete derivative filter (bilinear transform)
+    // Compute derivative filter coefficients for current dt
+    // D(z) from bilinear transform of Td·s / (η·Td·s + 1)
     // D[k] = -a * D[k-1] + b * (input[k] - input[k-1])
+    float alpha = 2.0f * eta_ * Td_ / dt;
+    float deriv_a = (alpha - 1.0f) / (alpha + 1.0f);
+    float deriv_b = 2.0f * Td_ / ((alpha + 1.0f) * dt);
+
+    // Incomplete derivative filter (bilinear transform)
     float deriv_diff = deriv_input - prev_deriv_input_;
-    deriv_filtered_ = -deriv_a_ * deriv_filtered_ + deriv_b_ * deriv_diff;
+    deriv_filtered_ = -deriv_a * deriv_filtered_ + deriv_b * deriv_diff;
 
     // Update previous derivative input
     prev_deriv_input_ = deriv_input;
@@ -138,7 +131,7 @@ float PID::updateDerivative(float error, float measurement)
     return Kp_ * deriv_filtered_;
 }
 
-void PID::applyAntiWindup(float output_unlimited, float output_limited)
+void PID::applyAntiWindup(float output_unlimited, float output_limited, float dt)
 {
     // Skip if integral is disabled
     if (Ti_ <= 0.0f) {
@@ -154,7 +147,7 @@ void PID::applyAntiWindup(float output_unlimited, float output_limited)
         // integral += saturation * (dt / Tt)
         // Note: integral_ is already divided by Ti in the integration,
         // so we adjust accordingly
-        integral_ += saturation * (dt_ / Tt_) / Kp_;
+        integral_ += saturation * (dt / Tt_) / Kp_;
     }
 }
 
@@ -173,16 +166,6 @@ void PID::setTi(float ti)
 void PID::setTd(float td)
 {
     Td_ = td;
-
-    // Update derivative filter coefficients
-    if (Td_ > 0.0f && dt_ > 0.0f) {
-        float alpha = 2.0f * eta_ * Td_ / dt_;
-        deriv_a_ = (alpha - 1.0f) / (alpha + 1.0f);
-        deriv_b_ = 2.0f * Td_ / ((alpha + 1.0f) * dt_);
-    } else {
-        deriv_a_ = 0.0f;
-        deriv_b_ = 0.0f;
-    }
 
     // Update tracking time constant
     if (Ti_ > 0.0f && Td_ > 0.0f) {
