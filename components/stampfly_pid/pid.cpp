@@ -70,6 +70,7 @@ float PID::update(float setpoint, float measurement, float dt)
 
     // 8. Update previous values for next iteration
     prev_error_ = error_;
+    first_run_ = false;
 
     return output;
 }
@@ -83,9 +84,8 @@ float PID::updateIntegral(float error, float dt)
 
     // Trapezoidal integration (bilinear transform of 1/(Ti·s))
     // I[k] = I[k-1] + (T / (2·Ti)) * (e[k] + e[k-1])
-    if (!first_run_) {
-        integral_ += (dt / (2.0f * Ti_)) * (error + prev_error_);
-    }
+    // Note: prev_error_ is initialized to 0 at reset, so first step uses (e + 0)/2
+    integral_ += (dt / (2.0f * Ti_)) * (error + prev_error_);
 
     return Kp_ * integral_;
 }

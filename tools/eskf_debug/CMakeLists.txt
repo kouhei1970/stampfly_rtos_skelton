@@ -39,3 +39,7 @@ target_link_libraries(eskf_debug PRIVATE stampfly_eskf)
 # Replay tool (run ESKF on recorded sensor data)
 add_executable(eskf_replay replay.cpp)
 target_link_libraries(eskf_replay PRIVATE stampfly_eskf)
+
+# Unit test executable
+add_executable(eskf_test eskf_test.cpp)
+target_link_libraries(eskf_test PRIVATE stampfly_eskf)
