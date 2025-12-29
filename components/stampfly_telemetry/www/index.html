@@ -17,10 +17,11 @@
         .container {
             display: grid;
             grid-template-columns: 1fr 300px;
-            grid-template-rows: auto 1fr auto;
+            grid-template-rows: auto minmax(0, 1fr) auto;
             height: 100vh;
             gap: 8px;
             padding: 8px;
+            overflow: hidden;
         }
         .header {
             grid-column: 1 / -1;
@@ -141,6 +142,8 @@
             gap: 16px;
             font-size: 11px;
             color: #666;
+            padding: 4px 0;
+            flex-shrink: 0;
         }
         .horizon-container {
             display: flex;
@@ -462,7 +465,8 @@ function createDroneModel() {
 // Simple orbit controls
 let isDragging = false;
 let previousMousePosition = { x: 0, y: 0 };
-let spherical = { radius: 3, theta: Math.PI / 4, phi: Math.PI / 4 };
+// Default view: looking down Z-axis (top-down view)
+let spherical = { radius: 3, theta: 0, phi: 0.3 };  // phi small = looking from above
 
 function setupControls(container) {
     container.addEventListener('mousedown', (e) => {
@@ -476,8 +480,10 @@ function setupControls(container) {
         const deltaX = e.clientX - previousMousePosition.x;
         const deltaY = e.clientY - previousMousePosition.y;
 
-        spherical.theta -= deltaX * 0.01;
-        spherical.phi = Math.max(0.1, Math.min(Math.PI - 0.1, spherical.phi - deltaY * 0.01));
+        // Horizontal drag = rotate around Z (theta)
+        // Vertical drag = change elevation (phi)
+        spherical.theta += deltaX * 0.01;
+        spherical.phi = Math.max(0.1, Math.min(Math.PI - 0.1, spherical.phi + deltaY * 0.01));
 
         updateCameraPosition();
         previousMousePosition = { x: e.clientX, y: e.clientY };
@@ -506,8 +512,9 @@ function setupControls(container) {
         const deltaX = e.touches[0].clientX - previousMousePosition.x;
         const deltaY = e.touches[0].clientY - previousMousePosition.y;
 
-        spherical.theta -= deltaX * 0.01;
-        spherical.phi = Math.max(0.1, Math.min(Math.PI - 0.1, spherical.phi - deltaY * 0.01));
+        // Same as mouse: horizontal = theta, vertical = phi
+        spherical.theta += deltaX * 0.01;
+        spherical.phi = Math.max(0.1, Math.min(Math.PI - 0.1, spherical.phi + deltaY * 0.01));
 
         updateCameraPosition();
         previousMousePosition = { x: e.touches[0].clientX, y: e.touches[0].clientY };
@@ -571,7 +578,7 @@ function updateDrone(roll, pitch, yaw, x, y, z) {
 }
 
 function resetCamera() {
-    spherical = { radius: 3, theta: Math.PI / 4, phi: Math.PI / 4 };
+    spherical = { radius: 3, theta: 0, phi: 0.3 };  // Top-down view
     updateCameraPosition();
 }
 
@@ -684,17 +691,14 @@ function connect() {
 
     ws.onopen = () => {
         updateStatus('connected', 'Connected');
-        console.log('WebSocket connected');
     };
 
     ws.onclose = () => {
         updateStatus('disconnected', 'Disconnected');
-        console.log('WebSocket disconnected, reconnecting in 2s...');
         setTimeout(connect, 2000);
     };
 
-    ws.onerror = (err) => {
-        console.error('WebSocket error:', err);
+    ws.onerror = () => {
         ws.close();
     };
 
