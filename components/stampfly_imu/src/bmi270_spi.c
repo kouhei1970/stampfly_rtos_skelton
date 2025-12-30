@@ -282,6 +282,9 @@ esp_err_t bmi270_write_register(bmi270_dev_t *dev, uint8_t reg_addr, uint8_t dat
  * @param length Number of bytes to read
  * @return esp_err_t ESP_OK on success
  */
+// デバッグ用: IMUタスクのチェックポイント（main.cppで定義）
+extern volatile uint8_t g_imu_checkpoint;
+
 esp_err_t bmi270_read_burst(bmi270_dev_t *dev, uint8_t reg_addr, uint8_t *data, size_t length) {
     if (dev == NULL || data == NULL || length == 0) {
         ESP_LOGE(TAG, "Invalid parameters in bmi270_read_burst");
@@ -293,14 +296,20 @@ esp_err_t bmi270_read_burst(bmi270_dev_t *dev, uint8_t reg_addr, uint8_t *data, 
         return ESP_ERR_INVALID_STATE;
     }
 
+    g_imu_checkpoint = 40;  // read_burst開始
+
     esp_err_t ret;
 
     // Total bytes = 1 (CMD) + 1 (Dummy) + length (Data)
     size_t total_bytes = 2 + length;
 
+    g_imu_checkpoint = 41;  // DMAアロケーション前
+
     // Allocate DMA-capable buffers
     uint8_t *tx_buffer = heap_caps_malloc(total_bytes, MALLOC_CAP_DMA);
     uint8_t *rx_buffer = heap_caps_malloc(total_bytes, MALLOC_CAP_DMA);
+
+    g_imu_checkpoint = 42;  // DMAアロケーション後
 
     if (!tx_buffer || !rx_buffer) {
         ESP_LOGE(TAG, "Failed to allocate DMA buffers");
@@ -322,7 +331,11 @@ esp_err_t bmi270_read_burst(bmi270_dev_t *dev, uint8_t reg_addr, uint8_t *data, 
         .user = NULL,
     };
 
+    g_imu_checkpoint = 43;  // SPI転送前
+
     ret = spi_device_polling_transmit(dev->spi_handle, &trans);
+
+    g_imu_checkpoint = 44;  // SPI転送後
 
     if (ret == ESP_OK) {
         // rx_buffer[0] = Command echo (discard)

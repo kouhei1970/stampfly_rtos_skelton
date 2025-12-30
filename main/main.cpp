@@ -224,7 +224,10 @@ namespace {
     SemaphoreHandle_t g_imu_semaphore = nullptr;
     SemaphoreHandle_t g_control_semaphore = nullptr;  // For control task synchronization
 
-    // デバッグ用: IMUタスクのチェックポイント
+}
+
+// デバッグ用: IMUタスクのチェックポイント（C言語からアクセス可能）
+extern "C" {
     volatile uint8_t g_imu_checkpoint = 0;
     volatile uint32_t g_imu_last_loop = 0;
 }
