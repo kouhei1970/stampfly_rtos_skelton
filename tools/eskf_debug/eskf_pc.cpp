@@ -1073,8 +1073,8 @@ void ESKF::updateFlowRaw(int16_t flow_dx, int16_t flow_dy, float distance,
     float gyro_scale = config_.flow_gyro_scale;
 
     // ピッチ（gyro_y）がカメラX軸フローに影響
-    // 符号: ピッチアップで地面が後方に見える → 負のフロー → -gyro_y
-    float flow_rot_x_cam = -gyro_scale * gyro_y_corrected;
+    // 符号: 実測により決定（+gyro_y）
+    float flow_rot_x_cam = gyro_scale * gyro_y_corrected;
 
     // ロール（gyro_x）がカメラY軸フローに影響
     // 符号: ロール右で地面が左に見える → 負のフロー → -gyro_x
