@@ -832,7 +832,7 @@ function drawSideView() {
     const w = rect.width;
     const h = rect.height;
     const cx = w / 2;
-    const cy = h * 0.35;
+    const cy = h / 2;
     const scale = 50;
 
     // Background
@@ -856,7 +856,7 @@ function drawSideView() {
         ctx.lineTo(cx + i * scale, h);
         ctx.stroke();
     }
-    for (let i = -1; i <= 3; i++) {
+    for (let i = -3; i <= 3; i++) {
         ctx.beginPath();
         ctx.moveTo(0, cy + i * scale);
         ctx.lineTo(w, cy + i * scale);
