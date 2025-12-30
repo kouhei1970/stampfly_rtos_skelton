@@ -137,6 +137,9 @@ stampfly::LED* g_led_ptr = nullptr;
 // Global motor driver pointer (accessible from CLI)
 stampfly::MotorDriver* g_motor_ptr = nullptr;
 
+// Global buzzer pointer (accessible from CLI)
+stampfly::Buzzer* g_buzzer_ptr = nullptr;
+
 namespace {
     // Sensors
     stampfly::BMI270Wrapper g_imu;
@@ -1766,6 +1769,8 @@ static esp_err_t initActuators()
         if (ret != ESP_OK) {
             ESP_LOGW(TAG, "Buzzer init failed: %s", esp_err_to_name(ret));
         } else {
+            g_buzzer_ptr = &g_buzzer;  // Set pointer for CLI access
+            g_buzzer.loadFromNVS();    // Load mute setting from NVS
             ESP_LOGI(TAG, "Buzzer initialized");
         }
     }

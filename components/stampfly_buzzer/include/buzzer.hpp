@@ -77,8 +77,17 @@ public:
 
     bool isInitialized() const { return initialized_; }
 
+    // Mute control
+    bool isMuted() const { return muted_; }
+    void setMuted(bool muted, bool save_to_nvs = false);
+
+    // NVS persistence
+    esp_err_t loadFromNVS();
+    esp_err_t saveToNVS();
+
 private:
     bool initialized_ = false;
+    bool muted_ = false;
     Config config_;
 };
 

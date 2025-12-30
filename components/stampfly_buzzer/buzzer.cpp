@@ -9,8 +9,12 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_timer.h"
+#include "nvs_flash.h"
+#include "nvs.h"
 
 static const char* TAG = "Buzzer";
+static const char* NVS_NAMESPACE = "buzzer";
+static const char* NVS_KEY_MUTED = "muted";
 
 namespace stampfly {
 
@@ -80,7 +84,7 @@ esp_err_t Buzzer::init(const Config& config)
 
 void Buzzer::playTone(uint16_t frequency, uint32_t duration_ms)
 {
-    if (!initialized_) return;
+    if (!initialized_ || muted_) return;
 
     if (frequency == 0) {
         // Rest (silence)
@@ -106,7 +110,7 @@ void Buzzer::playTone(uint16_t frequency, uint32_t duration_ms)
 
 void Buzzer::playToneAsync(uint16_t frequency, uint32_t duration_ms)
 {
-    if (!initialized_) return;
+    if (!initialized_ || muted_) return;
 
     if (frequency == 0) {
         stop();
@@ -175,6 +179,60 @@ void Buzzer::pairingTone()
 {
     playTone(NOTE_C5, 100);
     playTone(NOTE_G5, 100);
+}
+
+void Buzzer::setMuted(bool muted, bool save_to_nvs)
+{
+    muted_ = muted;
+    ESP_LOGI(TAG, "Sound %s", muted ? "OFF" : "ON");
+    if (save_to_nvs) {
+        saveToNVS();
+    }
+}
+
+esp_err_t Buzzer::loadFromNVS()
+{
+    nvs_handle_t handle;
+    esp_err_t ret = nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle);
+    if (ret != ESP_OK) {
+        // NVS not found, use default (not muted)
+        muted_ = false;
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    uint8_t muted_val = 0;
+    ret = nvs_get_u8(handle, NVS_KEY_MUTED, &muted_val);
+    if (ret == ESP_OK) {
+        muted_ = (muted_val != 0);
+        ESP_LOGI(TAG, "Loaded sound setting: %s", muted_ ? "OFF" : "ON");
+    } else {
+        muted_ = false;
+    }
+
+    nvs_close(handle);
+    return ret;
+}
+
+esp_err_t Buzzer::saveToNVS()
+{
+    nvs_handle_t handle;
+    esp_err_t ret = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to open NVS: %s", esp_err_to_name(ret));
+        return ret;
+    }
+
+    uint8_t muted_val = muted_ ? 1 : 0;
+    ret = nvs_set_u8(handle, NVS_KEY_MUTED, muted_val);
+    if (ret == ESP_OK) {
+        ret = nvs_commit(handle);
+        ESP_LOGI(TAG, "Saved sound setting: %s", muted_ ? "OFF" : "ON");
+    } else {
+        ESP_LOGE(TAG, "Failed to save: %s", esp_err_to_name(ret));
+    }
+
+    nvs_close(handle);
+    return ret;
 }
 
 }  // namespace stampfly

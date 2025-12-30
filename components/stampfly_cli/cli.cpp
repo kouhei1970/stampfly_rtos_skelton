@@ -47,6 +47,10 @@ extern stampfly::LED* g_led_ptr;
 #include "motor_driver.hpp"
 extern stampfly::MotorDriver* g_motor_ptr;
 
+// External reference to buzzer (defined in main.cpp)
+#include "buzzer.hpp"
+extern stampfly::Buzzer* g_buzzer_ptr;
+
 namespace stampfly {
 
 // Forward declarations for command handlers
@@ -69,6 +73,7 @@ static void cmd_version(int argc, char** argv, void* context);
 static void cmd_ctrl(int argc, char** argv, void* context);
 static void cmd_debug(int argc, char** argv, void* context);
 static void cmd_led(int argc, char** argv, void* context);
+static void cmd_sound(int argc, char** argv, void* context);
 
 esp_err_t CLI::init()
 {
@@ -229,6 +234,7 @@ void CLI::registerDefaultCommands()
     registerCommand("ctrl", cmd_ctrl, "Show controller input [watch]", this);
     registerCommand("debug", cmd_debug, "Debug mode [on|off] (ignore errors)", this);
     registerCommand("led", cmd_led, "LED [brightness <0-255>]", this);
+    registerCommand("sound", cmd_sound, "Sound [on|off]", this);
 }
 
 // ========== Command Handlers ==========
@@ -1005,6 +1011,33 @@ static void cmd_led(int argc, char** argv, void* context)
         cli->print("LED brightness set to %d (saved)\r\n", brightness);
     } else {
         cli->print("Usage: led brightness <0-255>\r\n");
+    }
+}
+
+static void cmd_sound(int argc, char** argv, void* context)
+{
+    CLI* cli = static_cast<CLI*>(context);
+
+    if (g_buzzer_ptr == nullptr) {
+        cli->print("Buzzer not available\r\n");
+        return;
+    }
+
+    if (argc < 2) {
+        cli->print("Sound: %s\r\n", g_buzzer_ptr->isMuted() ? "OFF" : "ON");
+        cli->print("Usage: sound [on|off]\r\n");
+        return;
+    }
+
+    if (strcmp(argv[1], "on") == 0) {
+        g_buzzer_ptr->setMuted(false, true);  // save to NVS
+        cli->print("Sound ON (saved)\r\n");
+        g_buzzer_ptr->beep();  // Play confirmation beep
+    } else if (strcmp(argv[1], "off") == 0) {
+        g_buzzer_ptr->setMuted(true, true);  // save to NVS
+        cli->print("Sound OFF (saved)\r\n");
+    } else {
+        cli->print("Usage: sound [on|off]\r\n");
     }
 }
 
