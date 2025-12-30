@@ -759,7 +759,17 @@ static void OptFlowTask(void* pvParameters)
     constexpr int HEALTHY_THRESHOLD = 10;   // 10連続成功でhealthy (100ms)
     constexpr int UNHEALTHY_THRESHOLD = 10; // 10連続失敗でunhealthy (100ms)
 
+    static uint32_t optflow_loop_counter = 0;
+
     while (true) {
+        optflow_loop_counter++;
+
+        // 10秒ごと（1000回 @ 100Hz）に生存確認
+        if (optflow_loop_counter % 1000 == 0) {
+            ESP_LOGI(TAG, "OptFlowTask alive: loop=%lu, stack_free=%u",
+                     optflow_loop_counter, (unsigned)uxTaskGetStackHighWaterMark(nullptr));
+        }
+
         if (g_optflow != nullptr) {
             try {
                 auto burst = g_optflow->readMotionBurst();
