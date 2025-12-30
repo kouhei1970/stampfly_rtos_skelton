@@ -78,11 +78,22 @@ public:
         // [flow_body_y] = [c2b_yx c2b_yy] [flow_cam_y]
         float flow_cam_to_body[4];      // {c2b_xx, c2b_xy, c2b_yx, c2b_yy}
 
-        // ジャイロ→フロー回転補償係数 (回帰分析から導出)
-        // flow_rotation_x = k_xx * gyro_x + k_xy * gyro_y
-        // flow_rotation_y = k_yx * gyro_x + k_yy * gyro_y
-        // これらはカメラ座標系での補償係数 [rad/s per rad/s]
-        float flow_gyro_comp[4];        // {k_xx, k_xy, k_yx, k_yy}
+        // ========================================================================
+        // ジャイロ→フロー回転補償（物理モデルベース）
+        //
+        // 物理モデル:
+        //   flow_rot_x = (gyro_scale / rad_per_pixel) × gyro_y  (ピッチ→X)
+        //   flow_rot_y = -(gyro_scale / rad_per_pixel) × gyro_x (ロール→Y)
+        //
+        // flow_gyro_scale: 理論値(1.0)からのずれを補正
+        //   - 1.0 = 理論通り
+        //   - < 1.0: 補正弱め
+        //   - > 1.0: 補正強め
+        //
+        // 旧方式(flow_gyro_comp[4])は非推奨、互換性のため残存
+        // ========================================================================
+        float flow_gyro_scale;          // ジャイロ補正スケール（デフォルト1.0）
+        float flow_gyro_comp[4];        // 非推奨: {k_xx, k_xy, k_yx, k_yy}
 
         // フローセンサーオフセット [counts/sample]
         // 静止ホバリング時のフロー平均値をキャリブレーションで取得
@@ -151,15 +162,22 @@ public:
             cfg.flow_cam_to_body[2] = 0.0f;    // c2b_yx
             cfg.flow_cam_to_body[3] = 1.015f;  // c2b_yy (Y軸スケール)
 
-            // ジャイロ→フロー回転補償係数（グリッドサーチ最適化 flow01.bin 2025-12-28）
-            // 定点でのロール動揺テストデータからグリッドサーチで最適化
-            // flow_rotation_x = k_xx * gyro_x + k_xy * gyro_y
-            // flow_rotation_y = k_yx * gyro_x + k_yy * gyro_y
-            // 注意: フローセンサーのバイアスは別途キャリブレーションが必要
-            cfg.flow_gyro_comp[0] = -0.20f;    // k_xx: gyro_x → flow_x
-            cfg.flow_gyro_comp[1] = 0.30f;     // k_xy: gyro_y → flow_x
-            cfg.flow_gyro_comp[2] = -1.50f;    // k_yx: gyro_x → flow_y
-            cfg.flow_gyro_comp[3] = -0.40f;    // k_yy: gyro_y → flow_y
+            // ========================================================================
+            // ジャイロ→フロー回転補償（物理モデルベース）
+            //
+            // 物理モデル:
+            //   flow_rot_x = (gyro_scale / rad_per_pixel) × gyro_y  (ピッチ→X)
+            //   flow_rot_y = -(gyro_scale / rad_per_pixel) × gyro_x (ロール→Y)
+            //
+            // 理論値からのずれはflow_gyro_scaleで調整（レンズ歪み、取り付け誤差等）
+            // ========================================================================
+            cfg.flow_gyro_scale = 1.0f;        // 物理モデル通り（要調整時は変更）
+
+            // 旧方式（非推奨）: 互換性のため残存、updateFlowRawでは使用しない
+            cfg.flow_gyro_comp[0] = 0.0f;
+            cfg.flow_gyro_comp[1] = 0.0f;
+            cfg.flow_gyro_comp[2] = 0.0f;
+            cfg.flow_gyro_comp[3] = 0.0f;
 
             // フローオフセット（未キャリブレーション時は0）
             // 静止ホバリングでキャリブレーション後に設定

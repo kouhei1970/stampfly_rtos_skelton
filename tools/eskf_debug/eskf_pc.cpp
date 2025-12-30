@@ -1050,14 +1050,35 @@ void ESKF::updateFlowRaw(int16_t flow_dx, int16_t flow_dy, float distance,
     float gyro_x_corrected = gyro_x - state_.gyro_bias.x;
     float gyro_y_corrected = gyro_y - state_.gyro_bias.y;
 
-    // ジャイロ→フロー回転補償（回帰分析から導出した係数を使用）
-    // flow_rotation_x = k_xx * gyro_x + k_xy * gyro_y
-    // flow_rotation_y = k_yx * gyro_x + k_yy * gyro_y
-    // これらの係数はカメラ座標系での補償値（NED gyroに対して）
-    float flow_rot_x_cam = config_.flow_gyro_comp[0] * gyro_x_corrected
-                         + config_.flow_gyro_comp[1] * gyro_y_corrected;
-    float flow_rot_y_cam = config_.flow_gyro_comp[2] * gyro_x_corrected
-                         + config_.flow_gyro_comp[3] * gyro_y_corrected;
+    // ========================================================================
+    // 物理モデルに基づくジャイロ補正
+    //
+    // 下向きカメラの場合、機体の回転により地面が見かけ上動いて見える。
+    // 機体が角速度 ω [rad/s] で回転すると、カメラから見た地面の
+    // 見かけの角速度も ω [rad/s] となる。
+    //
+    // 重要: flow_x_cam は既に [rad/s] 単位に変換済みなので、
+    //       ジャイロ補正も [rad/s] 単位で行う（1/rad_per_pixelは不要）
+    //
+    //   ピッチ回転（gyro_y, Y軸周り, 正=機首上げ）:
+    //     → 地面が後方に移動して見える → flow_x に影響
+    //
+    //   ロール回転（gyro_x, X軸周り, 正=右翼下げ）:
+    //     → 地面が左に移動して見える → flow_y に影響
+    //
+    // 符号はPMW3901のカメラ取り付け向きにより決定（要実測調整）
+    //
+    // flow_gyro_scale: 補正強度の調整係数（デフォルト1.0）
+    // ========================================================================
+    float gyro_scale = config_.flow_gyro_scale;
+
+    // ピッチ（gyro_y）がカメラX軸フローに影響
+    // 符号: ピッチアップで地面が後方に見える → 負のフロー → -gyro_y
+    float flow_rot_x_cam = -gyro_scale * gyro_y_corrected;
+
+    // ロール（gyro_x）がカメラY軸フローに影響
+    // 符号: ロール右で地面が左に見える → 負のフロー → -gyro_x
+    float flow_rot_y_cam = -gyro_scale * gyro_x_corrected;
 
     // カメラ座標系で回転成分を除去
     float flow_trans_x_cam = flow_x_cam - flow_rot_x_cam;
