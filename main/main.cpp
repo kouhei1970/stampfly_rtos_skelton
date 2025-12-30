@@ -223,6 +223,10 @@ namespace {
     esp_timer_handle_t g_imu_timer = nullptr;
     SemaphoreHandle_t g_imu_semaphore = nullptr;
     SemaphoreHandle_t g_control_semaphore = nullptr;  // For control task synchronization
+
+    // デバッグ用: IMUタスクのチェックポイント
+    volatile uint8_t g_imu_checkpoint = 0;
+    volatile uint32_t g_imu_last_loop = 0;
 }
 
 // =============================================================================
@@ -293,6 +297,23 @@ static void onBinlogStart()
  */
 static void imu_timer_callback(void* arg)
 {
+    static uint32_t timer_count = 0;
+    static uint32_t last_imu_loop = 0;
+    timer_count++;
+
+    // 10秒ごと（4000回）にタイマー生存確認
+    if (timer_count % 4000 == 0) {
+        // IMUタスクが進行しているかチェック
+        if (g_imu_last_loop == last_imu_loop) {
+            // IMUタスクが停止している
+            ESP_LOGW(TAG, "IMU timer: count=%lu, IMU STUCK at checkpoint=%u, loop=%lu",
+                     timer_count, g_imu_checkpoint, g_imu_last_loop);
+        } else {
+            ESP_LOGI(TAG, "IMU timer alive: count=%lu, imu_loop=%lu",
+                     timer_count, g_imu_last_loop);
+        }
+        last_imu_loop = g_imu_last_loop;
+    }
     xSemaphoreGive(g_imu_semaphore);
 }
 
@@ -319,12 +340,16 @@ static void IMUTask(void* pvParameters)
     constexpr uint32_t IMU_HEALTHY_THRESHOLD = 10;  // 10連続成功でhealthy
 
     while (true) {
+        g_imu_checkpoint = 0;  // セマフォ待ち中
+
         // Wait for timer semaphore (precise 2.5ms = 400Hz timing)
         if (xSemaphoreTake(g_imu_semaphore, portMAX_DELAY) != pdTRUE) {
             continue;
         }
 
         imu_loop_counter++;
+        g_imu_last_loop = imu_loop_counter;  // タイマーコールバックで監視用
+        g_imu_checkpoint = 1;  // ループ開始
 
         // 10秒ごとにIMUタスク生存確認
         if (imu_loop_counter % 4000 == 0) {
@@ -333,11 +358,15 @@ static void IMUTask(void* pvParameters)
                      (unsigned)uxTaskGetStackHighWaterMark(nullptr));
         }
 
+        g_imu_checkpoint = 2;  // isInitialized チェック前
+
         if (g_imu.isInitialized()) {
             stampfly::AccelData accel;
             stampfly::GyroData gyro;
 
+            g_imu_checkpoint = 3;  // IMU読み取り前
             if (g_imu.readSensorData(accel, gyro) == ESP_OK) {
+                g_imu_checkpoint = 4;  // IMU読み取り成功
                 // ヘルスフラグ更新: 連続成功でhealthy
                 imu_read_fail_counter = 0;
                 if (++imu_consecutive_success >= IMU_HEALTHY_THRESHOLD) {
@@ -389,21 +418,29 @@ static void IMUTask(void* pvParameters)
                 stampfly::math::Vector3 a(filtered_accel[0], filtered_accel[1], filtered_accel[2]);
                 stampfly::math::Vector3 g(filtered_gyro[0], filtered_gyro[1], filtered_gyro[2]);
 
+                g_imu_checkpoint = 10;  // ESKF更新前
+
                 // Update ESKF predict step (400Hz)
                 // g_eskf_ready: センサー安定・キャリブレーション完了後にtrue
                 if (g_eskf.isInitialized() && g_eskf_ready) {
                     static uint32_t flow_update_counter = 0;
                     static uint32_t eskf_error_counter = 0;
 
+                    g_imu_checkpoint = 11;  // ESKF入力チェック
+
                     // 入力値の事前チェック
                     bool eskf_ok = std::isfinite(a.x) && std::isfinite(a.y) && std::isfinite(a.z) &&
                                    std::isfinite(g.x) && std::isfinite(g.y) && std::isfinite(g.z);
 
                     if (eskf_ok) {
+                        g_imu_checkpoint = 12;  // ESKF predict前
                         g_eskf.predict(a, g, 0.0025f);  // 2.5ms (400Hz)
 
+                        g_imu_checkpoint = 13;  // updateAccelAttitude前
                         // 加速度計による姿勢補正 (400Hz)
                         g_eskf.updateAccelAttitude(a);
+
+                        g_imu_checkpoint = 14;  // フロー更新セクション
 
                         // オプティカルフロー更新（100Hz = 400Hz / 4）
                         // ヘルスチェック: Flow + ToF が両方healthy必要（距離スケーリングに必要）
@@ -430,6 +467,8 @@ static void IMUTask(void* pvParameters)
                             }
                         }
 
+                        g_imu_checkpoint = 15;  // Baro更新セクション
+
                         // Baro更新（data_readyフラグで制御、50Hz）
                         // ヘルスチェック: Baro healthy必要
                         // TODO: 気圧センサの値が確認できたら有効化
@@ -440,6 +479,8 @@ static void IMUTask(void* pvParameters)
                             }
                         }
 
+                        g_imu_checkpoint = 16;  // ToF更新セクション
+
                         // ToF更新（data_readyフラグで制御、30Hz）
                         // ヘルスチェック: ToF healthy必要
                         if (g_tof_data_ready) {
@@ -448,6 +489,8 @@ static void IMUTask(void* pvParameters)
                                 g_eskf.updateToF(g_tof_data_cache);
                             }
                         }
+
+                        g_imu_checkpoint = 17;  // Mag更新セクション
 
                         // Mag更新（data_readyフラグで制御、10Hz）
                         // ヘルスチェック: Mag healthy必要
@@ -458,8 +501,12 @@ static void IMUTask(void* pvParameters)
                             }
                         }
 
+                        g_imu_checkpoint = 20;  // getState前
+
                         // Update StampFlyState with ESKF estimated state
                         auto eskf_state = g_eskf.getState();
+
+                        g_imu_checkpoint = 21;  // getState後、検証前
 
                         // 出力値の検証（NaNチェック + 発散検出）
                         bool eskf_valid = std::isfinite(eskf_state.roll) && std::isfinite(eskf_state.pitch);
@@ -475,11 +522,14 @@ static void IMUTask(void* pvParameters)
                                            std::abs(eskf_state.velocity.z) > MAX_VEL;
 
                         if (eskf_valid && !pos_diverged && !vel_diverged) {
+                            g_imu_checkpoint = 22;  // state更新前
                             state.updateAttitude(eskf_state.roll, eskf_state.pitch, eskf_state.yaw);
                             state.updateEstimatedPosition(eskf_state.position.x, eskf_state.position.y, eskf_state.position.z);
                             state.updateEstimatedVelocity(eskf_state.velocity.x, eskf_state.velocity.y, eskf_state.velocity.z);
                             state.updateGyroBias(eskf_state.gyro_bias.x, eskf_state.gyro_bias.y, eskf_state.gyro_bias.z);
                             state.updateAccelBias(eskf_state.accel_bias.x, eskf_state.accel_bias.y, eskf_state.accel_bias.z);
+
+                            g_imu_checkpoint = 23;  // state更新後、ロギング前
 
                             // === Binary logging (400Hz) ===
                             if (g_logger.isRunning()) {
@@ -545,6 +595,7 @@ static void IMUTask(void* pvParameters)
 
                                 g_logger.pushData(pkt);
                             }
+                            g_imu_checkpoint = 24;  // ロギング完了
                         } else {
                             eskf_error_counter++;
 
@@ -577,8 +628,12 @@ static void IMUTask(void* pvParameters)
                     state.updateAttitude(att_state.roll, att_state.pitch, att_state.yaw);
                 }
 
+                g_imu_checkpoint = 30;  // ControlTask起動前
+
                 // Wake up ControlTask (runs at same 400Hz rate)
                 xSemaphoreGive(g_control_semaphore);
+
+                g_imu_checkpoint = 31;  // ControlTask起動後
             } else {
                 // ヘルスフラグ更新: 連続失敗でunhealthy
                 imu_consecutive_success = 0;
@@ -591,6 +646,8 @@ static void IMUTask(void* pvParameters)
                 }
             }
         }
+
+        g_imu_checkpoint = 99;  // ループ完了（次のセマフォ待ちへ）
         // No delay here - timing controlled by ESP Timer semaphore
     }
 }
