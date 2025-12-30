@@ -750,23 +750,24 @@ function drawTopView() {
     const h = rect.height;
     const cx = w / 2;
     const cy = h / 2;
-    const scale = 50;
+    const scale = 500;  // pixels per meter (10x zoom)
+    const gridPx = 50;  // grid spacing in pixels (= 0.1m at this scale)
 
     // Background
     ctx.fillStyle = '#0a0a15';
     ctx.fillRect(0, 0, w, h);
 
-    // Grid
+    // Grid (0.1m spacing, ±0.5m range)
     ctx.strokeStyle = '#222';
     ctx.lineWidth = 1;
     for (let i = -5; i <= 5; i++) {
         ctx.beginPath();
-        ctx.moveTo(cx + i * scale, 0);
-        ctx.lineTo(cx + i * scale, h);
+        ctx.moveTo(cx + i * gridPx, 0);
+        ctx.lineTo(cx + i * gridPx, h);
         ctx.stroke();
         ctx.beginPath();
-        ctx.moveTo(0, cy - i * scale);
-        ctx.lineTo(w, cy - i * scale);
+        ctx.moveTo(0, cy - i * gridPx);
+        ctx.lineTo(w, cy - i * gridPx);
         ctx.stroke();
     }
 
@@ -833,7 +834,8 @@ function drawSideView() {
     const h = rect.height;
     const cx = w / 2;
     const cy = h / 2;
-    const scale = 50;
+    const scale = 500;  // pixels per meter (10x zoom)
+    const gridPx = 50;  // grid spacing in pixels (= 0.1m at this scale)
 
     // Background
     ctx.fillStyle = '#0a0a15';
@@ -847,19 +849,19 @@ function drawSideView() {
     ctx.lineTo(w, cy);
     ctx.stroke();
 
-    // Grid
+    // Grid (0.1m spacing, ±0.5m range)
     ctx.strokeStyle = '#222';
     ctx.lineWidth = 1;
     for (let i = -5; i <= 5; i++) {
         ctx.beginPath();
-        ctx.moveTo(cx + i * scale, 0);
-        ctx.lineTo(cx + i * scale, h);
+        ctx.moveTo(cx + i * gridPx, 0);
+        ctx.lineTo(cx + i * gridPx, h);
         ctx.stroke();
     }
     for (let i = -3; i <= 3; i++) {
         ctx.beginPath();
-        ctx.moveTo(0, cy + i * scale);
-        ctx.lineTo(w, cy + i * scale);
+        ctx.moveTo(0, cy + i * gridPx);
+        ctx.lineTo(w, cy + i * gridPx);
         ctx.stroke();
     }
 
