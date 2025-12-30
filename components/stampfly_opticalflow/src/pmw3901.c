@@ -250,7 +250,7 @@ esp_err_t pmw3901_read_register(pmw3901_t *dev, uint8_t reg, uint8_t *value)
         .rx_buffer = rx_data,
     };
 
-    esp_err_t ret = spi_device_transmit(dev->spi_handle, &trans);
+    esp_err_t ret = spi_device_polling_transmit(dev->spi_handle, &trans);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "SPI read failed: %s", esp_err_to_name(ret));
         return ret;
@@ -275,7 +275,7 @@ esp_err_t pmw3901_write_register(pmw3901_t *dev, uint8_t reg, uint8_t value)
         .tx_buffer = tx_data,
     };
 
-    esp_err_t ret = spi_device_transmit(dev->spi_handle, &trans);
+    esp_err_t ret = spi_device_polling_transmit(dev->spi_handle, &trans);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "SPI write failed: %s", esp_err_to_name(ret));
         return ret;
@@ -582,7 +582,7 @@ esp_err_t pmw3901_read_motion_burst(pmw3901_t *dev, pmw3901_motion_burst_t *burs
 
     g_optflow_checkpoint = 51;  // SPI転送前
 
-    esp_err_t ret = spi_device_transmit(dev->spi_handle, &trans);
+    esp_err_t ret = spi_device_polling_transmit(dev->spi_handle, &trans);
 
     g_optflow_checkpoint = 52;  // SPI転送後
 
