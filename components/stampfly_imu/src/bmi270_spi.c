@@ -285,6 +285,9 @@ esp_err_t bmi270_write_register(bmi270_dev_t *dev, uint8_t reg_addr, uint8_t dat
 // デバッグ用: IMUタスクのチェックポイント（main.cppで定義）
 extern volatile uint8_t g_imu_checkpoint;
 
+// Maximum burst read size for stack buffer (IMU data = 12 bytes + 2 header = 14)
+#define BMI270_BURST_READ_STACK_MAX 32
+
 esp_err_t bmi270_read_burst(bmi270_dev_t *dev, uint8_t reg_addr, uint8_t *data, size_t length) {
     if (dev == NULL || data == NULL || length == 0) {
         ESP_LOGE(TAG, "Invalid parameters in bmi270_read_burst");
@@ -298,29 +301,28 @@ esp_err_t bmi270_read_burst(bmi270_dev_t *dev, uint8_t reg_addr, uint8_t *data, 
 
     g_imu_checkpoint = 40;  // read_burst開始
 
-    esp_err_t ret;
-
     // Total bytes = 1 (CMD) + 1 (Dummy) + length (Data)
     size_t total_bytes = 2 + length;
 
-    g_imu_checkpoint = 41;  // DMAアロケーション前
-
-    // Allocate DMA-capable buffers
-    uint8_t *tx_buffer = heap_caps_malloc(total_bytes, MALLOC_CAP_DMA);
-    uint8_t *rx_buffer = heap_caps_malloc(total_bytes, MALLOC_CAP_DMA);
-
-    g_imu_checkpoint = 42;  // DMAアロケーション後
-
-    if (!tx_buffer || !rx_buffer) {
-        ESP_LOGE(TAG, "Failed to allocate DMA buffers");
-        heap_caps_free(tx_buffer);
-        heap_caps_free(rx_buffer);
-        return ESP_ERR_NO_MEM;
+    // For small transfers (≤32 bytes), use stack buffers
+    // ESP-IDF SPI driver uses CPU transfer for ≤32 bytes anyway (no DMA)
+    if (total_bytes > BMI270_BURST_READ_STACK_MAX) {
+        ESP_LOGE(TAG, "Burst read size %zu exceeds stack buffer limit %d",
+                 total_bytes, BMI270_BURST_READ_STACK_MAX);
+        return ESP_ERR_INVALID_SIZE;
     }
+
+    g_imu_checkpoint = 41;  // バッファ準備
+
+    // Stack-allocated buffers (no malloc/free overhead at 400Hz)
+    uint8_t tx_buffer[BMI270_BURST_READ_STACK_MAX];
+    uint8_t rx_buffer[BMI270_BURST_READ_STACK_MAX];
 
     // Prepare TX buffer
     tx_buffer[0] = reg_addr | BMI270_SPI_READ_BIT;  // Read command
     memset(&tx_buffer[1], 0x00, total_bytes - 1);   // Dummy bytes
+
+    g_imu_checkpoint = 42;  // トランザクション準備完了
 
     spi_transaction_t trans = {
         .flags = 0,
@@ -333,7 +335,7 @@ esp_err_t bmi270_read_burst(bmi270_dev_t *dev, uint8_t reg_addr, uint8_t *data, 
 
     g_imu_checkpoint = 43;  // SPI転送前
 
-    ret = spi_device_polling_transmit(dev->spi_handle, &trans);
+    esp_err_t ret = spi_device_polling_transmit(dev->spi_handle, &trans);
 
     g_imu_checkpoint = 44;  // SPI転送後
 
@@ -345,9 +347,6 @@ esp_err_t bmi270_read_burst(bmi270_dev_t *dev, uint8_t reg_addr, uint8_t *data, 
     } else {
         ESP_LOGE(TAG, "SPI burst read failed: %s", esp_err_to_name(ret));
     }
-
-    heap_caps_free(tx_buffer);
-    heap_caps_free(rx_buffer);
 
     return ret;
 }
@@ -365,6 +364,9 @@ esp_err_t bmi270_read_burst(bmi270_dev_t *dev, uint8_t reg_addr, uint8_t *data, 
  * @param length Number of bytes to write
  * @return esp_err_t ESP_OK on success
  */
+// Threshold for stack vs DMA allocation in write_burst
+#define BMI270_BURST_WRITE_STACK_MAX 32
+
 esp_err_t bmi270_write_burst(bmi270_dev_t *dev, uint8_t reg_addr, const uint8_t *data, size_t length) {
     if (dev == NULL || data == NULL || length == 0) {
         ESP_LOGE(TAG, "Invalid parameters in bmi270_write_burst");
@@ -381,12 +383,20 @@ esp_err_t bmi270_write_burst(bmi270_dev_t *dev, uint8_t reg_addr, const uint8_t 
     // Total bytes = 1 (CMD) + length (Data)
     size_t total_bytes = 1 + length;
 
-    // Allocate DMA-capable buffer
-    uint8_t *tx_buffer = heap_caps_malloc(total_bytes, MALLOC_CAP_DMA);
+    // For small transfers: use stack buffer (no malloc overhead)
+    // For large transfers (config file ~8KB): use DMA buffer
+    uint8_t stack_buffer[BMI270_BURST_WRITE_STACK_MAX];
+    uint8_t *tx_buffer;
+    bool use_dma = (total_bytes > BMI270_BURST_WRITE_STACK_MAX);
 
-    if (!tx_buffer) {
-        ESP_LOGE(TAG, "Failed to allocate DMA buffer");
-        return ESP_ERR_NO_MEM;
+    if (use_dma) {
+        tx_buffer = heap_caps_malloc(total_bytes, MALLOC_CAP_DMA);
+        if (!tx_buffer) {
+            ESP_LOGE(TAG, "Failed to allocate DMA buffer for %zu bytes", total_bytes);
+            return ESP_ERR_NO_MEM;
+        }
+    } else {
+        tx_buffer = stack_buffer;
     }
 
     // Prepare TX buffer
@@ -403,7 +413,9 @@ esp_err_t bmi270_write_burst(bmi270_dev_t *dev, uint8_t reg_addr, const uint8_t 
 
     ret = spi_device_polling_transmit(dev->spi_handle, &trans);
 
-    heap_caps_free(tx_buffer);
+    if (use_dma) {
+        heap_caps_free(tx_buffer);
+    }
 
     if (ret == ESP_OK) {
         // Wait after write (timing depends on initialization state)
