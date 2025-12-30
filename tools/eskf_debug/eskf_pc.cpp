@@ -819,6 +819,11 @@ void ESKF::updateMag(const Vector3& mag)
         dx[i] = K[i][0]*y0 + K[i][1]*y1 + K[i][2]*y2;
     }
 
+    // ヨー更新の無効化（加速度観測はヨーを可観測でないため）
+    // 詳細: docs/eskf_accel_yaw_coupling.md
+    // 元に戻す場合: 以下の行をコメントアウト
+    dx[ATT_Z] = 0.0f;
+
     // 状態注入
     state_.position.x += dx[POS_X];
     state_.position.y += dx[POS_Y];
