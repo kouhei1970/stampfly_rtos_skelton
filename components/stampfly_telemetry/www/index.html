@@ -736,11 +736,6 @@ function drawTopView() {
         ctx.stroke();
     }
 
-    // Coordinate axes arrows at origin
-    const axisLen = 35;
-    drawArrow(ctx, cx, cy, cx, cy - axisLen, COLORS.X, 'X(N)');  // X/North = up
-    drawArrow(ctx, cx, cy, cx + axisLen, cy, COLORS.Y, 'Y(E)');  // Y/East = right
-
     // Trajectory
     if (history.pos_x.length > 1) {
         ctx.strokeStyle = 'rgba(0, 255, 136, 0.5)';
@@ -763,20 +758,19 @@ function drawTopView() {
     ctx.translate(dx, dy);
     ctx.rotate(-currentState.yaw);
 
+    // Coordinate axes arrows (attached to drone)
+    const axisLen = 30;
+    drawArrow(ctx, 0, 0, 0, -axisLen, COLORS.X, 'X');  // X/North = up
+    drawArrow(ctx, 0, 0, axisLen, 0, COLORS.Y, 'Y');   // Y/East = right
+
     // Drone triangle
-    const size = 12;
+    const size = 10;
     ctx.fillStyle = '#00ff88';
     ctx.beginPath();
     ctx.moveTo(0, -size);
     ctx.lineTo(-size * 0.6, size * 0.6);
     ctx.lineTo(size * 0.6, size * 0.6);
     ctx.closePath();
-    ctx.fill();
-
-    // Red nose
-    ctx.fillStyle = '#ff4444';
-    ctx.beginPath();
-    ctx.arc(0, -size + 3, 3, 0, Math.PI * 2);
     ctx.fill();
 
     ctx.restore();
@@ -833,11 +827,6 @@ function drawSideView() {
         ctx.stroke();
     }
 
-    // Coordinate axes arrows
-    const axisLen = 35;
-    drawArrow(ctx, cx, cy, cx + axisLen, cy, COLORS.X, 'X(N)');  // X/North = right
-    drawArrow(ctx, cx, cy, cx, cy + axisLen, COLORS.Z, 'Z(D)');  // Z/Down = down
-
     // Trajectory
     if (history.pos_x.length > 1) {
         ctx.strokeStyle = 'rgba(0, 255, 136, 0.5)';
@@ -860,17 +849,16 @@ function drawSideView() {
     ctx.translate(droneX, droneY);
     ctx.rotate(-currentState.pitch);
 
+    // Coordinate axes arrows (attached to drone)
+    const axisLen = 30;
+    drawArrow(ctx, 0, 0, axisLen, 0, COLORS.X, 'X');   // X/North = right
+    drawArrow(ctx, 0, 0, 0, axisLen, COLORS.Z, 'Z');   // Z/Down = down
+
     // Drone bar
-    const len = 14;
+    const len = 12;
     const thick = 4;
     ctx.fillStyle = '#00ff88';
     ctx.fillRect(-len / 2, -thick / 2, len, thick);
-
-    // Red nose
-    ctx.fillStyle = '#ff4444';
-    ctx.beginPath();
-    ctx.arc(len / 2 - 2, 0, 3, 0, Math.PI * 2);
-    ctx.fill();
 
     ctx.restore();
 
@@ -882,9 +870,9 @@ function drawSideView() {
 }
 
 // ============================================================================
-// Canvas Graphs with Auto-fit
+// Canvas Graphs with Auto-fit (zero centered, with minimum range)
 // ============================================================================
-function drawGraph(canvasId, data1, data2, data3, data4, colors) {
+function drawGraph(canvasId, data1, data2, data3, data4, colors, minRange) {
     const canvas = document.getElementById(canvasId);
     const ctx = canvas.getContext('2d');
     const rect = canvas.getBoundingClientRect();
@@ -901,23 +889,23 @@ function drawGraph(canvasId, data1, data2, data3, data4, colors) {
     ctx.fillRect(0, 0, w, h);
 
     // Auto-range calculation
-    let min = 0, max = 0;
+    let dataMax = 0;
     [data1, data2, data3, data4].forEach(d => {
         if (d && d.length > 0) {
             d.data.forEach(v => {
-                if (v < min) min = v;
-                if (v > max) max = v;
+                const absV = Math.abs(v);
+                if (absV > dataMax) dataMax = absV;
             });
         }
     });
 
-    // Ensure symmetric range for oscillating data and add padding
-    const absMax = Math.max(Math.abs(min), Math.abs(max), 0.1);
-    const padding = absMax * 0.15;
-    const range = [-absMax - padding, absMax + padding];
+    // Use minimum range if data is smaller, ensure zero is centered
+    const absMax = Math.max(dataMax, minRange || 1);
+    const padding = absMax * 0.1;
+    const range = [-(absMax + padding), absMax + padding];
 
-    // Grid
-    ctx.strokeStyle = '#222';
+    // Grid - center line at zero
+    ctx.strokeStyle = '#333';
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(0, h/2);
@@ -950,18 +938,19 @@ function drawGraph(canvasId, data1, data2, data3, data4, colors) {
 }
 
 function updateGraphs() {
+    // minRange: default range when data is small
     drawGraph('graphAttitude', history.roll, history.pitch, history.yaw, null,
-              [COLORS.X, COLORS.Y, COLORS.Z, '#888']);
+              [COLORS.X, COLORS.Y, COLORS.Z, '#888'], 30);      // ±30 deg default
     drawGraph('graphPosition', history.pos_x, history.pos_y, history.pos_z, null,
-              [COLORS.X, COLORS.Y, COLORS.Z, '#888']);
+              [COLORS.X, COLORS.Y, COLORS.Z, '#888'], 1);       // ±1 m default
     drawGraph('graphVelocity', history.vel_x, history.vel_y, history.vel_z, null,
-              [COLORS.X, COLORS.Y, COLORS.Z, '#888']);
+              [COLORS.X, COLORS.Y, COLORS.Z, '#888'], 0.5);     // ±0.5 m/s default
     drawGraph('graphGyro', history.gyro_x, history.gyro_y, history.gyro_z, null,
-              [COLORS.X, COLORS.Y, COLORS.Z, '#888']);
+              [COLORS.X, COLORS.Y, COLORS.Z, '#888'], 50);      // ±50 deg/s default
     drawGraph('graphAccel', history.accel_x, history.accel_y, history.accel_z, null,
-              [COLORS.X, COLORS.Y, COLORS.Z, '#888']);
+              [COLORS.X, COLORS.Y, COLORS.Z, '#888'], 12);      // ±12 m/s² default (> 1G)
     drawGraph('graphControl', history.ctrl_throttle, history.ctrl_roll, history.ctrl_pitch, history.ctrl_yaw,
-              [COLORS.THR, COLORS.X, COLORS.Y, COLORS.Z]);
+              [COLORS.THR, COLORS.X, COLORS.Y, COLORS.Z], 1);   // ±1 default
 }
 
 function updateViews() {
