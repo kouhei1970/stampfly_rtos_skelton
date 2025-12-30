@@ -1056,9 +1056,10 @@ static void ToFTask(void* pvParameters)
                         }
                     }
 
-                    // Debug log every 30 readings (~1 second)
-                    if (++log_count >= 30) {
-                        ESP_LOGI(TAG, "ToF Bottom: %d mm, status=%d", distance_mm, status);
+                    // Debug log every 300 readings (~10 seconds at 30Hz)
+                    if (++log_count >= 300) {
+                        ESP_LOGI(TAG, "ToFTask alive: bottom=%dmm status=%d, stack_free=%u",
+                                 distance_mm, status, (unsigned)uxTaskGetStackHighWaterMark(nullptr));
                         log_count = 0;
                     }
 
