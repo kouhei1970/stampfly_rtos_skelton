@@ -1,6 +1,94 @@
 # StampFly RTOS Skeleton 実装進捗
 
-## 最終更新: 2025-12-29 (ControlTask実装・モータCLI・ARMトグル)
+## 最終更新: 2025-12-31 (テレメトリv2.1・地磁気表示・HTMLビューア改善)
+
+---
+
+## テレメトリv2.1・HTMLビューア改善 ✅ 完了 (2025-12-31)
+
+### パケット構造拡張
+
+TelemetryWSPacketを96バイトから108バイトに拡張し、地磁気データを追加。
+
+**ファイル**: `components/stampfly_telemetry/include/telemetry.hpp`
+
+```cpp
+struct TelemetryWSPacket {
+    // Header (2 bytes)
+    uint8_t  header;          // 0xAA
+    uint8_t  packet_type;     // 0x20 = extended packet (v2)
+    uint32_t timestamp_ms;    // ms since boot
+
+    // Attitude - ESKF estimated (12 bytes)
+    float roll, pitch, yaw;   // [rad]
+
+    // Position/Velocity - ESKF estimated (24 bytes)
+    float pos_x, pos_y, pos_z;  // [m] NED
+    float vel_x, vel_y, vel_z;  // [m/s]
+
+    // IMU - bias corrected (24 bytes)
+    float gyro_x, gyro_y, gyro_z;    // [rad/s]
+    float accel_x, accel_y, accel_z; // [m/s²]
+
+    // Control inputs (16 bytes)
+    float ctrl_throttle, ctrl_roll, ctrl_pitch, ctrl_yaw;
+
+    // Magnetometer (12 bytes) [NEW v2.1]
+    float mag_x, mag_y, mag_z;  // [uT]
+
+    // System status (10 bytes)
+    float voltage;
+    uint8_t flight_state, sensor_status;
+    uint32_t heartbeat;
+    uint8_t checksum;
+    uint8_t padding[3];
+};
+static_assert(sizeof(TelemetryWSPacket) == 108, "...");
+```
+
+### HTMLビューア改善
+
+**ファイル**: `components/stampfly_telemetry/www/index.html`
+
+#### 色の統一
+- X軸系 = 赤 (#ff6b6b)
+- Y軸系 = 緑 (#4edc4e)
+- Z軸系 = 青 (#6b9fff)
+- スロットル = オレンジ (#ffaa00)
+
+#### グラフ改善
+- オートフィット（対称スケール、ゼロ中央）
+- デフォルト最小レンジ設定（データが小さい時の表示安定化）
+
+| グラフ | 最小レンジ |
+|--------|------------|
+| Attitude | ±30 deg |
+| Position | ±1 m |
+| Velocity | ±0.5 m/s |
+| Gyro | ±50 deg/s |
+| Accel | ±12 m/s² |
+| Magnetometer | ±50 uT |
+| Control | ±1 |
+
+#### 3カラムビューレイアウト
+1. **姿勢指示器（Attitude Indicator）**: 地平線が回転するタイプ、ピッチラダー、ロール目盛り付き
+2. **上面図（Top View）**: ドローンと座標軸が一緒に回転
+3. **側面図（Side View）**: 原点が上下左右中央に配置
+
+#### 地磁気表示追加
+- データカード: X/Y/Z値をμT単位で表示
+- グラフ: 時系列表示（±50μT デフォルト）
+- CSVエクスポート: mag_x, mag_y, mag_z フィールド追加
+
+### Z軸回転方向
+
+Top Viewでの回転は正しく実装済み：
+
+```
+NED座標系: 正のヨー = 上から見て時計回り（右ネジ法則）
+Canvas 2D: ctx.rotate(angle) = 正の角度で時計回り
+→ ctx.rotate(currentState.yaw) で正しい
+```
 
 ---
 
@@ -1720,13 +1808,13 @@ if (g_cli.isBinlogV2Enabled()) {
    - WebSocketでパラメータ変更コマンドを受信
    - PIDゲインのリアルタイム調整
 
-2. **ログ記録**
-   - ブラウザでのログダウンロード機能
-   - WebSocket経由でバイナリログ転送
+2. ~~**ログ記録**~~ ✅ 実装済み (2025-12-31)
+   - ~~ブラウザでのログダウンロード機能~~ → CSVエクスポート実装
+   - WebSocket経由でバイナリログ転送（未実装）
 
-3. **3D可視化**
-   - Three.jsによる機体姿勢の3D表示
-   - 軌跡表示
+3. ~~**3D可視化**~~ → 2Dビュー方式に変更
+   - ~~Three.jsによる機体姿勢の3D表示~~ → 姿勢指示器 + 上面/側面ビューで代替
+   - ~~軌跡表示~~ → 上面/側面ビューに軌跡表示実装済み
 
 詳細設計: [docs/eskf_sensor_health.md](eskf_sensor_health.md), [docs/telemetry_design.md](telemetry_design.md)
 
@@ -1736,6 +1824,7 @@ if (g_cli.isBinlogV2Enabled()) {
 
 | 日付 | 内容 |
 |------|------|
+| 2025-12-31 | テレメトリv2.1: パケット96→108バイト拡張（地磁気追加）、HTMLビューア改善（色統一、オートフィット、姿勢指示器、座標軸回転）、サイドビュー原点中央化 |
 | 2025-12-29 | センサーヘルスチェック実装: 各タスクにヘルスフラグ追加、ESKF観測更新にガード追加、異常センサーからの更新を防止 |
 | 2025-12-29 | ESKF発散問題修正: g_eskf_readyフラグで起動制御、発散時の常時リセット（バグ修正）、設計ドキュメント追加 |
 | 2025-12-29 | WiFi WebSocketテレメトリ実装: APSTA + ESP-NOW並行動作、50Hz姿勢データ配信、ブラウザUI |
