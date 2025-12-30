@@ -285,7 +285,8 @@ esp_err_t bmi270_write_register(bmi270_dev_t *dev, uint8_t reg_addr, uint8_t dat
 // デバッグ用: IMUタスクのチェックポイント（main.cppで定義）
 extern volatile uint8_t g_imu_checkpoint;
 
-// Maximum burst read size for stack buffer (IMU data = 12 bytes + 2 header = 14)
+// Threshold for stack vs DMA allocation in burst read
+// ESP-IDF SPI driver uses CPU transfer for ≤32 bytes (no DMA benefit)
 #define BMI270_BURST_READ_STACK_MAX 32
 
 esp_err_t bmi270_read_burst(bmi270_dev_t *dev, uint8_t reg_addr, uint8_t *data, size_t length) {
@@ -304,19 +305,31 @@ esp_err_t bmi270_read_burst(bmi270_dev_t *dev, uint8_t reg_addr, uint8_t *data, 
     // Total bytes = 1 (CMD) + 1 (Dummy) + length (Data)
     size_t total_bytes = 2 + length;
 
-    // For small transfers (≤32 bytes), use stack buffers
-    // ESP-IDF SPI driver uses CPU transfer for ≤32 bytes anyway (no DMA)
-    if (total_bytes > BMI270_BURST_READ_STACK_MAX) {
-        ESP_LOGE(TAG, "Burst read size %zu exceeds stack buffer limit %d",
-                 total_bytes, BMI270_BURST_READ_STACK_MAX);
-        return ESP_ERR_INVALID_SIZE;
-    }
+    // For small transfers (≤32 bytes): use stack buffer (no malloc overhead)
+    // For large transfers (FIFO ~2KB): use DMA buffer
+    uint8_t stack_tx[BMI270_BURST_READ_STACK_MAX];
+    uint8_t stack_rx[BMI270_BURST_READ_STACK_MAX];
+    uint8_t *tx_buffer;
+    uint8_t *rx_buffer;
+    bool use_dma = (total_bytes > BMI270_BURST_READ_STACK_MAX);
 
     g_imu_checkpoint = 41;  // バッファ準備
 
-    // Stack-allocated buffers (no malloc/free overhead at 400Hz)
-    uint8_t tx_buffer[BMI270_BURST_READ_STACK_MAX];
-    uint8_t rx_buffer[BMI270_BURST_READ_STACK_MAX];
+    if (use_dma) {
+        // Large transfer: allocate DMA-capable buffers
+        tx_buffer = heap_caps_malloc(total_bytes, MALLOC_CAP_DMA);
+        rx_buffer = heap_caps_malloc(total_bytes, MALLOC_CAP_DMA);
+        if (!tx_buffer || !rx_buffer) {
+            ESP_LOGE(TAG, "Failed to allocate DMA buffers for %zu bytes", total_bytes);
+            heap_caps_free(tx_buffer);
+            heap_caps_free(rx_buffer);
+            return ESP_ERR_NO_MEM;
+        }
+    } else {
+        // Small transfer: use stack buffers
+        tx_buffer = stack_tx;
+        rx_buffer = stack_rx;
+    }
 
     // Prepare TX buffer
     tx_buffer[0] = reg_addr | BMI270_SPI_READ_BIT;  // Read command
@@ -346,6 +359,11 @@ esp_err_t bmi270_read_burst(bmi270_dev_t *dev, uint8_t reg_addr, uint8_t *data, 
         memcpy(data, &rx_buffer[2], length);
     } else {
         ESP_LOGE(TAG, "SPI burst read failed: %s", esp_err_to_name(ret));
+    }
+
+    if (use_dma) {
+        heap_caps_free(tx_buffer);
+        heap_caps_free(rx_buffer);
     }
 
     return ret;
