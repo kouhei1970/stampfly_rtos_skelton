@@ -226,10 +226,12 @@ namespace {
 
 }
 
-// デバッグ用: IMUタスクのチェックポイント（C言語からアクセス可能）
+// デバッグ用: タスクのチェックポイント（C言語からアクセス可能）
 extern "C" {
     volatile uint8_t g_imu_checkpoint = 0;
     volatile uint32_t g_imu_last_loop = 0;
+    volatile uint8_t g_optflow_checkpoint = 0;
+    volatile uint32_t g_optflow_last_loop = 0;
 }
 
 // =============================================================================
@@ -302,20 +304,27 @@ static void imu_timer_callback(void* arg)
 {
     static uint32_t timer_count = 0;
     static uint32_t last_imu_loop = 0;
+    static uint32_t last_optflow_loop = 0;
     timer_count++;
 
-    // 10秒ごと（4000回）にタイマー生存確認
+    // 10秒ごと（4000回 @ 400Hz）にタイマー生存確認
     if (timer_count % 4000 == 0) {
         // IMUタスクが進行しているかチェック
         if (g_imu_last_loop == last_imu_loop) {
-            // IMUタスクが停止している
-            ESP_LOGW(TAG, "IMU timer: count=%lu, IMU STUCK at checkpoint=%u, loop=%lu",
-                     timer_count, g_imu_checkpoint, g_imu_last_loop);
+            ESP_LOGW(TAG, "IMU STUCK at checkpoint=%u, loop=%lu",
+                     g_imu_checkpoint, g_imu_last_loop);
         } else {
             ESP_LOGI(TAG, "IMU timer alive: count=%lu, imu_loop=%lu",
                      timer_count, g_imu_last_loop);
         }
         last_imu_loop = g_imu_last_loop;
+
+        // OptFlowタスクが進行しているかチェック（10秒で1000回 @ 100Hz）
+        if (g_optflow_last_loop == last_optflow_loop && g_optflow_last_loop > 0) {
+            ESP_LOGW(TAG, "OptFlow STUCK at checkpoint=%u, loop=%lu",
+                     g_optflow_checkpoint, g_optflow_last_loop);
+        }
+        last_optflow_loop = g_optflow_last_loop;
     }
     xSemaphoreGive(g_imu_semaphore);
 }
@@ -760,19 +769,32 @@ static void OptFlowTask(void* pvParameters)
     constexpr int UNHEALTHY_THRESHOLD = 10; // 10連続失敗でunhealthy (100ms)
 
     static uint32_t optflow_loop_counter = 0;
+    static uint32_t last_logged_loop = 0;
 
     while (true) {
+        g_optflow_checkpoint = 0;  // ループ開始
         optflow_loop_counter++;
+        g_optflow_last_loop = optflow_loop_counter;
 
         // 10秒ごと（1000回 @ 100Hz）に生存確認
         if (optflow_loop_counter % 1000 == 0) {
-            ESP_LOGI(TAG, "OptFlowTask alive: loop=%lu, stack_free=%u",
-                     optflow_loop_counter, (unsigned)uxTaskGetStackHighWaterMark(nullptr));
+            // 前回のログから進行しているかチェック
+            if (optflow_loop_counter == last_logged_loop) {
+                ESP_LOGW(TAG, "OptFlowTask STUCK at checkpoint=%u, loop=%lu",
+                         g_optflow_checkpoint, optflow_loop_counter);
+            } else {
+                ESP_LOGI(TAG, "OptFlowTask alive: loop=%lu, stack_free=%u",
+                         optflow_loop_counter, (unsigned)uxTaskGetStackHighWaterMark(nullptr));
+            }
+            last_logged_loop = optflow_loop_counter;
         }
+
+        g_optflow_checkpoint = 1;  // readMotionBurst前
 
         if (g_optflow != nullptr) {
             try {
                 auto burst = g_optflow->readMotionBurst();
+                g_optflow_checkpoint = 2;  // readMotionBurst成功
                 // Check quality
                 if (stampfly::OutlierDetector::isFlowValid(burst.squal)) {
                     // ヘルスフラグ更新: 連続成功でhealthy
@@ -807,6 +829,7 @@ static void OptFlowTask(void* pvParameters)
             }
         }
 
+        g_optflow_checkpoint = 99;  // ループ完了
         vTaskDelayUntil(&last_wake_time, period);
     }
 }

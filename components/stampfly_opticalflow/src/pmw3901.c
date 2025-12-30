@@ -550,11 +550,16 @@ esp_err_t pmw3901_read_motion(pmw3901_t *dev, int16_t *delta_x, int16_t *delta_y
     return ESP_OK;
 }
 
+// デバッグ用: OptFlowタスクのチェックポイント（main.cppで定義）
+extern volatile uint8_t g_optflow_checkpoint;
+
 esp_err_t pmw3901_read_motion_burst(pmw3901_t *dev, pmw3901_motion_burst_t *burst)
 {
     if (dev == NULL || burst == NULL || !dev->initialized) {
         return ESP_ERR_INVALID_ARG;
     }
+
+    g_optflow_checkpoint = 50;  // burst read開始
 
     // PMW3901 burst read protocol:
     // Send 0x16 command, then immediately read 12 bytes of data
@@ -575,13 +580,22 @@ esp_err_t pmw3901_read_motion_burst(pmw3901_t *dev, pmw3901_motion_burst_t *burs
         .rx_buffer = rx_data,
     };
 
+    g_optflow_checkpoint = 51;  // SPI転送前
+
     esp_err_t ret = spi_device_transmit(dev->spi_handle, &trans);
+
+    g_optflow_checkpoint = 52;  // SPI転送後
+
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Burst read failed: %s", esp_err_to_name(ret));
         return ret;
     }
 
+    g_optflow_checkpoint = 53;  // delay前
+
     delay_us(PMW3901_SPI_READ_DELAY_US);
+
+    g_optflow_checkpoint = 54;  // delay後
 
     // Parse burst data according to datasheet
     // Byte 0: command echo (should be 0x16, but may vary)
