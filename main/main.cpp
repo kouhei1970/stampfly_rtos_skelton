@@ -1297,6 +1297,9 @@ static void TelemetryTask(void* pvParameters)
     TickType_t last_wake_time = xTaskGetTickCount();
     const TickType_t period = pdMS_TO_TICKS(20);  // 50Hz
 
+    // DEBUG: ESP32側送信カウンタ
+    static uint32_t esp32_send_counter = 0;
+
     while (true) {
         // Only broadcast when clients are connected
         if (telemetry.hasClients()) {
@@ -1305,7 +1308,7 @@ static void TelemetryTask(void* pvParameters)
             pkt.packet_type = 0x10;
             pkt.timestamp_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
 
-            // Get attitude from state
+            // Get attitude from state (全角度送信)
             state.getAttitudeEuler(pkt.roll, pkt.pitch, pkt.yaw);
 
             // Get position and velocity
@@ -1318,6 +1321,10 @@ static void TelemetryTask(void* pvParameters)
             pkt.vel_x = vel.x;
             pkt.vel_y = vel.y;
             pkt.vel_z = vel.z;
+
+            // ハートビート（専用フィールド）
+            esp32_send_counter++;
+            pkt.heartbeat = esp32_send_counter;
 
             // Get battery voltage
             float voltage, current;

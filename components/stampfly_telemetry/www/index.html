@@ -297,6 +297,10 @@
                     <span class="label">State</span>
                     <span id="state" class="value">---</span>
                 </div>
+                <div class="row">
+                    <span class="label">Heartbeat</span>
+                    <span id="heartbeat" class="value" style="color: #ffaa00;">---</span>
+                </div>
             </div>
         </div>
 
@@ -314,6 +318,29 @@
 // ============================================================================
 const STATES = ['INIT', 'CALIBRATING', 'IDLE', 'ARMED', 'FLYING', 'LANDING', 'ERROR'];
 const RAD_TO_DEG = 180 / Math.PI;
+
+// パケットオフセット定義（C++構造体と一致させる）
+const PKT = {
+    SIZE: 56,
+    HEADER: 0,        // uint8
+    TYPE: 1,          // uint8
+    TIMESTAMP: 2,     // uint32 (4 bytes)
+    ROLL: 6,          // float (4 bytes)
+    PITCH: 10,        // float
+    YAW: 14,          // float
+    POS_X: 18,        // float
+    POS_Y: 22,        // float
+    POS_Z: 26,        // float
+    VEL_X: 30,        // float
+    VEL_Y: 34,        // float
+    VEL_Z: 38,        // float
+    VOLTAGE: 42,      // float
+    FLIGHT_STATE: 46, // uint8
+    RESERVED: 47,     // uint8
+    HEARTBEAT: 48,    // uint32 (4 bytes)
+    CHECKSUM: 52,     // uint8
+    // padding: 53-55
+};
 const HISTORY_SIZE = 500;  // 10 seconds at 50Hz
 const GRAPH_HISTORY = 500;
 
@@ -755,76 +782,43 @@ function connect() {
     ws.onmessage = (event) => {
         try {
             if (!(event.data instanceof ArrayBuffer)) return;
-            if (event.data.byteLength < 48) return;
+            if (event.data.byteLength < PKT.SIZE) return;
 
             const data = new DataView(event.data);
-            if (data.getUint8(0) !== 0xAA) return;
+            if (data.getUint8(PKT.HEADER) !== 0xAA) return;
 
-            // Parse packet (little-endian)
-            const timestamp = data.getUint32(2, true);
-            const roll = data.getFloat32(6, true);
-            const pitch = data.getFloat32(10, true);
-            const yaw = data.getFloat32(14, true);
+            // Parse packet (little-endian) - 定数でオフセット指定
+            const timestamp = data.getUint32(PKT.TIMESTAMP, true);
+            const roll = data.getFloat32(PKT.ROLL, true);
+            const pitch = data.getFloat32(PKT.PITCH, true);
+            const yaw = data.getFloat32(PKT.YAW, true);
 
-            const pos_x = data.getFloat32(18, true);
-            const pos_y = data.getFloat32(22, true);
-            const pos_z = data.getFloat32(26, true);
+            const pos_x = data.getFloat32(PKT.POS_X, true);
+            const pos_y = data.getFloat32(PKT.POS_Y, true);
+            const pos_z = data.getFloat32(PKT.POS_Z, true);
 
-            const vel_x = data.getFloat32(30, true);
-            const vel_y = data.getFloat32(34, true);
-            const vel_z = data.getFloat32(38, true);
+            const vel_x = data.getFloat32(PKT.VEL_X, true);
+            const vel_y = data.getFloat32(PKT.VEL_Y, true);
+            const vel_z = data.getFloat32(PKT.VEL_Z, true);
 
-            const voltage = data.getFloat32(42, true);
-            const state = data.getUint8(46);
+            const voltage = data.getFloat32(PKT.VOLTAGE, true);
+            const state = data.getUint8(PKT.FLIGHT_STATE);
+            const heartbeat = data.getUint32(PKT.HEARTBEAT, true);
 
             // Convert to degrees for display
             const rollDeg = roll * RAD_TO_DEG;
             const pitchDeg = pitch * RAD_TO_DEG;
             const yawDeg = yaw * RAD_TO_DEG;
 
-            // Update history
-            history.time.push(timestamp);
-            history.roll.push(rollDeg);
-            history.pitch.push(pitchDeg);
-            history.yaw.push(yawDeg);
-            history.pos_x.push(pos_x);
-            history.pos_y.push(pos_y);
-            history.pos_z.push(pos_z);
-            history.vel_x.push(vel_x);
-            history.vel_y.push(vel_y);
-            history.vel_z.push(vel_z);
-
-            // Update 3D view - disabled for stability
-            // TODO: 3D visualization needs debugging
-
-            // Update display
+            // 全角度 + ハートビート表示
+            packetCount++;
+            document.getElementById('packets').textContent = packetCount;
             document.getElementById('roll').textContent = rollDeg.toFixed(1);
             document.getElementById('pitch').textContent = pitchDeg.toFixed(1);
             document.getElementById('yaw').textContent = yawDeg.toFixed(1);
-
-            document.getElementById('pos_x').textContent = pos_x.toFixed(3);
-            document.getElementById('pos_y').textContent = pos_y.toFixed(3);
-            document.getElementById('pos_z').textContent = pos_z.toFixed(3);
-
-            document.getElementById('vel_x').textContent = vel_x.toFixed(2);
-            document.getElementById('vel_y').textContent = vel_y.toFixed(2);
-            document.getElementById('vel_z').textContent = vel_z.toFixed(2);
-
             document.getElementById('voltage').textContent = voltage.toFixed(2);
-            if (!document.getElementById('state').textContent.startsWith('3D ERR')) {
-                document.getElementById('state').textContent = STATES[state] || 'UNKNOWN';
-            }
-
-            // Update horizon visualization
-            const horizonLine = document.getElementById('horizon-line');
-            const clampedPitch = Math.max(-45, Math.min(45, pitchDeg));
-            const pitchOffset = (clampedPitch / 45) * 35;
-            horizonLine.style.transform = `translateY(${pitchOffset}px) rotate(${-rollDeg}deg)`;
-
-            // Update stats
-            packetCount++;
-            document.getElementById('packets').textContent = packetCount;
-            document.getElementById('history').textContent = history.pos_x.length;
+            document.getElementById('state').textContent = STATES[state] || 'UNKNOWN';
+            document.getElementById('heartbeat').textContent = heartbeat;
         } catch (e) {
             // Show error in status and count
             errorCount++;
@@ -849,11 +843,11 @@ function connect() {
 // Initialization
 // ============================================================================
 window.onload = () => {
-    init3D();
+    // init3D();  // DISABLED FOR DEBUG
     connect();
 
-    // Update graphs at 10Hz (less frequent than data to save CPU)
-    setInterval(updateGraphs, 100);
+    // Update graphs at 10Hz - DISABLED FOR DEBUG
+    // setInterval(updateGraphs, 100);
 };
 </script>
 </body>

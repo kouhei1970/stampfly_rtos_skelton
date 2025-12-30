@@ -43,13 +43,19 @@ struct TelemetryWSPacket {
     // Battery (4 bytes)
     float voltage;            // [V]
 
-    // Status
+    // Status (2 bytes)
     uint8_t  flight_state;    // FlightState enum
+    uint8_t  reserved;        // 予約（アライメント用）
+
+    // Heartbeat (4 bytes)
+    uint32_t heartbeat;       // ESP32送信カウンタ
+
     uint8_t  checksum;        // XOR of all preceding bytes
+    uint8_t  padding[3];      // 4バイトアライメント
 };
 #pragma pack(pop)
 
-static_assert(sizeof(TelemetryWSPacket) == 48, "TelemetryWSPacket size mismatch");
+static_assert(sizeof(TelemetryWSPacket) == 56, "TelemetryWSPacket size mismatch");
 
 /**
  * @brief WiFi WebSocket Telemetry Server
