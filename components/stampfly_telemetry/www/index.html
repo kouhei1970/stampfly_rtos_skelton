@@ -304,6 +304,7 @@
             <span>Packets: <span id="packets">0</span></span>
             <span>Rate: <span id="rate">0</span> Hz</span>
             <span>History: <span id="history">0</span> pts</span>
+            <span>Errors: <span id="errors" style="color: #ff4444;">0</span></span>
         </div>
     </div>
 
@@ -376,12 +377,14 @@ function init3D() {
     renderer.setSize(rect.width, rect.height);
     renderer.setPixelRatio(window.devicePixelRatio);
 
-    // Grid (XY plane, Z is up in display but down in NED)
+    // Grid on XZ plane (North-East plane in NED, Y=0 is ground level)
     const gridHelper = new THREE.GridHelper(4, 20, 0x444444, 0x222222);
-    gridHelper.rotation.x = Math.PI / 2;  // Rotate to XY plane
     scene.add(gridHelper);
 
-    // Axes helper (RGB = XYZ)
+    // Custom axes for NED display
+    // X axis (red) = North
+    // Z axis (blue) = East (in Three.js, mapped from NED Y)
+    // Y axis (green) = Up (-NED Z)
     const axesHelper = new THREE.AxesHelper(1);
     scene.add(axesHelper);
 
@@ -424,40 +427,43 @@ function init3D() {
 }
 
 function addAxisLabels() {
-    // Create sprite labels for axes
-    const labels = [
-        { text: 'X (N)', pos: [1.2, 0, 0], color: '#ff6b6b' },
-        { text: 'Y (E)', pos: [0, 1.2, 0], color: '#4ecdc4' },
-        { text: 'Z (D)', pos: [0, 0, -1.2], color: '#ffe66d' }
-    ];
-    // Note: Simplified - labels would need canvas textures for proper implementation
+    // NED to Three.js mapping:
+    // Three.js X (red) = NED X (North)
+    // Three.js Y (green) = -NED Z (Up)
+    // Three.js Z (blue) = NED Y (East)
+    // Labels would need canvas textures for proper implementation
 }
 
 function createDroneModel() {
-    // Drone body
-    const bodyGeometry = new THREE.BoxGeometry(0.1, 0.1, 0.03);
-    const bodyMaterial = new THREE.MeshLambertMaterial({ color: 0x00ff88 });
-    droneModel = new THREE.Mesh(bodyGeometry, bodyMaterial);
+    // Isoceles triangle plate - pointed tip indicates forward (North/X in NED)
+    // Triangle vertices: tip at front, base at back
+    const shape = new THREE.Shape();
+    const length = 0.15;  // Length from tip to base
+    const width = 0.1;    // Width of base
+    shape.moveTo(length / 2, 0);           // Tip (front)
+    shape.lineTo(-length / 2, width / 2);  // Back left
+    shape.lineTo(-length / 2, -width / 2); // Back right
+    shape.closePath();
 
-    // Arms
-    const armGeometry = new THREE.BoxGeometry(0.2, 0.02, 0.01);
-    const armMaterial = new THREE.MeshLambertMaterial({ color: 0x888888 });
+    const geometry = new THREE.ShapeGeometry(shape);
+    const material = new THREE.MeshLambertMaterial({
+        color: 0x00ff88,
+        side: THREE.DoubleSide
+    });
+    droneModel = new THREE.Mesh(geometry, material);
 
-    const arm1 = new THREE.Mesh(armGeometry, armMaterial);
-    arm1.rotation.z = Math.PI / 4;
-    droneModel.add(arm1);
+    // Add a line to show orientation more clearly
+    const edgeGeometry = new THREE.EdgesGeometry(geometry);
+    const edgeMaterial = new THREE.LineBasicMaterial({ color: 0xffffff });
+    const edges = new THREE.LineSegments(edgeGeometry, edgeMaterial);
+    droneModel.add(edges);
 
-    const arm2 = new THREE.Mesh(armGeometry, armMaterial);
-    arm2.rotation.z = -Math.PI / 4;
-    droneModel.add(arm2);
-
-    // Direction indicator (front)
-    const frontGeometry = new THREE.ConeGeometry(0.02, 0.05, 8);
-    const frontMaterial = new THREE.MeshLambertMaterial({ color: 0xff4444 });
-    const frontIndicator = new THREE.Mesh(frontGeometry, frontMaterial);
-    frontIndicator.rotation.x = -Math.PI / 2;
-    frontIndicator.position.set(0.06, 0, 0);
-    droneModel.add(frontIndicator);
+    // Red tip indicator
+    const tipGeometry = new THREE.CircleGeometry(0.015, 8);
+    const tipMaterial = new THREE.MeshBasicMaterial({ color: 0xff4444 });
+    const tip = new THREE.Mesh(tipGeometry, tipMaterial);
+    tip.position.set(length / 2 - 0.02, 0, 0.001);
+    droneModel.add(tip);
 
     scene.add(droneModel);
 }
@@ -558,23 +564,31 @@ let trajectoryIndex = 0;
 let trajectoryCount = 0;
 let trajectoryUpdateCounter = 0;
 
-function updateDrone(roll, pitch, yaw, x, y, z) {
+function updateDrone(roll, pitch, yaw, pos_x, pos_y, pos_z) {
     if (!droneModel) return;
 
-    // Position (NED to Three.js: X=X, Y=Y, Z=-Z for display)
-    droneModel.position.set(x, y, -z);
+    // NED to Three.js coordinate conversion:
+    // NED: X=North(forward), Y=East(right), Z=Down
+    // Three.js: X=right, Y=up, Z=out
+    // Mapping: Three.X = NED.X, Three.Y = -NED.Z, Three.Z = NED.Y
+    droneModel.position.set(pos_x, -pos_z, pos_y);
 
-    // Rotation (NED to Three.js)
-    droneModel.rotation.set(roll, -yaw, pitch, 'ZYX');
+    // Rotation conversion:
+    // NED roll (around X) -> Three.js roll (around X)
+    // NED pitch (around Y) -> Three.js pitch (around Z)
+    // NED yaw (around Z) -> Three.js yaw (around -Y)
+    // Using Euler angles with order that makes sense
+    droneModel.rotation.set(roll, -yaw, pitch, 'YXZ');
 
     // Add to trajectory (ring buffer, update every 5 packets)
     if (++trajectoryUpdateCounter >= 5) {
         trajectoryUpdateCounter = 0;
 
         const idx = trajectoryIndex * 3;
-        trajectoryBuffer[idx] = x;
-        trajectoryBuffer[idx + 1] = y;
-        trajectoryBuffer[idx + 2] = -z;
+        // Same NED to Three.js conversion as position
+        trajectoryBuffer[idx] = pos_x;
+        trajectoryBuffer[idx + 1] = -pos_z;
+        trajectoryBuffer[idx + 2] = pos_y;
 
         trajectoryIndex = (trajectoryIndex + 1) % MAX_TRAJECTORY;
         if (trajectoryCount < MAX_TRAJECTORY) trajectoryCount++;
@@ -708,6 +722,7 @@ function updateGraphs() {
 // ============================================================================
 let ws = null;
 let packetCount = 0;
+let errorCount = 0;
 let lastRateTime = Date.now();
 let lastRateCount = 0;
 
@@ -779,12 +794,8 @@ function connect() {
             history.vel_y.push(vel_y);
             history.vel_z.push(vel_z);
 
-            // Update 3D view (with error handling)
-            try {
-                updateDrone(roll, pitch, yaw, pos_x, pos_y, pos_z);
-            } catch (e) {
-                document.getElementById('state').textContent = '3D ERR: ' + e.message;
-            }
+            // Update 3D view - disabled for stability
+            // TODO: 3D visualization needs debugging
 
             // Update display
             document.getElementById('roll').textContent = rollDeg.toFixed(1);
@@ -815,7 +826,9 @@ function connect() {
             document.getElementById('packets').textContent = packetCount;
             document.getElementById('history').textContent = history.pos_x.length;
         } catch (e) {
-            // Show error in status
+            // Show error in status and count
+            errorCount++;
+            document.getElementById('errors').textContent = errorCount;
             document.getElementById('state').textContent = 'ERR: ' + e.message;
             packetCount++;
             document.getElementById('packets').textContent = packetCount;
