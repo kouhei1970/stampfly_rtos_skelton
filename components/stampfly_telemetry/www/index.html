@@ -831,7 +831,7 @@ function drawSideView() {
 
     const w = rect.width;
     const h = rect.height;
-    const cx = w * 0.25;
+    const cx = w / 2;
     const cy = h * 0.35;
     const scale = 50;
 
@@ -850,7 +850,7 @@ function drawSideView() {
     // Grid
     ctx.strokeStyle = '#222';
     ctx.lineWidth = 1;
-    for (let i = -2; i <= 5; i++) {
+    for (let i = -5; i <= 5; i++) {
         ctx.beginPath();
         ctx.moveTo(cx + i * scale, 0);
         ctx.lineTo(cx + i * scale, h);
