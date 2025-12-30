@@ -299,6 +299,22 @@
         </div>
 
         <div class="card">
+            <div class="card-title">Magnetometer</div>
+            <div class="row">
+                <span class="label" style="color:#ff6b6b">X</span>
+                <span><span id="mag_x" class="value">---</span><span class="unit">uT</span></span>
+            </div>
+            <div class="row">
+                <span class="label" style="color:#4edc4e">Y</span>
+                <span><span id="mag_y" class="value">---</span><span class="unit">uT</span></span>
+            </div>
+            <div class="row">
+                <span class="label" style="color:#6b9fff">Z</span>
+                <span><span id="mag_z" class="value">---</span><span class="unit">uT</span></span>
+            </div>
+        </div>
+
+        <div class="card">
             <div class="card-title">Control Input</div>
             <div class="row">
                 <span class="label">Thr</span>
@@ -399,6 +415,18 @@
 
         <div class="graph-card">
             <div class="graph-header">
+                <div class="graph-title">Magnetometer [uT]</div>
+            </div>
+            <canvas class="graph-canvas" id="graphMag"></canvas>
+            <div class="legend">
+                <div class="legend-item"><div class="legend-color" style="background:#ff6b6b"></div>X</div>
+                <div class="legend-item"><div class="legend-color" style="background:#4edc4e"></div>Y</div>
+                <div class="legend-item"><div class="legend-color" style="background:#6b9fff"></div>Z</div>
+            </div>
+        </div>
+
+        <div class="graph-card">
+            <div class="graph-header">
                 <div class="graph-title">Control Input</div>
             </div>
             <canvas class="graph-canvas" id="graphControl"></canvas>
@@ -445,9 +473,9 @@ const COLORS = {
     THR: '#ffaa00' // Orange - Throttle
 };
 
-// V2 Packet offsets (96 bytes)
+// V2.1 Packet offsets (108 bytes)
 const PKT = {
-    SIZE: 96,
+    SIZE: 108,
     HEADER: 0,
     TYPE: 1,
     TIMESTAMP: 2,
@@ -470,11 +498,14 @@ const PKT = {
     CTRL_ROLL: 70,
     CTRL_PITCH: 74,
     CTRL_YAW: 78,
-    VOLTAGE: 82,
-    FLIGHT_STATE: 86,
-    SENSOR_STATUS: 87,
-    HEARTBEAT: 88,
-    CHECKSUM: 92,
+    MAG_X: 82,         // [NEW]
+    MAG_Y: 86,         // [NEW]
+    MAG_Z: 90,         // [NEW]
+    VOLTAGE: 94,
+    FLIGHT_STATE: 98,
+    SENSOR_STATUS: 99,
+    HEARTBEAT: 100,
+    CHECKSUM: 104,
 };
 const HISTORY_SIZE = 500;
 
@@ -507,6 +538,9 @@ const history = {
     vel_x: new RingBuffer(HISTORY_SIZE),
     vel_y: new RingBuffer(HISTORY_SIZE),
     vel_z: new RingBuffer(HISTORY_SIZE),
+    mag_x: new RingBuffer(HISTORY_SIZE),
+    mag_y: new RingBuffer(HISTORY_SIZE),
+    mag_z: new RingBuffer(HISTORY_SIZE),
     gyro_x: new RingBuffer(HISTORY_SIZE),
     gyro_y: new RingBuffer(HISTORY_SIZE),
     gyro_z: new RingBuffer(HISTORY_SIZE),
@@ -756,7 +790,9 @@ function drawTopView() {
 
     ctx.save();
     ctx.translate(dx, dy);
-    ctx.rotate(-currentState.yaw);
+    // NED: positive yaw = clockwise when viewed from above
+    // Canvas: positive rotation = clockwise
+    ctx.rotate(currentState.yaw);
 
     // Coordinate axes arrows (attached to drone)
     const axisLen = 30;
@@ -949,6 +985,8 @@ function updateGraphs() {
               [COLORS.X, COLORS.Y, COLORS.Z, '#888'], 50);      // ±50 deg/s default
     drawGraph('graphAccel', history.accel_x, history.accel_y, history.accel_z, null,
               [COLORS.X, COLORS.Y, COLORS.Z, '#888'], 12);      // ±12 m/s² default (> 1G)
+    drawGraph('graphMag', history.mag_x, history.mag_y, history.mag_z, null,
+              [COLORS.X, COLORS.Y, COLORS.Z, '#888'], 50);      // ±50 uT default
     drawGraph('graphControl', history.ctrl_throttle, history.ctrl_roll, history.ctrl_pitch, history.ctrl_yaw,
               [COLORS.THR, COLORS.X, COLORS.Y, COLORS.Z], 1);   // ±1 default
 }
@@ -987,7 +1025,7 @@ function stopLog() {
 function downloadLog() {
     if (logData.length === 0) return;
 
-    const header = 'timestamp_ms,roll_deg,pitch_deg,yaw_deg,pos_x,pos_y,pos_z,vel_x,vel_y,vel_z,gyro_x,gyro_y,gyro_z,accel_x,accel_y,accel_z,throttle,ctrl_roll,ctrl_pitch,ctrl_yaw,voltage,state\n';
+    const header = 'timestamp_ms,roll_deg,pitch_deg,yaw_deg,pos_x,pos_y,pos_z,vel_x,vel_y,vel_z,gyro_x,gyro_y,gyro_z,accel_x,accel_y,accel_z,mag_x,mag_y,mag_z,throttle,ctrl_roll,ctrl_pitch,ctrl_yaw,voltage,state\n';
     const csv = header + logData.map(d => d.join(',')).join('\n');
 
     const blob = new Blob([csv], { type: 'text/csv' });
@@ -1077,6 +1115,7 @@ function connect() {
             let gyro_x = 0, gyro_y = 0, gyro_z = 0;
             let accel_x = 0, accel_y = 0, accel_z = 0;
             let ctrl_throttle = 0, ctrl_roll = 0, ctrl_pitch = 0, ctrl_yaw = 0;
+            let mag_x = 0, mag_y = 0, mag_z = 0;
             let sensor_status = 0x1F;
 
             if (packetType === 0x20) {
@@ -1092,6 +1131,10 @@ function connect() {
                 ctrl_roll = data.getFloat32(PKT.CTRL_ROLL, true);
                 ctrl_pitch = data.getFloat32(PKT.CTRL_PITCH, true);
                 ctrl_yaw = data.getFloat32(PKT.CTRL_YAW, true);
+
+                mag_x = data.getFloat32(PKT.MAG_X, true);
+                mag_y = data.getFloat32(PKT.MAG_Y, true);
+                mag_z = data.getFloat32(PKT.MAG_Z, true);
 
                 sensor_status = data.getUint8(PKT.SENSOR_STATUS);
             }
@@ -1132,6 +1175,9 @@ function connect() {
             history.ctrl_roll.push(ctrl_roll);
             history.ctrl_pitch.push(ctrl_pitch);
             history.ctrl_yaw.push(ctrl_yaw);
+            history.mag_x.push(mag_x);
+            history.mag_y.push(mag_y);
+            history.mag_z.push(mag_z);
 
             // Log if recording
             if (isLogging) {
@@ -1141,6 +1187,7 @@ function connect() {
                     vel_x.toFixed(4), vel_y.toFixed(4), vel_z.toFixed(4),
                     gyro_x_deg.toFixed(2), gyro_y_deg.toFixed(2), gyro_z_deg.toFixed(2),
                     accel_x.toFixed(3), accel_y.toFixed(3), accel_z.toFixed(3),
+                    mag_x.toFixed(1), mag_y.toFixed(1), mag_z.toFixed(1),
                     ctrl_throttle.toFixed(3), ctrl_roll.toFixed(3), ctrl_pitch.toFixed(3), ctrl_yaw.toFixed(3),
                     voltage.toFixed(2), state
                 ]);
@@ -1164,6 +1211,9 @@ function connect() {
             document.getElementById('accel_x').textContent = accel_x.toFixed(2);
             document.getElementById('accel_y').textContent = accel_y.toFixed(2);
             document.getElementById('accel_z').textContent = accel_z.toFixed(2);
+            document.getElementById('mag_x').textContent = mag_x.toFixed(1);
+            document.getElementById('mag_y').textContent = mag_y.toFixed(1);
+            document.getElementById('mag_z').textContent = mag_z.toFixed(1);
             document.getElementById('ctrl_throttle').textContent = (ctrl_throttle * 100).toFixed(0);
             document.getElementById('ctrl_roll').textContent = ctrl_roll.toFixed(2);
             document.getElementById('ctrl_pitch').textContent = ctrl_pitch.toFixed(2);

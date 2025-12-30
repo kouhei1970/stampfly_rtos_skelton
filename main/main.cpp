@@ -1431,6 +1431,13 @@ static void TelemetryTask(void* pvParameters)
             state.getControlInput(pkt.ctrl_throttle, pkt.ctrl_roll,
                                   pkt.ctrl_pitch, pkt.ctrl_yaw);
 
+            // Get magnetometer data
+            stampfly::Vec3 mag;
+            state.getMagData(mag);
+            pkt.mag_x = mag.x;
+            pkt.mag_y = mag.y;
+            pkt.mag_z = mag.z;
+
             // Get battery voltage
             float voltage, current;
             state.getPowerData(voltage, current);

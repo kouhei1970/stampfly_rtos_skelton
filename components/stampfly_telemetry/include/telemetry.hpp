@@ -53,18 +53,23 @@ struct TelemetryWSPacket {
     float accel_y;            // [m/s²]
     float accel_z;            // [m/s²]
 
-    // Control inputs - normalized (16 bytes) [NEW]
+    // Control inputs - normalized (16 bytes)
     float ctrl_throttle;      // [0-1]
     float ctrl_roll;          // [-1 to 1]
     float ctrl_pitch;         // [-1 to 1]
     float ctrl_yaw;           // [-1 to 1]
+
+    // Magnetometer - raw sensor (12 bytes) [NEW v2.1]
+    float mag_x;              // [uT]
+    float mag_y;              // [uT]
+    float mag_z;              // [uT]
 
     // Battery (4 bytes)
     float voltage;            // [V]
 
     // Status (2 bytes)
     uint8_t  flight_state;    // FlightState enum
-    uint8_t  sensor_status;   // Sensor health flags [NEW]
+    uint8_t  sensor_status;   // Sensor health flags
 
     // Heartbeat (4 bytes)
     uint32_t heartbeat;       // ESP32送信カウンタ
@@ -74,7 +79,7 @@ struct TelemetryWSPacket {
 };
 #pragma pack(pop)
 
-static_assert(sizeof(TelemetryWSPacket) == 96, "TelemetryWSPacket size mismatch");
+static_assert(sizeof(TelemetryWSPacket) == 108, "TelemetryWSPacket size mismatch");
 
 /**
  * @brief Sensor status flags (bitfield)
