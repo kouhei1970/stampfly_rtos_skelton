@@ -18,34 +18,53 @@ namespace stampfly {
 
 /**
  * @brief Telemetry packet structure (binary format)
+ *
+ * Version 2: Extended packet with IMU data and control inputs
  */
 #pragma pack(push, 1)
 struct TelemetryWSPacket {
+    // Header (2 bytes)
     uint8_t  header;          // 0xAA
-    uint8_t  packet_type;     // 0x10 = attitude/basic
+    uint8_t  packet_type;     // 0x20 = extended packet (v2)
     uint32_t timestamp_ms;    // ms since boot
 
-    // Attitude (12 bytes)
+    // Attitude - ESKF estimated (12 bytes)
     float roll;               // [rad]
     float pitch;              // [rad]
     float yaw;                // [rad]
 
-    // Position (12 bytes)
+    // Position - ESKF estimated (12 bytes)
     float pos_x;              // [m] NED
     float pos_y;              // [m]
     float pos_z;              // [m]
 
-    // Velocity (12 bytes)
+    // Velocity - ESKF estimated (12 bytes)
     float vel_x;              // [m/s]
     float vel_y;              // [m/s]
     float vel_z;              // [m/s]
+
+    // Gyro - bias corrected (12 bytes) [NEW]
+    float gyro_x;             // [rad/s]
+    float gyro_y;             // [rad/s]
+    float gyro_z;             // [rad/s]
+
+    // Accel - bias corrected (12 bytes) [NEW]
+    float accel_x;            // [m/s²]
+    float accel_y;            // [m/s²]
+    float accel_z;            // [m/s²]
+
+    // Control inputs - normalized (16 bytes) [NEW]
+    float ctrl_throttle;      // [0-1]
+    float ctrl_roll;          // [-1 to 1]
+    float ctrl_pitch;         // [-1 to 1]
+    float ctrl_yaw;           // [-1 to 1]
 
     // Battery (4 bytes)
     float voltage;            // [V]
 
     // Status (2 bytes)
     uint8_t  flight_state;    // FlightState enum
-    uint8_t  reserved;        // 予約（アライメント用）
+    uint8_t  sensor_status;   // Sensor health flags [NEW]
 
     // Heartbeat (4 bytes)
     uint32_t heartbeat;       // ESP32送信カウンタ
@@ -55,7 +74,18 @@ struct TelemetryWSPacket {
 };
 #pragma pack(pop)
 
-static_assert(sizeof(TelemetryWSPacket) == 56, "TelemetryWSPacket size mismatch");
+static_assert(sizeof(TelemetryWSPacket) == 96, "TelemetryWSPacket size mismatch");
+
+/**
+ * @brief Sensor status flags (bitfield)
+ */
+enum SensorStatusFlags : uint8_t {
+    SENSOR_IMU_OK    = (1 << 0),
+    SENSOR_MAG_OK    = (1 << 1),
+    SENSOR_BARO_OK   = (1 << 2),
+    SENSOR_TOF_OK    = (1 << 3),
+    SENSOR_FLOW_OK   = (1 << 4),
+};
 
 /**
  * @brief WiFi WebSocket Telemetry Server

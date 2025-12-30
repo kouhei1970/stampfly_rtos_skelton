@@ -8,6 +8,7 @@
 
 #include <stdio.h>
 #include <cmath>
+#include <cstddef>  // for offsetof
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
@@ -1399,13 +1400,13 @@ static void TelemetryTask(void* pvParameters)
         if (telemetry.hasClients()) {
             stampfly::TelemetryWSPacket pkt = {};
             pkt.header = 0xAA;
-            pkt.packet_type = 0x10;
+            pkt.packet_type = 0x20;  // v2 extended packet
             pkt.timestamp_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
 
-            // Get attitude from state (全角度送信)
+            // Get attitude from state (ESKF estimated)
             state.getAttitudeEuler(pkt.roll, pkt.pitch, pkt.yaw);
 
-            // Get position and velocity
+            // Get position and velocity (ESKF estimated)
             auto pos = state.getPosition();
             pkt.pos_x = pos.x;
             pkt.pos_y = pos.y;
@@ -1416,9 +1417,19 @@ static void TelemetryTask(void* pvParameters)
             pkt.vel_y = vel.y;
             pkt.vel_z = vel.z;
 
-            // ハートビート（専用フィールド）
-            esp32_send_counter++;
-            pkt.heartbeat = esp32_send_counter;
+            // Get bias-corrected IMU data
+            stampfly::Vec3 accel, gyro;
+            state.getIMUCorrected(accel, gyro);
+            pkt.gyro_x = gyro.x;
+            pkt.gyro_y = gyro.y;
+            pkt.gyro_z = gyro.z;
+            pkt.accel_x = accel.x;
+            pkt.accel_y = accel.y;
+            pkt.accel_z = accel.z;
+
+            // Get control inputs (normalized)
+            state.getControlInput(pkt.ctrl_throttle, pkt.ctrl_roll,
+                                  pkt.ctrl_pitch, pkt.ctrl_yaw);
 
             // Get battery voltage
             float voltage, current;
@@ -1428,10 +1439,19 @@ static void TelemetryTask(void* pvParameters)
             // Get flight state
             pkt.flight_state = static_cast<uint8_t>(state.getFlightState());
 
-            // Calculate checksum (XOR of all bytes)
+            // Sensor status (placeholder - all OK for now)
+            pkt.sensor_status = 0x1F;  // All sensors OK
+
+            // Heartbeat counter
+            esp32_send_counter++;
+            pkt.heartbeat = esp32_send_counter;
+
+            // Calculate checksum (XOR of all bytes before checksum field)
             uint8_t checksum = 0;
             const uint8_t* data = reinterpret_cast<const uint8_t*>(&pkt);
-            for (size_t i = 0; i < sizeof(pkt) - 1; i++) {
+            // checksum is at offset 92 (sizeof(pkt) - 4 for padding - 1 for checksum)
+            constexpr size_t checksum_offset = offsetof(stampfly::TelemetryWSPacket, checksum);
+            for (size_t i = 0; i < checksum_offset; i++) {
                 checksum ^= data[i];
             }
             pkt.checksum = checksum;
