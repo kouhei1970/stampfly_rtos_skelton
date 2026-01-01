@@ -659,7 +659,7 @@ DDS Layer            : 通信ミドルウェア
 
 ---
 
-### フェーズ1.5: センサー更新ロジックの移動 🔄 進行中
+### フェーズ1.5: センサー更新ロジックの移動 ✅ 完了
 
 **目標**: main.cpp内のセンサー更新ロジックをsf_algo_fusionに移動し、main.cppを縮小
 
@@ -723,34 +723,51 @@ bool ready = g_health.isFlightReady();  // IMU+ToF+OptFlow
 
 ---
 
-### フェーズ3: main.cppファイル分割 🔄 部分完了
+### フェーズ3: main.cppファイル分割 ✅ 完了
+
+**解決策**: 無名namespace → `globals` namespace + extern宣言に変更
 
 **完了した作業**:
 
 | 作業 | 状態 | 備考 |
 |------|------|------|
 | config.hpp 抽出 | ✅ | GPIO、優先度、スタックサイズ、タイミング定数 |
-| init.cpp 抽出 | ⏸️ | 無名namespaceのためブロック中 |
-| tasks/ 分割 | ⏸️ | 無名namespaceのためブロック中 |
+| globals.hpp/cpp 抽出 | ✅ | extern宣言方式、CLI互換性維持 |
+| init.hpp/cpp 抽出 | ✅ | 初期化関数群（~512行） |
+| tasks/ ディレクトリ作成 | ✅ | 12個のタスクを個別ファイルに分割 |
 
-**課題**: 現在のグローバル変数は無名namespace内に定義されており、ファイルスコープです。
-init関数やタスク関数を別ファイルに分割するには、extern宣言への変更が必要です。
-
-**今後の選択肢**:
-1. 無名namespace → 名前付きnamespace + extern宣言に変更（大規模変更）
-2. 現状維持（config.hppのみ分割、残りはmain.cpp内）
-
-**現在のmain.cpp構成** (2133行):
+**リファクタリング後のmain/構成**:
 ```
-includes + config                ~60行
-globals (anonymous namespace)    ~120行
-helper functions                 ~60行
-task functions (12個)           ~1000行
-event handlers                   ~100行
-init functions (8個)             ~400行
-startTasks                       ~100行
-app_main                         ~130行
+main/
+├── CMakeLists.txt       (35行)
+├── config.hpp          (105行) - GPIO、優先度、定数
+├── globals.hpp         (187行) - グローバル変数extern宣言
+├── globals.cpp         (146行) - グローバル変数定義
+├── init.hpp             (62行) - 初期化関数プロトタイプ
+├── init.cpp            (512行) - 初期化ロジック
+├── main.cpp            (495行) - エントリポイント、コールバック、startTasks
+└── tasks/
+    ├── tasks_common.hpp (48行) - 共通インクルード
+    ├── tasks.hpp        (78行) - タスク関数プロトタイプ
+    ├── imu_task.cpp    (322行) - 400Hz IMU + ESKF
+    ├── control_task.cpp (97行) - 400Hz 制御スタブ
+    ├── optflow_task.cpp (75行) - 100Hz オプティカルフロー
+    ├── mag_task.cpp     (94行) - 100Hz 地磁気
+    ├── baro_task.cpp    (62行) - 50Hz 気圧
+    ├── tof_task.cpp    (143行) - 30Hz ToF距離
+    ├── power_task.cpp   (56行) - 10Hz 電源監視
+    ├── led_task.cpp     (74行) - 30Hz LED
+    ├── button_task.cpp  (27行) - 100Hz ボタン
+    ├── comm_task.cpp    (70行) - 50Hz ESP-NOW
+    ├── cli_task.cpp     (52行) - CLIシリアル
+    └── telemetry_task.cpp (100行) - 50Hz WebSocket
 ```
+
+**成果**:
+- main.cpp: 2133行 → 495行（**77%削減**）
+- 各ファイルの責務が明確
+- タスク名とファイル名が一致（探しやすい）
+- 大きなimu_task.cpp（322行）以外は100行以下
 
 ---
 
