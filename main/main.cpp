@@ -54,71 +54,13 @@
 // Telemetry
 #include "telemetry.hpp"
 
+// Configuration
+#include "config.hpp"
+
 static const char* TAG = "main";
 
-// =============================================================================
-// GPIO Definitions (from implementation_plan.md)
-// =============================================================================
-
-// SPI Bus
-static constexpr int GPIO_SPI_MOSI = 14;
-static constexpr int GPIO_SPI_MISO = 43;
-static constexpr int GPIO_SPI_SCK = 44;
-static constexpr int GPIO_IMU_CS = 46;
-static constexpr int GPIO_FLOW_CS = 12;
-
-// I2C Bus
-static constexpr int GPIO_I2C_SDA = 3;
-static constexpr int GPIO_I2C_SCL = 4;
-
-// ToF XSHUT
-static constexpr int GPIO_TOF_XSHUT_BOTTOM = 7;
-static constexpr int GPIO_TOF_XSHUT_FRONT = 9;
-
-// Motors (LEDC PWM)
-static constexpr int GPIO_MOTOR_M1 = 42;  // FR, CCW
-static constexpr int GPIO_MOTOR_M2 = 41;  // RR, CW
-static constexpr int GPIO_MOTOR_M3 = 10;  // RL, CCW
-static constexpr int GPIO_MOTOR_M4 = 5;   // FL, CW
-
-// Peripherals
-static constexpr int GPIO_LED = 39;
-static constexpr int GPIO_BUZZER = 40;
-static constexpr int GPIO_BUTTON = 0;
-
-// =============================================================================
-// Task Priorities (from implementation_plan.md)
-// =============================================================================
-
-static constexpr UBaseType_t PRIORITY_IMU_TASK = 24;
-static constexpr UBaseType_t PRIORITY_CONTROL_TASK = 23;  // Flight control (after IMU)
-static constexpr UBaseType_t PRIORITY_OPTFLOW_TASK = 20;
-static constexpr UBaseType_t PRIORITY_MAG_TASK = 18;
-static constexpr UBaseType_t PRIORITY_BARO_TASK = 16;
-static constexpr UBaseType_t PRIORITY_COMM_TASK = 15;
-static constexpr UBaseType_t PRIORITY_TOF_TASK = 14;
-static constexpr UBaseType_t PRIORITY_POWER_TASK = 12;
-static constexpr UBaseType_t PRIORITY_BUTTON_TASK = 10;
-static constexpr UBaseType_t PRIORITY_LED_TASK = 8;
-static constexpr UBaseType_t PRIORITY_CLI_TASK = 5;
-static constexpr UBaseType_t PRIORITY_TELEMETRY_TASK = 13;  // Core 0, below ToF
-
-// =============================================================================
-// Task Stack Sizes
-// =============================================================================
-
-static constexpr uint32_t STACK_SIZE_IMU = 16384;  // Increased for ESKF matrix operations
-static constexpr uint32_t STACK_SIZE_CONTROL = 8192;  // Flight control task
-static constexpr uint32_t STACK_SIZE_OPTFLOW = 8192;
-static constexpr uint32_t STACK_SIZE_MAG = 8192;
-static constexpr uint32_t STACK_SIZE_BARO = 8192;
-static constexpr uint32_t STACK_SIZE_TOF = 8192;
-static constexpr uint32_t STACK_SIZE_POWER = 4096;
-static constexpr uint32_t STACK_SIZE_LED = 4096;
-static constexpr uint32_t STACK_SIZE_BUTTON = 4096;
-static constexpr uint32_t STACK_SIZE_COMM = 4096;
-static constexpr uint32_t STACK_SIZE_CLI = 4096;
-static constexpr uint32_t STACK_SIZE_TELEMETRY = 4096;
+// config:: namespace shortcuts for backward compatibility
+using namespace config;
 
 // =============================================================================
 // Global Component Instances
