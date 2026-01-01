@@ -40,17 +40,17 @@ public:
      * @brief 設定構造体
      */
     struct Config {
-        float imu_dt;           // IMU周期 [s] (400Hz = 0.0025)
-        float flow_dt;          // Flow周期 [s] (100Hz = 0.01)
-        float max_position;     // 発散検出閾値 [m]
-        float max_velocity;     // 発散検出閾値 [m/s]
+        // センサー使用スイッチ（デフォルト: 全て有効）
+        bool use_optical_flow = true;
+        bool use_barometer = true;
+        bool use_tof = true;
+        bool use_magnetometer = true;
 
-        Config()
-            : imu_dt(0.0025f)
-            , flow_dt(0.01f)
-            , max_position(100.0f)
-            , max_velocity(50.0f)
-        {}
+        // 発散検出閾値
+        float max_position = 100.0f;   // [m]
+        float max_velocity = 50.0f;    // [m/s]
+
+        Config() = default;
     };
 
     /**

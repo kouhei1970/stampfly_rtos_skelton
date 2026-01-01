@@ -62,6 +62,11 @@ void SensorFusion::updateOpticalFlow(int16_t dx, int16_t dy, float distance,
         return;
     }
 
+    // センサー無効時はスキップ
+    if (!config_.use_optical_flow) {
+        return;
+    }
+
     // 距離の有効範囲チェック
     if (distance < 0.02f || distance > 4.0f) {
         return;
@@ -76,11 +81,21 @@ void SensorFusion::updateBarometer(float relative_altitude) {
         return;
     }
 
+    // センサー無効時はスキップ
+    if (!config_.use_barometer) {
+        return;
+    }
+
     eskf_.updateBaro(relative_altitude);
 }
 
 void SensorFusion::updateToF(float distance) {
     if (!initialized_ || diverged_) {
+        return;
+    }
+
+    // センサー無効時はスキップ
+    if (!config_.use_tof) {
         return;
     }
 
@@ -94,6 +109,11 @@ void SensorFusion::updateToF(float distance) {
 
 void SensorFusion::updateMagnetometer(const stampfly::math::Vector3& mag_body) {
     if (!initialized_ || diverged_) {
+        return;
+    }
+
+    // センサー無効時はスキップ
+    if (!config_.use_magnetometer) {
         return;
     }
 
