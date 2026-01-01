@@ -15,7 +15,7 @@ void BaroTask(void* pvParameters)
     ESP_LOGI(TAG, "BaroTask started");
 
     TickType_t last_wake_time = xTaskGetTickCount();
-    const TickType_t period = pdMS_TO_TICKS(20);  // 50Hz
+    const TickType_t period = pdMS_TO_TICKS(static_cast<TickType_t>(BARO_DT * 1000.0f));
 
     auto& state = stampfly::StampFlyState::getInstance();
 

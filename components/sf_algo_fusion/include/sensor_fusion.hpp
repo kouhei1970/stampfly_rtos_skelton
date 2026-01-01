@@ -63,14 +63,24 @@ public:
     SensorFusion& operator=(const SensorFusion&) = delete;
 
     /**
-     * @brief センサー有効/無効設定
-     * 全てのセンサースイッチを一箇所で管理
+     * @brief センサー有効/無効設定と閾値
+     * 全てのセンサースイッチと閾値を一箇所で管理
      */
     struct SensorEnables {
+        // 有効/無効スイッチ
         bool optical_flow = true;   // オプティカルフロー
         bool barometer = true;      // 気圧センサー
         bool tof = true;            // ToFセンサー
         bool magnetometer = true;   // 地磁気センサー
+
+        // オプティカルフロー閾値
+        uint8_t flow_squal_min = 0x19;    // 最小品質閾値
+        float flow_distance_min = 0.02f;  // [m]
+        float flow_distance_max = 4.0f;   // [m]
+
+        // ToF距離閾値
+        float tof_distance_min = 0.01f;   // [m]
+        float tof_distance_max = 4.0f;    // [m]
     };
 
     /**

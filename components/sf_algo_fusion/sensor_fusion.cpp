@@ -62,13 +62,13 @@ void SensorFusion::updateOpticalFlow(int16_t dx, int16_t dy, uint8_t squal,
         return;
     }
 
-    // 品質チェック（squal >= 0x19 で有効）
-    if (squal < 0x19) {
+    // 品質チェック
+    if (squal < enables_.flow_squal_min) {
         return;
     }
 
     // 距離の有効範囲チェック
-    if (distance < 0.02f || distance > 4.0f) {
+    if (distance < enables_.flow_distance_min || distance > enables_.flow_distance_max) {
         return;
     }
 
@@ -90,7 +90,7 @@ void SensorFusion::updateToF(float distance) {
     }
 
     // 距離の有効範囲チェック
-    if (distance < 0.01f || distance > 4.0f) {
+    if (distance < enables_.tof_distance_min || distance > enables_.tof_distance_max) {
         return;
     }
 

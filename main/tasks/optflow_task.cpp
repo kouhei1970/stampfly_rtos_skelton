@@ -15,7 +15,7 @@ void OptFlowTask(void* pvParameters)
     ESP_LOGI(TAG, "OptFlowTask started");
 
     TickType_t last_wake_time = xTaskGetTickCount();
-    const TickType_t period = pdMS_TO_TICKS(10);  // 100Hz
+    const TickType_t period = pdMS_TO_TICKS(static_cast<TickType_t>(OPTFLOW_DT * 1000.0f));
 
     auto& state = stampfly::StampFlyState::getInstance();
 

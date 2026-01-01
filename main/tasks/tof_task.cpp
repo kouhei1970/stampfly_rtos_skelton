@@ -16,7 +16,7 @@ void ToFTask(void* pvParameters)
              g_tof_bottom.isInitialized(), g_tof_front.isInitialized());
 
     TickType_t last_wake_time = xTaskGetTickCount();
-    const TickType_t period = pdMS_TO_TICKS(33);  // ~30Hz
+    const TickType_t period = pdMS_TO_TICKS(static_cast<TickType_t>(TOF_DT * 1000.0f));
 
     auto& state = stampfly::StampFlyState::getInstance();
 
@@ -26,8 +26,8 @@ void ToFTask(void* pvParameters)
     g_health.tof.setThresholds(5, 10);
     // 距離の急激な変化検出用
     float tof_last_valid_distance = 0.0f;
-    constexpr float TOF_MAX_CHANGE_RATE = 2.0f;  // 最大変化率 [m/s]（30Hz想定で1回あたり約6.7cm）
-    constexpr float TOF_MAX_CHANGE_PER_CYCLE = TOF_MAX_CHANGE_RATE / 30.0f;  // 約0.067m
+    constexpr float TOF_MAX_CHANGE_RATE = 2.0f;  // 最大変化率 [m/s]
+    const float TOF_MAX_CHANGE_PER_CYCLE = TOF_MAX_CHANGE_RATE * TOF_DT;  // TOF_DT秒あたりの最大変化
     int bottom_errors = 0;
     int front_errors = 0;
     bool bottom_disabled = false;

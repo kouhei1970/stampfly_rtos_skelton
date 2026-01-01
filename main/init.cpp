@@ -97,9 +97,16 @@ esp_err_t sensors()
     ESP_LOGI(TAG, "Initializing sensors...");
     esp_err_t ret;
 
-    // IMU (BMI270) - SPI with default StampFly config
+    // IMU (BMI270) - SPI
     {
         auto cfg = stampfly::BMI270Wrapper::Config::defaultStampFly();
+        // config.hppからSPI GPIO設定を適用
+        cfg.pin_mosi = static_cast<gpio_num_t>(GPIO_SPI_MOSI);
+        cfg.pin_miso = static_cast<gpio_num_t>(GPIO_SPI_MISO);
+        cfg.pin_sclk = static_cast<gpio_num_t>(GPIO_SPI_SCK);
+        cfg.pin_cs = static_cast<gpio_num_t>(GPIO_IMU_CS);
+        cfg.other_cs = static_cast<gpio_num_t>(GPIO_FLOW_CS);
+
         ret = g_imu.init(cfg);
         if (ret != ESP_OK) {
             ESP_LOGW(TAG, "IMU init failed: %s", esp_err_to_name(ret));
@@ -173,10 +180,16 @@ esp_err_t sensors()
         }
     }
 
-    // Optical Flow (PMW3901) - SPI (uses constructor with default config)
+    // Optical Flow (PMW3901) - SPI
     {
         try {
             auto cfg = stampfly::PMW3901::Config::defaultStampFly();
+            // config.hppからSPI GPIO設定を適用
+            cfg.pin_mosi = static_cast<gpio_num_t>(GPIO_SPI_MOSI);
+            cfg.pin_miso = static_cast<gpio_num_t>(GPIO_SPI_MISO);
+            cfg.pin_sclk = static_cast<gpio_num_t>(GPIO_SPI_SCK);
+            cfg.pin_cs = static_cast<gpio_num_t>(GPIO_FLOW_CS);
+
             g_optflow = new stampfly::PMW3901(cfg);
             ESP_LOGI(TAG, "Optical Flow initialized");
         } catch (const stampfly::PMW3901Exception& e) {
@@ -313,12 +326,17 @@ esp_err_t estimators()
         // 全設定をここで適用。学習者はconfig.hppを見れば全設定を把握できる
         // =================================================================
 
-        // センサー有効/無効（SensorFusion用）
+        // センサー有効/無効と閾値（SensorFusion用）
         sf::SensorFusion::SensorEnables sensor_enables;
         sensor_enables.optical_flow = config::eskf::USE_OPTICAL_FLOW;
         sensor_enables.barometer = config::eskf::USE_BAROMETER;
         sensor_enables.tof = config::eskf::USE_TOF;
         sensor_enables.magnetometer = config::eskf::USE_MAGNETOMETER;
+        sensor_enables.flow_squal_min = FLOW_SQUAL_MIN;
+        sensor_enables.flow_distance_min = FLOW_DISTANCE_MIN;
+        sensor_enables.flow_distance_max = FLOW_DISTANCE_MAX;
+        sensor_enables.tof_distance_min = TOF_DISTANCE_MIN;
+        sensor_enables.tof_distance_max = TOF_DISTANCE_MAX;
 
         // ESKF内部の地磁気有効フラグ（predict内のgyro_z処理に影響）
         eskf_config.mag_enabled = config::eskf::USE_MAGNETOMETER;
