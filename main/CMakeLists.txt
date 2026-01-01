@@ -1,5 +1,5 @@
 idf_component_register(
-    SRCS "main.cpp" "globals.cpp"
+    SRCS "main.cpp" "globals.cpp" "init.cpp"
     INCLUDE_DIRS "."
     REQUIRES
         stampfly_imu
