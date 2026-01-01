@@ -144,8 +144,9 @@ void IMUTask(void* pvParameters)
                             // holdPositionVelocity: 状態のみゼロ、共分散は維持
                             g_fusion.holdPositionVelocity();
                         } else if (!is_grounded && prev_grounded) {
-                            // 離陸遷移時
+                            // 離陸遷移時 - 共分散をリセットして安定した推定開始
                             has_taken_off = true;
+                            g_fusion.resetPositionVelocity();  // 共分散も適切な初期値に
                             ESP_LOGI(TAG, "Takeoff - position estimation enabled (alt=%.3fm)", tof_bottom_now);
                         }
                         was_grounded = is_grounded;

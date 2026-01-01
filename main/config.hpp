@@ -138,9 +138,10 @@ inline constexpr float ACCEL_ATT_NOISE = 0.02f;        // 加速度計姿勢補�
 
 // -----------------------------------------------------------------------------
 // 初期共分散 (P行列の初期値)
+// 離陸時は位置・速度が既知なので小さめに設定
 // -----------------------------------------------------------------------------
-inline constexpr float INIT_POS_STD = 1.0f;            // 位置 [m]
-inline constexpr float INIT_VEL_STD = 0.5f;            // 速度 [m/s]
+inline constexpr float INIT_POS_STD = 0.1f;            // 位置 [m] (10cm)
+inline constexpr float INIT_VEL_STD = 0.1f;            // 速度 [m/s] (10cm/s)
 inline constexpr float INIT_ATT_STD = 0.1f;            // 姿勢 [rad]
 inline constexpr float INIT_GYRO_BIAS_STD = 0.01f;     // ジャイロバイアス [rad/s]
 inline constexpr float INIT_ACCEL_BIAS_STD = 0.1f;     // 加速度バイアス [m/s²]
