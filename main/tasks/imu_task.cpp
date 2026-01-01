@@ -120,7 +120,6 @@ void IMUTask(void* pvParameters)
                         float tof_bottom_now, tof_front_now;
                         state.getToFData(tof_bottom_now, tof_front_now);
                         static bool is_grounded = true;        // 起動時は接地状態
-                        static bool was_grounded = true;       // 前回の接地状態（ログ用）
                         static bool has_taken_off = false;     // 一度でも離陸したか
 
                         // 接地状態の更新（ヒステリシス付き）
@@ -149,25 +148,34 @@ void IMUTask(void* pvParameters)
                             g_fusion.resetPositionVelocity();  // 共分散も適切な初期値に
                             ESP_LOGI(TAG, "Takeoff - position estimation enabled (alt=%.3fm)", tof_bottom_now);
                         }
-                        was_grounded = is_grounded;
 
                         g_imu_checkpoint = 14;  // フロー更新セクション
 
                         // オプティカルフロー更新（100Hz = 400Hz / 4）
                         // ヘルスチェック: Flow + ToF が両方healthy必要（距離スケーリングに必要）
                         // 接地中はスキップ（低高度ではフローが不正確）
+                        static int takeoff_skip_counter = 0;  // 離陸後のスキップカウンタ
+                        if (is_grounded) {
+                            takeoff_skip_counter = 20;  // 離陸後20回（0.2秒@100Hz）スキップ
+                        }
+
                         flow_update_counter++;
                         if (flow_update_counter >= 4) {
                             flow_update_counter = 0;
                             if (!is_grounded && g_optflow_task_healthy && g_tof_task_healthy) {
-                                int16_t flow_dx, flow_dy;
-                                uint8_t flow_squal;
-                                float tof_bottom, tof_front;
-                                state.getFlowRawData(flow_dx, flow_dy, flow_squal);
-                                state.getToFData(tof_bottom, tof_front);
-                                // squal/distance チェックは SensorFusion 内部で実行
-                                constexpr float dt = 0.01f;  // 100Hz
-                                g_fusion.updateOpticalFlow(flow_dx, flow_dy, flow_squal, tof_bottom, dt, g.x, g.y);
+                                if (takeoff_skip_counter > 0) {
+                                    takeoff_skip_counter--;
+                                    // 離陸直後はスキップ（フローデータ安定待ち）
+                                } else {
+                                    int16_t flow_dx, flow_dy;
+                                    uint8_t flow_squal;
+                                    float tof_bottom, tof_front;
+                                    state.getFlowRawData(flow_dx, flow_dy, flow_squal);
+                                    state.getToFData(tof_bottom, tof_front);
+                                    // squal/distance チェックは SensorFusion 内部で実行
+                                    constexpr float dt = 0.01f;  // 100Hz
+                                    g_fusion.updateOpticalFlow(flow_dx, flow_dy, flow_squal, tof_bottom, dt, g.x, g.y);
+                                }
                             }
                         }
 
@@ -187,11 +195,21 @@ void IMUTask(void* pvParameters)
 
                         // ToF更新（data_readyフラグで制御、30Hz）
                         // ヘルスチェック: ToF healthy必要
+                        // 離陸直後はスキップ（センサー安定待ち）
+                        static int tof_takeoff_skip_counter = 0;
+                        if (is_grounded) {
+                            tof_takeoff_skip_counter = 10;  // 離陸後10回（~0.3秒@30Hz）スキップ
+                        }
                         if (g_tof_data_ready) {
                             g_tof_data_ready = false;
-                            if (g_tof_task_healthy) {
-                                // 距離範囲チェックはSensorFusion内部で実行
-                                g_fusion.updateToF(g_tof_data_cache);
+                            if (g_tof_task_healthy && !is_grounded) {
+                                if (tof_takeoff_skip_counter > 0) {
+                                    tof_takeoff_skip_counter--;
+                                    // 離陸直後はスキップ
+                                } else {
+                                    // 距離範囲チェックはSensorFusion内部で実行
+                                    g_fusion.updateToF(g_tof_data_cache);
+                                }
                             }
                         }
 
