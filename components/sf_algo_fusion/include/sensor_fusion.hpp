@@ -9,6 +9,10 @@
  * - FreeRTOS非依存（algo_*レイヤー）
  * - ESKFを内包し、更新タイミングを管理
  * - 発散検出・自動リセット機能
+ *
+ * 設定:
+ * - 全ての設定は main/config.hpp の config::eskf 名前空間で定義
+ * - 独自のConfig構造体は持たない（設定の二重管理を防止）
  */
 
 #pragma once
@@ -24,7 +28,9 @@ namespace sf {
  * 使用例:
  * @code
  * sf::SensorFusion fusion;
- * fusion.init();
+ * stampfly::ESKF::Config config;
+ * // config を main/config.hpp の値で初期化
+ * fusion.init(config);
  *
  * // 400Hzメインループ
  * fusion.predictIMU(accel_body, gyro_body, dt);
@@ -36,31 +42,6 @@ namespace sf {
  */
 class SensorFusion {
 public:
-    /**
-     * @brief 設定構造体
-     *
-     * 注意: この設定はESKF::Configとは異なる抽象レベル
-     * - SensorFusion::Config: 高レベル（センサーON/OFF、閾値）
-     * - ESKF::Config: 低レベル（カルマンフィルタのノイズパラメータ等）
-     *
-     * 動作に影響する設定（use_magnetometer等）はinit()内で
-     * ESKF::Configに変換される。新しい動作設定を追加する場合は
-     * sensor_fusion.cpp::init()も更新すること。
-     */
-    struct Config {
-        // センサー使用スイッチ（デフォルト: 全て有効）
-        bool use_optical_flow = true;
-        bool use_barometer = true;
-        bool use_tof = true;
-        bool use_magnetometer = true;  // → ESKF::Config::mag_enabled に変換
-
-        // 発散検出閾値
-        float max_position = 100.0f;   // [m]
-        float max_velocity = 50.0f;    // [m/s]
-
-        Config() = default;
-    };
-
     /**
      * @brief 推定状態
      */
@@ -82,14 +63,27 @@ public:
     SensorFusion& operator=(const SensorFusion&) = delete;
 
     /**
-     * @brief 初期化（デフォルト設定）
+     * @brief センサー有効/無効設定
+     * 全てのセンサースイッチを一箇所で管理
      */
-    bool init();
+    struct SensorEnables {
+        bool optical_flow = true;   // オプティカルフロー
+        bool barometer = true;      // 気圧センサー
+        bool tof = true;            // ToFセンサー
+        bool magnetometer = true;   // 地磁気センサー
+    };
 
     /**
-     * @brief 初期化（カスタム設定）
+     * @brief 初期化
+     * @param config ESKF設定（main/config.hpp で構築）
+     * @param enables センサー有効/無効設定
+     * @param max_position 発散検出用の最大位置 [m]
+     * @param max_velocity 発散検出用の最大速度 [m/s]
      */
-    bool init(const Config& config);
+    bool init(const stampfly::ESKF::Config& config,
+              const SensorEnables& enables,
+              float max_position = 100.0f,
+              float max_velocity = 50.0f);
 
     /**
      * @brief 初期化済みか
@@ -182,7 +176,9 @@ public:
 private:
     bool initialized_ = false;
     bool diverged_ = false;
-    Config config_;
+    float max_position_ = 100.0f;
+    float max_velocity_ = 50.0f;
+    SensorEnables enables_;
     stampfly::ESKF eskf_;
 
     bool checkDivergence(const stampfly::ESKF::State& state);

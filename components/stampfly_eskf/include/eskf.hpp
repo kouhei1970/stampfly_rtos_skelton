@@ -112,24 +112,29 @@ public:
         float k_adaptive;           // 適応的Rの係数 (モード1用)
         float gyro_att_threshold;   // 角速度閾値 [rad/s] (モード2, 3用)
 
-        // デフォルト設定
-        // 両データセット最適化 (2025-12-28)
-        // flow01.bin: Roll=2.06°, dist=9.9cm
-        // flow_sa.bin: Roll=4.30°, dist=0.0cm
+        /**
+         * @brief コンポーネントのデフォルト設定
+         *
+         * このコンポーネント単体で動作する際の標準値。
+         * アプリケーション (main/) では、この値を取得して
+         * 必要に応じて上書きする。
+         *
+         * 設定のカスタマイズは main/config.hpp で行う。
+         */
         static Config defaultConfig() {
             Config cfg;
-            // プロセスノイズ (Q) - 両データセット最適化
+            // プロセスノイズ (Q)
             cfg.gyro_noise = 0.009655f;        // rad/s/√Hz
             cfg.accel_noise = 0.062885f;       // m/s²/√Hz
             cfg.gyro_bias_noise = 0.000013f;   // rad/s/√s
-            cfg.accel_bias_noise = 0.0001f;    // m/s²/√s（姿勢発散防止）
+            cfg.accel_bias_noise = 0.0001f;    // m/s²/√s
 
-            // 観測ノイズ (R) - 両データセット最適化
+            // 観測ノイズ (R)
             cfg.baro_noise = 0.1f;             // m
             cfg.tof_noise = 0.002540f;         // m
-            cfg.mag_noise = 2.0f;              // uT（姿勢への影響を抑制）
-            cfg.flow_noise = 0.005232f;        // m/s (フロー信頼度高)
-            cfg.accel_att_noise = 0.02f;       // m/s²（加速度姿勢補正の信頼度向上）
+            cfg.mag_noise = 2.0f;              // uT
+            cfg.flow_noise = 0.005232f;        // m/s
+            cfg.accel_att_noise = 0.02f;       // m/s²
 
             // 初期共分散
             cfg.init_pos_std = 1.0f;
@@ -142,54 +147,34 @@ public:
             cfg.mag_ref = Vector3(20.0f, 0.0f, 40.0f);  // 日本近辺の概算
             cfg.gravity = 9.81f;
 
-            // 閾値 - PCデバッグで調整済み
-            cfg.mahalanobis_threshold = 15.0f; // 緩和（初期発散からの回復を許容）
-            cfg.tof_tilt_threshold = 0.70f;    // ~40度（傾き時のToF誤測定防止、手持ちデバッグ対応）
-            cfg.accel_motion_threshold = 1.0f; // m/s² (緩めて補正を効かせる)
-            cfg.flow_min_height = 0.02f;       // m（机上テスト対応）
-            cfg.flow_max_height = 4.0f;        // ToFの最大レンジ
-            cfg.flow_tilt_cos_threshold = 0.866f;  // cos(30°)、傾き30°以上でスキップ
+            // 閾値
+            cfg.mahalanobis_threshold = 15.0f;
+            cfg.tof_tilt_threshold = 0.70f;    // ~40度
+            cfg.accel_motion_threshold = 1.0f; // m/s²
+            cfg.flow_min_height = 0.02f;       // m
+            cfg.flow_max_height = 4.0f;        // m
+            cfg.flow_tilt_cos_threshold = 0.866f;  // cos(30°)
 
             // オプティカルフローキャリブレーション
-            // PMW3901: FOV≈42°, Npix=35, センサ出力は10倍値
-            // 20cm四方テストで範囲20cmに最適化: 0.00222 rad/pixel
             cfg.flow_rad_per_pixel = 0.00222f;
-
-            // カメラ→機体座標変換（軸別スケーリング）
-            // 20cm四方テストで最適化: X軸0.943, Y軸1.015
-            cfg.flow_cam_to_body[0] = 0.943f;  // c2b_xx (X軸スケール)
+            cfg.flow_cam_to_body[0] = 0.943f;  // c2b_xx
             cfg.flow_cam_to_body[1] = 0.0f;    // c2b_xy
             cfg.flow_cam_to_body[2] = 0.0f;    // c2b_yx
-            cfg.flow_cam_to_body[3] = 1.015f;  // c2b_yy (Y軸スケール)
-
-            // ========================================================================
-            // ジャイロ→フロー回転補償（物理モデルベース）
-            //
-            // 物理モデル:
-            //   flow_rot_x = (gyro_scale / rad_per_pixel) × gyro_y  (ピッチ→X)
-            //   flow_rot_y = -(gyro_scale / rad_per_pixel) × gyro_x (ロール→Y)
-            //
-            // 理論値からのずれはflow_gyro_scaleで調整（レンズ歪み、取り付け誤差等）
-            // ========================================================================
-            cfg.flow_gyro_scale = 1.0f;        // 物理モデル通り（要調整時は変更）
-
-            // 旧方式（非推奨）: 互換性のため残存、updateFlowRawでは使用しない
-            cfg.flow_gyro_comp[0] = 0.0f;
+            cfg.flow_cam_to_body[3] = 1.015f;  // c2b_yy
+            cfg.flow_gyro_scale = 1.0f;
+            cfg.flow_gyro_comp[0] = 0.0f;      // 非推奨
             cfg.flow_gyro_comp[1] = 0.0f;
             cfg.flow_gyro_comp[2] = 0.0f;
             cfg.flow_gyro_comp[3] = 0.0f;
+            cfg.flow_offset[0] = 0.0f;
+            cfg.flow_offset[1] = 0.0f;
 
-            // フローオフセット（未キャリブレーション時は0）
-            // 静止ホバリングでキャリブレーション後に設定
-            cfg.flow_offset[0] = 0.0f;         // dx offset [counts/sample]
-            cfg.flow_offset[1] = 0.0f;         // dy offset [counts/sample]
+            cfg.mag_enabled = true;            // デフォルトは全センサー有効
 
-            cfg.mag_enabled = false;           // デフォルトは地磁気無効
-
-            // 姿勢補正モード設定
-            cfg.att_update_mode = 0;           // 加速度絶対値フィルタのみ（適応R無効）
-            cfg.k_adaptive = 0.0f;             // 使用しない
-            cfg.gyro_att_threshold = 0.5f;     // rad/s（モード2用、現在未使用）
+            // 姿勢補正モード
+            cfg.att_update_mode = 0;
+            cfg.k_adaptive = 0.0f;
+            cfg.gyro_att_threshold = 0.5f;
 
             return cfg;
         }

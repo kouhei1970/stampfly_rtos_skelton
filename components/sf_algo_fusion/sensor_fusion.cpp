@@ -8,27 +8,16 @@
 
 namespace sf {
 
-bool SensorFusion::init() {
-    Config config;
-    return init(config);
-}
+bool SensorFusion::init(const stampfly::ESKF::Config& config,
+                        const SensorEnables& enables,
+                        float max_position,
+                        float max_velocity) {
+    max_position_ = max_position;
+    max_velocity_ = max_velocity;
+    enables_ = enables;
 
-bool SensorFusion::init(const Config& config) {
-    config_ = config;
-
-    // ESKF初期化
-    // 注意: SensorFusion::ConfigとESKF::Configは異なる抽象レベル
-    // - SensorFusion::Config: 高レベル（センサーON/OFF）
-    // - ESKF::Config: 低レベル（ノイズパラメータ等）
-    // 動作に影響する設定は明示的に変換する必要がある
-    auto eskf_config = stampfly::ESKF::Config::defaultConfig();
-
-    // 動作変更設定の反映
-    eskf_config.mag_enabled = config_.use_magnetometer;
-    // use_optical_flow, use_barometer, use_tofはupdateXXX()内でチェックするため
-    // ESKFレベルでの設定は不要
-
-    if (eskf_.init(eskf_config) != ESP_OK) {
+    // ESKF初期化（設定は main/config.hpp から構築されて渡される）
+    if (eskf_.init(config) != ESP_OK) {
         return false;
     }
 
@@ -69,12 +58,7 @@ bool SensorFusion::predictIMU(const stampfly::math::Vector3& accel_body,
 void SensorFusion::updateOpticalFlow(int16_t dx, int16_t dy, uint8_t squal,
                                       float distance, float dt,
                                       float gyro_x, float gyro_y) {
-    if (!initialized_ || diverged_) {
-        return;
-    }
-
-    // センサー無効時はスキップ
-    if (!config_.use_optical_flow) {
+    if (!initialized_ || diverged_ || !enables_.optical_flow) {
         return;
     }
 
@@ -93,12 +77,7 @@ void SensorFusion::updateOpticalFlow(int16_t dx, int16_t dy, uint8_t squal,
 }
 
 void SensorFusion::updateBarometer(float relative_altitude) {
-    if (!initialized_ || diverged_) {
-        return;
-    }
-
-    // センサー無効時はスキップ
-    if (!config_.use_barometer) {
+    if (!initialized_ || diverged_ || !enables_.barometer) {
         return;
     }
 
@@ -106,12 +85,7 @@ void SensorFusion::updateBarometer(float relative_altitude) {
 }
 
 void SensorFusion::updateToF(float distance) {
-    if (!initialized_ || diverged_) {
-        return;
-    }
-
-    // センサー無効時はスキップ
-    if (!config_.use_tof) {
+    if (!initialized_ || diverged_ || !enables_.tof) {
         return;
     }
 
@@ -124,12 +98,7 @@ void SensorFusion::updateToF(float distance) {
 }
 
 void SensorFusion::updateMagnetometer(const stampfly::math::Vector3& mag_body) {
-    if (!initialized_ || diverged_) {
-        return;
-    }
-
-    // センサー無効時はスキップ
-    if (!config_.use_magnetometer) {
+    if (!initialized_ || diverged_ || !enables_.magnetometer) {
         return;
     }
 
@@ -187,16 +156,16 @@ bool SensorFusion::checkDivergence(const stampfly::ESKF::State& state) {
     }
 
     // 位置の発散検出
-    if (std::abs(state.position.x) > config_.max_position ||
-        std::abs(state.position.y) > config_.max_position ||
-        std::abs(state.position.z) > config_.max_position) {
+    if (std::abs(state.position.x) > max_position_ ||
+        std::abs(state.position.y) > max_position_ ||
+        std::abs(state.position.z) > max_position_) {
         return true;
     }
 
     // 速度の発散検出
-    if (std::abs(state.velocity.x) > config_.max_velocity ||
-        std::abs(state.velocity.y) > config_.max_velocity ||
-        std::abs(state.velocity.z) > config_.max_velocity) {
+    if (std::abs(state.velocity.x) > max_velocity_ ||
+        std::abs(state.velocity.y) > max_velocity_ ||
+        std::abs(state.velocity.z) > max_velocity_) {
         return true;
     }
 

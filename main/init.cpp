@@ -300,15 +300,92 @@ esp_err_t estimators()
     }
 
     // センサーフュージョン (ESKFをラップ)
+    // 1. コンポーネントのデフォルト設定を取得
+    // 2. アプリ固有の設定 (main/config.hpp) で上書き
     {
         auto& state = stampfly::StampFlyState::getInstance();
-        // デフォルト設定で初期化（全センサー有効）
-        bool ok = g_fusion.init();
+
+        // コンポーネントのデフォルト設定を取得
+        stampfly::ESKF::Config eskf_config = stampfly::ESKF::Config::defaultConfig();
+
+        // =================================================================
+        // アプリ固有の設定で上書き (main/config.hpp から)
+        // 全設定をここで適用。学習者はconfig.hppを見れば全設定を把握できる
+        // =================================================================
+
+        // センサー有効/無効（SensorFusion用）
+        sf::SensorFusion::SensorEnables sensor_enables;
+        sensor_enables.optical_flow = config::eskf::USE_OPTICAL_FLOW;
+        sensor_enables.barometer = config::eskf::USE_BAROMETER;
+        sensor_enables.tof = config::eskf::USE_TOF;
+        sensor_enables.magnetometer = config::eskf::USE_MAGNETOMETER;
+
+        // ESKF内部の地磁気有効フラグ（predict内のgyro_z処理に影響）
+        eskf_config.mag_enabled = config::eskf::USE_MAGNETOMETER;
+
+        // プロセスノイズ (Q行列)
+        eskf_config.gyro_noise = config::eskf::GYRO_NOISE;
+        eskf_config.accel_noise = config::eskf::ACCEL_NOISE;
+        eskf_config.gyro_bias_noise = config::eskf::GYRO_BIAS_NOISE;
+        eskf_config.accel_bias_noise = config::eskf::ACCEL_BIAS_NOISE;
+
+        // 観測ノイズ (R行列)
+        eskf_config.baro_noise = config::eskf::BARO_NOISE;
+        eskf_config.tof_noise = config::eskf::TOF_NOISE;
+        eskf_config.mag_noise = config::eskf::MAG_NOISE;
+        eskf_config.flow_noise = config::eskf::FLOW_NOISE;
+        eskf_config.accel_att_noise = config::eskf::ACCEL_ATT_NOISE;
+
+        // 初期共分散 (P行列)
+        eskf_config.init_pos_std = config::eskf::INIT_POS_STD;
+        eskf_config.init_vel_std = config::eskf::INIT_VEL_STD;
+        eskf_config.init_att_std = config::eskf::INIT_ATT_STD;
+        eskf_config.init_gyro_bias_std = config::eskf::INIT_GYRO_BIAS_STD;
+        eskf_config.init_accel_bias_std = config::eskf::INIT_ACCEL_BIAS_STD;
+
+        // 物理定数
+        eskf_config.gravity = config::eskf::GRAVITY;
+        eskf_config.mag_ref = stampfly::math::Vector3(
+            config::eskf::MAG_REF_X,
+            config::eskf::MAG_REF_Y,
+            config::eskf::MAG_REF_Z);
+
+        // 閾値
+        eskf_config.mahalanobis_threshold = config::eskf::MAHALANOBIS_THRESHOLD;
+        eskf_config.tof_tilt_threshold = config::eskf::TOF_TILT_THRESHOLD;
+        eskf_config.accel_motion_threshold = config::eskf::ACCEL_MOTION_THRESHOLD;
+
+        // オプティカルフロー設定
+        eskf_config.flow_min_height = config::eskf::FLOW_MIN_HEIGHT;
+        eskf_config.flow_max_height = config::eskf::FLOW_MAX_HEIGHT;
+        eskf_config.flow_tilt_cos_threshold = config::eskf::FLOW_TILT_COS_THRESHOLD;
+        eskf_config.flow_rad_per_pixel = config::eskf::FLOW_RAD_PER_PIXEL;
+        eskf_config.flow_cam_to_body[0] = config::eskf::FLOW_CAM_TO_BODY_XX;
+        eskf_config.flow_cam_to_body[1] = config::eskf::FLOW_CAM_TO_BODY_XY;
+        eskf_config.flow_cam_to_body[2] = config::eskf::FLOW_CAM_TO_BODY_YX;
+        eskf_config.flow_cam_to_body[3] = config::eskf::FLOW_CAM_TO_BODY_YY;
+        eskf_config.flow_gyro_scale = config::eskf::FLOW_GYRO_SCALE;
+        eskf_config.flow_offset[0] = config::eskf::FLOW_OFFSET_X;
+        eskf_config.flow_offset[1] = config::eskf::FLOW_OFFSET_Y;
+
+        // 姿勢補正モード
+        eskf_config.att_update_mode = config::eskf::ATT_UPDATE_MODE;
+        eskf_config.k_adaptive = config::eskf::K_ADAPTIVE;
+        eskf_config.gyro_att_threshold = config::eskf::GYRO_ATT_THRESHOLD;
+
+        // SensorFusion初期化
+        bool ok = g_fusion.init(eskf_config,
+                                sensor_enables,
+                                config::eskf::MAX_POSITION,
+                                config::eskf::MAX_VELOCITY);
         if (!ok) {
             ESP_LOGW(TAG, "Sensor fusion init failed");
             state.setESKFInitialized(false);
         } else {
             ESP_LOGI(TAG, "Sensor fusion initialized (predict at 400Hz)");
+            ESP_LOGI(TAG, "  Sensors: flow=%d, baro=%d, tof=%d, mag=%d",
+                     sensor_enables.optical_flow, sensor_enables.barometer,
+                     sensor_enables.tof, sensor_enables.magnetometer);
             state.setESKFInitialized(true);
 
             // ジャイロバイアスキャリブレーション（静止状態で実行）
