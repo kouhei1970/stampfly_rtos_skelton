@@ -641,23 +641,85 @@ DDS Layer            : 通信ミドルウェア
 
 ---
 
-## 実装計画（フェーズ1: センサーフュージョン抽出）
+## 実装計画
 
-### 目標
+### フェーズ1: sf_algo_fusion 土台作り ✅ 完了
 
-main.cpp内のセンサーフュージョンロジックを `sf_algo_fusion` コンポーネントに抽出
-
-### 作業ステップ
+**目標**: ESKFをラップするsf_algo_fusionコンポーネントを作成し、main.cppから使用
 
 | # | 作業 | 状態 |
 |---|------|------|
 | 1 | `sf_algo_fusion` コンポーネント作成 | ✅ 完了 |
-| 2 | ビルド確認（コンポーネント単体） | ✅ 完了 |
-| 3 | main.cppから `sf_algo_fusion` を使用するよう変更 | 🔄 未着手 |
-| 4 | ビルド・動作確認（統合後） | ⏳ 待機 |
-| 5 | コミット | ⏳ 待機 |
+| 2 | 各センサー有効/無効スイッチ追加 | ✅ 完了 |
+| 3 | main.cppから `sf_algo_fusion` を使用 | ✅ 完了 |
+| 4 | ビルド確認 | ✅ 完了 |
 
-### sf_algo_fusion コンポーネント構成
+**結果**: main.cppのメソッド呼び出しが `g_eskf.xxx()` → `g_fusion.xxx()` に変更。
+ただし、main.cppのコード量はほぼ変わらず（土台作りのみ）。
+
+---
+
+### フェーズ1.5: センサー更新ロジックの移動 ⏳ 次
+
+**目標**: main.cpp内のセンサー更新ロジックをsf_algo_fusionに移動し、main.cppを縮小
+
+**現状の問題**:
+```cpp
+// main.cpp (IMUTask内) - これらがまだmain.cppに残っている
+if (g_optflow_task_healthy && g_tof_task_healthy) {
+    state.getFlowRawData(flow_dx, flow_dy, flow_squal);
+    if (stampfly::OutlierDetector::isFlowValid(flow_squal)) {
+        float distance = tof_bottom;
+        if (distance > 0.02f && distance < 4.0f) {
+            g_fusion.updateOpticalFlow(...);
+        }
+    }
+}
+// Baro, ToF, Mag も同様のパターン
+```
+
+**移動後のイメージ**:
+```cpp
+// main.cpp (IMUTask内) - シンプルに
+g_fusion.predictIMU(accel, gyro, dt);
+
+// 各センサータスクから直接更新（または周期管理をsf_algo_fusion内で）
+// 詳細設計は要検討
+```
+
+| # | 作業 | 状態 |
+|---|------|------|
+| 1 | 移動するロジックの洗い出し | ⏳ |
+| 2 | sf_algo_fusion API設計 | ⏳ |
+| 3 | 実装・ビルド確認 | ⏳ |
+| 4 | 動作確認 | ⏳ |
+
+---
+
+### フェーズ2: センサーヘルスチェック統合
+
+- `sf_svc_health` コンポーネント作成
+- 各タスクに分散しているヘルスチェックロジックを統合
+- ヘルスステータスの一元管理
+
+---
+
+### フェーズ3: main.cppファイル分割
+
+- `main/config.hpp` - GPIO、優先度、定数
+- `main/init.cpp` - 初期化関数群
+- `main/tasks/` - タスク関数群（IMUTask, BaroTask等を別ファイルに）
+
+---
+
+### フェーズ4: 既存コンポーネントリネーム
+
+- `stampfly_*` → `sf_<layer>_*` への段階的移行
+- 例：`stampfly_eskf` → `sf_algo_eskf`
+
+---
+
+## sf_algo_fusion コンポーネント構成
 
 ```
 components/sf_algo_fusion/
@@ -674,23 +736,4 @@ components/sf_algo_fusion/
 - ESKFをそのまま使うのではなく、センサーフュージョンの「使い方」をカプセル化
 - 発散検出・リセット機能を内包
 - FreeRTOS非依存（algo層設計原則に準拠）
-
----
-
-## 今後のフェーズ（予定）
-
-### フェーズ2: センサーヘルスチェック統合
-
-- `sf_svc_health` コンポーネント作成
-- 各タスクに分散しているヘルスチェックロジックを統合
-
-### フェーズ3: main.cppファイル分割
-
-- `main/config.hpp` - GPIO、優先度、定数
-- `main/init.cpp` - 初期化関数群
-- `main/tasks/` - タスク関数群
-
-### フェーズ4: 既存コンポーネントリネーム
-
-- `stampfly_*` → `sf_<layer>_*` への段階的移行
-- 例：`stampfly_eskf` → `sf_algo_eskf`
+- 各センサーの有効/無効スイッチ（デフォルト: 全て有効）
