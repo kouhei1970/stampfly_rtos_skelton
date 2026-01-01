@@ -176,6 +176,14 @@ public:
     void resetPositionVelocity();
 
     /**
+     * @brief 位置・速度をゼロに保持（共分散は維持）
+     *
+     * 接地中の連続呼び出し用。離陸時の安定した推定開始のため
+     * 共分散はリセットしない。
+     */
+    void holdPositionVelocity();
+
+    /**
      * @brief ジャイロバイアス設定
      */
     void setGyroBias(const stampfly::math::Vector3& bias);

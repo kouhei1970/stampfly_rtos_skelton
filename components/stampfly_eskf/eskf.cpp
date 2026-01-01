@@ -103,6 +103,13 @@ void ESKF::resetPositionVelocity()
     // ログは呼び出し側で管理（400Hz呼び出し時のスパム防止）
 }
 
+void ESKF::holdPositionVelocity()
+{
+    // 状態のみゼロに設定（共分散は維持）
+    state_.position = Vector3::zero();
+    state_.velocity = Vector3::zero();
+}
+
 void ESKF::setGyroBias(const Vector3& bias)
 {
     state_.gyro_bias = bias;

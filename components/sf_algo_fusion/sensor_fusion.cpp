@@ -142,6 +142,14 @@ void SensorFusion::resetPositionVelocity() {
     diverged_ = false;  // 発散状態もクリア
 }
 
+void SensorFusion::holdPositionVelocity() {
+    if (!initialized_) {
+        return;
+    }
+
+    eskf_.holdPositionVelocity();
+}
+
 void SensorFusion::setGyroBias(const stampfly::math::Vector3& bias) {
     if (!initialized_) {
         return;

@@ -140,7 +140,9 @@ void IMUTask(void* pvParameters)
                             if (!was_grounded) {
                                 ESP_LOGI(TAG, "Landed - position hold enabled (alt=%.3fm)", tof_bottom_now);
                             }
-                            g_fusion.resetPositionVelocity();
+                            // holdPositionVelocity: 状態のみゼロ、共分散は維持
+                            // これにより離陸時に安定した推定開始が可能
+                            g_fusion.holdPositionVelocity();
                         } else if (!is_grounded && was_grounded) {
                             // 離陸遷移時
                             ESP_LOGI(TAG, "Takeoff - position estimation enabled (alt=%.3fm)", tof_bottom_now);

@@ -281,6 +281,14 @@ public:
     void resetPositionVelocity();
 
     /**
+     * @brief 位置・速度をゼロに保持（共分散は維持）
+     *
+     * 接地中の連続呼び出し用。共分散をリセットしないため、
+     * 離陸時に安定した推定開始が可能。
+     */
+    void holdPositionVelocity();
+
+    /**
      * @brief ジャイロバイアスを設定
      * @param bias ジャイロバイアス [rad/s] (ボディ座標系)
      *
