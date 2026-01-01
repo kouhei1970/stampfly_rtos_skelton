@@ -172,6 +172,15 @@ void IMUTask(void* pvParameters)
                             }
                         }
 
+                        // DEBUG: Mag状態を10秒ごとにログ
+                        static uint32_t mag_debug_counter = 0;
+                        if (++mag_debug_counter >= 4000) {  // 10秒 @ 400Hz
+                            mag_debug_counter = 0;
+                            ESP_LOGI(TAG, "MAG DEBUG: data_ready=%d, ref_set=%d, healthy=%d, cache=(%.1f,%.1f,%.1f)",
+                                     g_mag_data_ready, g_mag_ref_set, g_mag_task_healthy,
+                                     g_mag_data_cache.x, g_mag_data_cache.y, g_mag_data_cache.z);
+                        }
+
                         g_imu_checkpoint = 20;  // getState前
 
                         // Update StampFlyState with estimated state

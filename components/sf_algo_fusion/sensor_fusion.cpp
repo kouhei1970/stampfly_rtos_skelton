@@ -16,8 +16,9 @@ bool SensorFusion::init() {
 bool SensorFusion::init(const Config& config) {
     config_ = config;
 
-    // ESKF初期化（デフォルト設定）
+    // ESKF初期化（SensorFusion設定を反映）
     auto eskf_config = stampfly::ESKF::Config::defaultConfig();
+    eskf_config.mag_enabled = config_.use_magnetometer;
     if (eskf_.init(eskf_config) != ESP_OK) {
         return false;
     }
