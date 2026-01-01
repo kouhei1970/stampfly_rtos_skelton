@@ -96,11 +96,18 @@ extern float g_baro_reference_altitude;
 extern bool g_baro_reference_set;
 
 // =============================================================================
-// Magnetometer Reference Buffer
+// Sensor Reference Buffers (for attitude initialization)
 // =============================================================================
 
-inline constexpr int MAG_REF_BUFFER_SIZE = 100;
-extern stampfly::math::Vector3 g_mag_buffer[MAG_REF_BUFFER_SIZE];
+inline constexpr int REF_BUFFER_SIZE = 100;
+
+// Accelerometer buffer (for roll/pitch initialization)
+extern stampfly::math::Vector3 g_accel_buffer[REF_BUFFER_SIZE];
+extern int g_accel_buffer_index;
+extern int g_accel_buffer_count;
+
+// Magnetometer buffer (for yaw=0 reference)
+extern stampfly::math::Vector3 g_mag_buffer[REF_BUFFER_SIZE];
 extern int g_mag_buffer_index;
 extern int g_mag_buffer_count;
 extern bool g_mag_ref_set;

@@ -69,8 +69,8 @@ void MagTask(void* pvParameters)
 
                     // リングバッファに追加（ARM/binlog開始時の平均計算用）
                     g_mag_buffer[g_mag_buffer_index] = m;
-                    g_mag_buffer_index = (g_mag_buffer_index + 1) % MAG_REF_BUFFER_SIZE;
-                    if (g_mag_buffer_count < MAG_REF_BUFFER_SIZE) {
+                    g_mag_buffer_index = (g_mag_buffer_index + 1) % REF_BUFFER_SIZE;
+                    if (g_mag_buffer_count < REF_BUFFER_SIZE) {
                         g_mag_buffer_count++;
                     }
 

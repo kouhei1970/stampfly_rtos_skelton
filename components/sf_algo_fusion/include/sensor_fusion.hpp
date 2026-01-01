@@ -209,6 +209,18 @@ public:
     void setMagReference(const stampfly::math::Vector3& ref);
 
     /**
+     * @brief 加速度計と地磁気計から姿勢を初期化
+     * @param accel 加速度 [m/s²] (ボディ座標系)
+     * @param mag 地磁気 [uT] (ボディ座標系)
+     *
+     * ロール/ピッチを加速度計から計算し、ヨー=0で初期化。
+     * 地磁気リファレンスも正しく設定される。
+     * reset()の後に呼び出すこと。
+     */
+    void initializeAttitude(const stampfly::math::Vector3& accel,
+                            const stampfly::math::Vector3& mag);
+
+    /**
      * @brief 内部ESKFへの直接アクセス（上級者向け）
      */
     stampfly::ESKF& getESKF() { return eskf_; }

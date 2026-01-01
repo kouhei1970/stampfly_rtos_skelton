@@ -166,6 +166,15 @@ void SensorFusion::setMagReference(const stampfly::math::Vector3& ref) {
     eskf_.setMagReference(ref);
 }
 
+void SensorFusion::initializeAttitude(const stampfly::math::Vector3& accel,
+                                       const stampfly::math::Vector3& mag) {
+    if (!initialized_) {
+        return;
+    }
+
+    eskf_.initializeAttitude(accel, mag);
+}
+
 bool SensorFusion::checkDivergence(const stampfly::ESKF::State& state) {
     // 姿勢の有効性チェック
     if (!std::isfinite(state.roll) || !std::isfinite(state.pitch)) {

@@ -140,6 +140,52 @@ void ESKF::setYaw(float yaw)
     state_.orientation = Quaternion::fromEuler(state_.roll, state_.pitch, yaw);
 }
 
+void ESKF::initializeAttitude(const Vector3& accel, const Vector3& mag)
+{
+    // 加速度計からロール/ピッチを計算（重力方向から）
+    // 機体座標系で加速度 = (ax, ay, az) のとき、
+    // 静止状態では (ax, ay, az) ≈ R^T * (0, 0, g)
+    // roll = atan2(ay, az), pitch = atan2(-ax, sqrt(ay² + az²))
+    float accel_norm = std::sqrt(accel.x * accel.x + accel.y * accel.y + accel.z * accel.z);
+    if (accel_norm < 1.0f) {
+        // 加速度が小さすぎる場合は水平とみなす
+        state_.roll = 0.0f;
+        state_.pitch = 0.0f;
+    } else {
+        state_.roll = std::atan2(accel.y, accel.z);
+        state_.pitch = std::atan2(-accel.x, std::sqrt(accel.y * accel.y + accel.z * accel.z));
+    }
+    state_.yaw = 0.0f;
+
+    // 姿勢クォータニオンを設定
+    state_.orientation = Quaternion::fromEuler(state_.roll, state_.pitch, state_.yaw);
+
+    // 回転行列を計算（R: ボディ→NED）
+    const Quaternion& q = state_.orientation;
+    float q0 = q.w, q1 = q.x, q2 = q.y, q3 = q.z;
+
+    float r00 = 1 - 2*(q2*q2 + q3*q3);
+    float r01 = 2*(q1*q2 - q0*q3);
+    float r02 = 2*(q1*q3 + q0*q2);
+    float r10 = 2*(q1*q2 + q0*q3);
+    float r11 = 1 - 2*(q1*q1 + q3*q3);
+    float r12 = 2*(q2*q3 - q0*q1);
+    float r20 = 2*(q1*q3 - q0*q2);
+    float r21 = 2*(q2*q3 + q0*q1);
+    float r22 = 1 - 2*(q1*q1 + q2*q2);
+
+    // 地磁気をNED座標系に変換: mag_ref = R * mag_body
+    // これにより、現在の向き=ヨー0度として設定される
+    config_.mag_ref.x = r00 * mag.x + r01 * mag.y + r02 * mag.z;
+    config_.mag_ref.y = r10 * mag.x + r11 * mag.y + r12 * mag.z;
+    config_.mag_ref.z = r20 * mag.x + r21 * mag.y + r22 * mag.z;
+
+    ESP_LOGI(TAG, "Attitude initialized: roll=%.1f° pitch=%.1f° yaw=0°",
+             state_.roll * 180.0f / M_PI, state_.pitch * 180.0f / M_PI);
+    ESP_LOGI(TAG, "Mag ref (NED): (%.1f, %.1f, %.1f) uT",
+             config_.mag_ref.x, config_.mag_ref.y, config_.mag_ref.z);
+}
+
 void ESKF::predict(const Vector3& accel, const Vector3& gyro, float dt)
 {
     if (!initialized_ || dt <= 0) return;

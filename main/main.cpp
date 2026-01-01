@@ -75,6 +75,52 @@ using namespace globals;
  *
  * ARM時またはbinlog開始時に呼び出す
  */
+/**
+ * @brief 加速度と地磁気のバッファ平均を使って姿勢を初期化
+ *
+ * 加速度計からロール/ピッチを計算し、ヨー=0で初期化。
+ * 地磁気リファレンスも正しくNED座標系で設定される。
+ */
+void initializeAttitudeFromBuffers()
+{
+    if (g_accel_buffer_count == 0) {
+        ESP_LOGW(TAG, "No accel samples in buffer, cannot initialize attitude");
+        return;
+    }
+    if (g_mag_buffer_count == 0) {
+        ESP_LOGW(TAG, "No mag samples in buffer, cannot initialize attitude");
+        return;
+    }
+
+    // 加速度バッファの平均を計算
+    stampfly::math::Vector3 accel_sum = stampfly::math::Vector3::zero();
+    int accel_count = std::min(g_accel_buffer_count, REF_BUFFER_SIZE);
+    for (int i = 0; i < accel_count; i++) {
+        accel_sum += g_accel_buffer[i];
+    }
+    stampfly::math::Vector3 accel_avg = accel_sum * (1.0f / accel_count);
+
+    // 地磁気バッファの平均を計算
+    stampfly::math::Vector3 mag_sum = stampfly::math::Vector3::zero();
+    int mag_count = std::min(g_mag_buffer_count, REF_BUFFER_SIZE);
+    for (int i = 0; i < mag_count; i++) {
+        mag_sum += g_mag_buffer[i];
+    }
+    stampfly::math::Vector3 mag_avg = mag_sum * (1.0f / mag_count);
+
+    // センサーフュージョンの姿勢を初期化
+    if (g_fusion.isInitialized()) {
+        g_fusion.initializeAttitude(accel_avg, mag_avg);
+        g_mag_ref_set = true;
+        ESP_LOGI(TAG, "Attitude initialized from buffers: accel=%d samples, mag=%d samples",
+                 accel_count, mag_count);
+    }
+}
+
+/**
+ * @brief 地磁気リファレンスのみをバッファから設定（レガシー互換）
+ * @deprecated initializeAttitudeFromBuffers()を使用してください
+ */
 void setMagReferenceFromBuffer()
 {
     if (g_mag_buffer_count == 0) {
@@ -84,7 +130,7 @@ void setMagReferenceFromBuffer()
 
     // バッファの平均を計算
     stampfly::math::Vector3 sum = stampfly::math::Vector3::zero();
-    int count = std::min(g_mag_buffer_count, MAG_REF_BUFFER_SIZE);
+    int count = std::min(g_mag_buffer_count, REF_BUFFER_SIZE);
     for (int i = 0; i < count; i++) {
         sum += g_mag_buffer[i];
     }
@@ -115,8 +161,8 @@ void onBinlogStart()
         ESP_LOGI(TAG, "Sensor fusion reset for binlog, gyro bias restored");
     }
 
-    // mag_refを設定（バッファの最新値で更新）
-    setMagReferenceFromBuffer();
+    // 姿勢を初期化（バッファの最新値で更新）
+    initializeAttitudeFromBuffers();
 }
 
 // =============================================================================
@@ -187,8 +233,8 @@ void onButtonEvent(stampfly::Button::Event event)
             // Toggle arm/disarm in IDLE state
             if (state.getFlightState() == stampfly::FlightState::IDLE) {
                 if (state.requestArm()) {
-                    // ARM時にmag_refを設定（現在の向き=Yaw 0°）
-                    setMagReferenceFromBuffer();
+                    // ARM時に姿勢を初期化（現在の向き=Yaw 0°）
+                    initializeAttitudeFromBuffers();
                     g_buzzer.armTone();
                     ESP_LOGI(TAG, "Motors ARMED");
                 }
@@ -259,7 +305,7 @@ void onControlPacket(const stampfly::ControlPacket& packet)
             // IDLE/ERROR → ARM
             if (state.requestArm()) {
                 g_motor.arm();  // Enable motor driver
-                setMagReferenceFromBuffer();
+                initializeAttitudeFromBuffers();
                 g_buzzer.armTone();
                 ESP_LOGI(TAG, "Motors ARMED (from controller)");
             }
@@ -459,7 +505,7 @@ extern "C" void app_main(void)
     if (g_fusion.isInitialized()) {
         g_fusion.reset();
         g_fusion.setGyroBias(g_initial_gyro_bias);
-        setMagReferenceFromBuffer();
+        initializeAttitudeFromBuffers();
 
         // センサーフュージョン処理を開始
         g_eskf_ready = true;

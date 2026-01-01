@@ -329,6 +329,17 @@ public:
     void setMagReference(const Vector3& mag_ref);
 
     /**
+     * @brief 加速度計と地磁気計から姿勢を初期化
+     * @param accel 加速度 [m/s²] (ボディ座標系)
+     * @param mag 地磁気 [uT] (ボディ座標系)
+     *
+     * 加速度計からロール/ピッチを計算し、ヨー=0で初期化。
+     * その後、地磁気リファレンスを正しくNED座標系で設定する。
+     * これにより、初回の地磁気更新でジャンプが発生しなくなる。
+     */
+    void initializeAttitude(const Vector3& accel, const Vector3& mag);
+
+    /**
      * @brief Yaw角を強制的に設定
      * @param yaw Yaw角 [rad]
      *

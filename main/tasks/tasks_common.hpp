@@ -45,5 +45,6 @@
 #include "logger.hpp"
 #include "telemetry.hpp"
 
-// Helper function defined in main.cpp
-extern void setMagReferenceFromBuffer();
+// Helper functions defined in main.cpp
+extern void initializeAttitudeFromBuffers();
+extern void setMagReferenceFromBuffer();  // deprecated, use initializeAttitudeFromBuffers

@@ -60,10 +60,16 @@ float g_baro_reference_altitude = 0.0f;
 bool g_baro_reference_set = false;
 
 // =============================================================================
-// Magnetometer Reference Buffer
+// Sensor Reference Buffers
 // =============================================================================
 
-stampfly::math::Vector3 g_mag_buffer[MAG_REF_BUFFER_SIZE];
+// Accelerometer buffer (for roll/pitch initialization)
+stampfly::math::Vector3 g_accel_buffer[REF_BUFFER_SIZE];
+int g_accel_buffer_index = 0;
+int g_accel_buffer_count = 0;
+
+// Magnetometer buffer (for yaw=0 reference)
+stampfly::math::Vector3 g_mag_buffer[REF_BUFFER_SIZE];
 int g_mag_buffer_index = 0;
 int g_mag_buffer_count = 0;
 bool g_mag_ref_set = false;

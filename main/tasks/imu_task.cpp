@@ -99,6 +99,16 @@ void IMUTask(void* pvParameters)
                 stampfly::math::Vector3 a(filtered_accel[0], filtered_accel[1], filtered_accel[2]);
                 stampfly::math::Vector3 g(filtered_gyro[0], filtered_gyro[1], filtered_gyro[2]);
 
+                // 加速度リングバッファに追加（姿勢初期化用）
+                // ESKFが準備できていない間のみ更新（初期化時に使用）
+                if (!g_eskf_ready) {
+                    g_accel_buffer[g_accel_buffer_index] = a;
+                    g_accel_buffer_index = (g_accel_buffer_index + 1) % REF_BUFFER_SIZE;
+                    if (g_accel_buffer_count < REF_BUFFER_SIZE) {
+                        g_accel_buffer_count++;
+                    }
+                }
+
                 g_imu_checkpoint = 10;  // ESKF更新前
 
                 // Update sensor fusion predict step (400Hz)
@@ -337,7 +347,7 @@ void IMUTask(void* pvParameters)
                             if (pos_diverged || vel_diverged) {
                                 g_fusion.reset();
                                 g_fusion.setGyroBias(g_initial_gyro_bias);
-                                setMagReferenceFromBuffer();
+                                initializeAttitudeFromBuffers();
                             }
 
                             // ログ出力は100回に1回（スパム防止）
