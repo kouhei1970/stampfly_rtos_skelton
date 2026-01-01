@@ -56,135 +56,13 @@
 
 // Configuration
 #include "config.hpp"
+#include "globals.hpp"
 
 static const char* TAG = "main";
 
-// config:: namespace shortcuts for backward compatibility
+// Namespace shortcuts for backward compatibility
 using namespace config;
-
-// =============================================================================
-// Global Component Instances
-// =============================================================================
-
-// Global magnetometer calibrator (accessible from CLI)
-stampfly::MagCalibrator* g_mag_calibrator = nullptr;
-
-// Global logger pointer (accessible from CLI)
-stampfly::Logger* g_logger_ptr = nullptr;
-
-// Global controller comm pointer (accessible from CLI)
-stampfly::ControllerComm* g_comm_ptr = nullptr;
-
-// Global LED pointer (accessible from CLI)
-stampfly::LED* g_led_ptr = nullptr;
-
-// Global motor driver pointer (accessible from CLI)
-stampfly::MotorDriver* g_motor_ptr = nullptr;
-
-// Global buzzer pointer (accessible from CLI)
-stampfly::Buzzer* g_buzzer_ptr = nullptr;
-
-namespace {
-    // Sensors
-    stampfly::BMI270Wrapper g_imu;
-    stampfly::BMM150 g_mag;
-    stampfly::MagCalibrator g_mag_cal;  // Magnetometer calibrator instance
-    stampfly::BMP280 g_baro;
-    stampfly::VL53L3CXWrapper g_tof_bottom;
-    stampfly::VL53L3CXWrapper g_tof_front;
-    stampfly::PMW3901* g_optflow = nullptr;
-    stampfly::PowerMonitor g_power;
-
-    // Actuators
-    stampfly::MotorDriver g_motor;
-    stampfly::LED g_led;
-    stampfly::Buzzer g_buzzer;
-    stampfly::Button g_button;
-
-    // Estimators
-    sf::SensorFusion g_fusion;  // ESKFをラップしたセンサーフュージョン
-    stampfly::AttitudeEstimator g_attitude_est;
-    stampfly::AltitudeEstimator g_altitude_est;
-
-    // Filters for IMU
-    stampfly::LowPassFilter g_accel_lpf[3];
-    stampfly::LowPassFilter g_gyro_lpf[3];
-
-    // Communication
-    stampfly::ControllerComm g_comm;
-
-    // CLI
-    stampfly::CLI g_cli;
-
-    // Logger (400Hz binary log output)
-    stampfly::Logger g_logger;
-
-    // Barometer reference for relative altitude (ESKF expects NED, origin at boot)
-    float g_baro_reference_altitude = 0.0f;
-    bool g_baro_reference_set = false;
-
-    // Mag reference ring buffer for averaging (1 second = 100 samples at 100Hz)
-    static constexpr int MAG_REF_BUFFER_SIZE = 100;
-    stampfly::math::Vector3 g_mag_buffer[MAG_REF_BUFFER_SIZE];
-    int g_mag_buffer_index = 0;
-    int g_mag_buffer_count = 0;
-    bool g_mag_ref_set = false;  // mag_refが設定済みかどうか
-
-    // 起動時のジャイロバイアス（binlog reset後に復元するため）
-    stampfly::math::Vector3 g_initial_gyro_bias = stampfly::math::Vector3::zero();
-
-    // ESKF準備完了フラグ（センサー安定・キャリブレーション完了後にtrue）
-    volatile bool g_eskf_ready = false;
-
-    // センサータスク正常動作フラグ（各タスクが有効なデータを取得したらtrue）
-    // Note: volatileフラグはタスク間通信用に維持、HealthMonitorはカウントロジック用
-    volatile bool g_imu_task_healthy = false;
-    volatile bool g_tof_task_healthy = false;
-    volatile bool g_mag_task_healthy = false;
-    volatile bool g_optflow_task_healthy = false;
-    volatile bool g_baro_task_healthy = false;
-
-    // ヘルスモニター（カウントロジックを一元管理）
-    sf::HealthMonitor g_health;
-
-    // センサ data_ready フラグ (ESKF updateをIMUTaskに集約するため)
-    volatile bool g_mag_data_ready = false;
-    volatile bool g_baro_data_ready = false;
-    volatile bool g_tof_data_ready = false;
-
-    // センサデータキャッシュ (data_ready時のデータを保持)
-    stampfly::math::Vector3 g_mag_data_cache;
-    float g_baro_data_cache = 0.0f;
-    float g_tof_data_cache = 0.0f;
-
-    // Task handles
-    TaskHandle_t g_imu_task_handle = nullptr;
-    TaskHandle_t g_control_task_handle = nullptr;
-    TaskHandle_t g_optflow_task_handle = nullptr;
-    TaskHandle_t g_mag_task_handle = nullptr;
-    TaskHandle_t g_baro_task_handle = nullptr;
-    TaskHandle_t g_tof_task_handle = nullptr;
-    TaskHandle_t g_power_task_handle = nullptr;
-    TaskHandle_t g_led_task_handle = nullptr;
-    TaskHandle_t g_button_task_handle = nullptr;
-    TaskHandle_t g_comm_task_handle = nullptr;
-    TaskHandle_t g_cli_task_handle = nullptr;
-    TaskHandle_t g_telemetry_task_handle = nullptr;
-
-    // ESP Timer for precise 400Hz (2.5ms) IMU timing
-    esp_timer_handle_t g_imu_timer = nullptr;
-    SemaphoreHandle_t g_imu_semaphore = nullptr;
-    SemaphoreHandle_t g_control_semaphore = nullptr;  // For control task synchronization
-
-}
-
-// デバッグ用: タスクのチェックポイント（C言語からアクセス可能）
-extern "C" {
-    volatile uint8_t g_imu_checkpoint = 0;
-    volatile uint32_t g_imu_last_loop = 0;
-    volatile uint8_t g_optflow_checkpoint = 0;
-    volatile uint32_t g_optflow_last_loop = 0;
-}
+using namespace globals;
 
 // =============================================================================
 // Helper Functions
