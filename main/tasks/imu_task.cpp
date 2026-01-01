@@ -119,11 +119,12 @@ void IMUTask(void* pvParameters)
                         // 接地判定（ToF高度ベース）
                         float tof_bottom_now, tof_front_now;
                         state.getToFData(tof_bottom_now, tof_front_now);
-                        static bool is_grounded = true;       // 起動時は接地状態
-                        static bool was_grounded = true;      // 前回の接地状態
+                        static bool is_grounded = true;        // 起動時は接地状態
+                        static bool was_grounded = true;       // 前回の接地状態（ログ用）
+                        static bool has_taken_off = false;     // 一度でも離陸したか
 
-                        // 接地状態の更新
-                        was_grounded = is_grounded;
+                        // 接地状態の更新（ヒステリシス付き）
+                        bool prev_grounded = is_grounded;
                         if (tof_bottom_now < eskf::LANDING_ALT_THRESHOLD) {
                             is_grounded = true;
                         } else if (tof_bottom_now > eskf::LANDING_ALT_THRESHOLD * 2.0f) {
@@ -136,17 +137,18 @@ void IMUTask(void* pvParameters)
 
                         // 接地中は位置・速度をゼロに保持（予測ドリフト防止）
                         if (is_grounded && eskf::ENABLE_LANDING_RESET) {
-                            // 着陸遷移時のみログ出力
-                            if (!was_grounded) {
+                            // 着陸遷移時のみログ出力（一度離陸した後のみ）
+                            if (!prev_grounded && has_taken_off) {
                                 ESP_LOGI(TAG, "Landed - position hold enabled (alt=%.3fm)", tof_bottom_now);
                             }
                             // holdPositionVelocity: 状態のみゼロ、共分散は維持
-                            // これにより離陸時に安定した推定開始が可能
                             g_fusion.holdPositionVelocity();
-                        } else if (!is_grounded && was_grounded) {
+                        } else if (!is_grounded && prev_grounded) {
                             // 離陸遷移時
+                            has_taken_off = true;
                             ESP_LOGI(TAG, "Takeoff - position estimation enabled (alt=%.3fm)", tof_bottom_now);
                         }
+                        was_grounded = is_grounded;
 
                         g_imu_checkpoint = 14;  // フロー更新セクション
 
