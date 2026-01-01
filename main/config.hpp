@@ -200,6 +200,14 @@ inline constexpr int ATT_UPDATE_MODE = 0;
 inline constexpr float K_ADAPTIVE = 0.0f;
 inline constexpr float GYRO_ATT_THRESHOLD = 0.5f;      // [rad/s]
 
+// -----------------------------------------------------------------------------
+// 着陸検出・位置リセット設定
+// -----------------------------------------------------------------------------
+inline constexpr bool ENABLE_LANDING_RESET = true;      // 着陸時に位置リセット
+inline constexpr float LANDING_ALT_THRESHOLD = 0.05f;   // 着陸判定高度閾値 [m]
+inline constexpr float LANDING_VEL_THRESHOLD = 0.1f;    // 着陸判定速度閾値 [m/s]
+inline constexpr int LANDING_HOLD_COUNT = 200;          // 着陸判定維持回数 (200回 @ 400Hz = 0.5秒)
+
 } // namespace eskf
 
 // =============================================================================
