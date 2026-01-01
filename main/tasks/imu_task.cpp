@@ -115,17 +115,37 @@ void IMUTask(void* pvParameters)
 
                     if (eskf_ok) {
                         g_imu_checkpoint = 12;  // predict前
+
+                        // 接地判定（ToF高度ベース）
+                        float tof_bottom_now, tof_front_now;
+                        state.getToFData(tof_bottom_now, tof_front_now);
+                        static bool is_grounded = true;  // 起動時は接地状態
+
+                        // 接地状態の更新
+                        if (tof_bottom_now < eskf::LANDING_ALT_THRESHOLD) {
+                            is_grounded = true;
+                        } else if (tof_bottom_now > eskf::LANDING_ALT_THRESHOLD * 2.0f) {
+                            is_grounded = false;
+                        }
+                        // ヒステリシス: 閾値〜2倍の間は状態維持
+
                         // IMU予測 + 加速度計姿勢補正（predictIMUが両方を実行）
                         g_fusion.predictIMU(a, g, 0.0025f);  // 2.5ms (400Hz)
+
+                        // 接地中は位置・速度をゼロに保持（予測ドリフト防止）
+                        if (is_grounded && eskf::ENABLE_LANDING_RESET) {
+                            g_fusion.resetPositionVelocity();
+                        }
 
                         g_imu_checkpoint = 14;  // フロー更新セクション
 
                         // オプティカルフロー更新（100Hz = 400Hz / 4）
                         // ヘルスチェック: Flow + ToF が両方healthy必要（距離スケーリングに必要）
+                        // 接地中はスキップ（低高度ではフローが不正確）
                         flow_update_counter++;
                         if (flow_update_counter >= 4) {
                             flow_update_counter = 0;
-                            if (g_optflow_task_healthy && g_tof_task_healthy) {
+                            if (!is_grounded && g_optflow_task_healthy && g_tof_task_healthy) {
                                 int16_t flow_dx, flow_dy;
                                 uint8_t flow_squal;
                                 float tof_bottom, tof_front;
@@ -210,40 +230,6 @@ void IMUTask(void* pvParameters)
                             state.updateEstimatedVelocity(eskf_state.velocity.x, eskf_state.velocity.y, eskf_state.velocity.z);
                             state.updateGyroBias(eskf_state.gyro_bias.x, eskf_state.gyro_bias.y, eskf_state.gyro_bias.z);
                             state.updateAccelBias(eskf_state.accel_bias.x, eskf_state.accel_bias.y, eskf_state.accel_bias.z);
-
-                            // 着陸検出・位置リセット
-                            if (eskf::ENABLE_LANDING_RESET) {
-                                static int landing_counter = 0;
-                                static bool was_airborne = false;
-
-                                // ToF高度と速度で判定
-                                float tof_alt = -eskf_state.position.z;  // NEDなのでZ負=上
-                                float vel_horiz = std::sqrt(eskf_state.velocity.x * eskf_state.velocity.x +
-                                                            eskf_state.velocity.y * eskf_state.velocity.y);
-                                float vel_vert = std::abs(eskf_state.velocity.z);
-
-                                bool is_low = (tof_alt < eskf::LANDING_ALT_THRESHOLD);
-                                bool is_slow = (vel_horiz < eskf::LANDING_VEL_THRESHOLD &&
-                                               vel_vert < eskf::LANDING_VEL_THRESHOLD);
-
-                                // 離陸検出（高度が閾値超え）
-                                if (tof_alt > eskf::LANDING_ALT_THRESHOLD * 2.0f) {
-                                    was_airborne = true;
-                                }
-
-                                // 着陸検出（低高度+低速度を一定時間維持）
-                                if (is_low && is_slow && was_airborne) {
-                                    landing_counter++;
-                                    if (landing_counter >= eskf::LANDING_HOLD_COUNT) {
-                                        g_fusion.resetPositionVelocity();
-                                        was_airborne = false;
-                                        landing_counter = 0;
-                                        ESP_LOGI(TAG, "Landing detected - position reset");
-                                    }
-                                } else {
-                                    landing_counter = 0;
-                                }
-                            }
 
                             g_imu_checkpoint = 23;  // state更新後、ロギング前
 
