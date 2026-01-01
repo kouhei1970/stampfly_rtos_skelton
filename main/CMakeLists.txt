@@ -15,6 +15,7 @@ idf_component_register(
         stampfly_filter
         stampfly_eskf
         sf_algo_fusion
+        sf_svc_health
         stampfly_state
         stampfly_comm
         stampfly_cli
