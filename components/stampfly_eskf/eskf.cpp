@@ -100,8 +100,7 @@ void ESKF::resetPositionVelocity()
             P_(j, i) = 0.0f;
         }
     }
-
-    ESP_LOGI(TAG, "Position/Velocity reset to origin");
+    // ログは呼び出し側で管理（400Hz呼び出し時のスパム防止）
 }
 
 void ESKF::setGyroBias(const Vector3& bias)

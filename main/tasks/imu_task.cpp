@@ -119,9 +119,11 @@ void IMUTask(void* pvParameters)
                         // 接地判定（ToF高度ベース）
                         float tof_bottom_now, tof_front_now;
                         state.getToFData(tof_bottom_now, tof_front_now);
-                        static bool is_grounded = true;  // 起動時は接地状態
+                        static bool is_grounded = true;       // 起動時は接地状態
+                        static bool was_grounded = true;      // 前回の接地状態
 
                         // 接地状態の更新
+                        was_grounded = is_grounded;
                         if (tof_bottom_now < eskf::LANDING_ALT_THRESHOLD) {
                             is_grounded = true;
                         } else if (tof_bottom_now > eskf::LANDING_ALT_THRESHOLD * 2.0f) {
@@ -134,7 +136,14 @@ void IMUTask(void* pvParameters)
 
                         // 接地中は位置・速度をゼロに保持（予測ドリフト防止）
                         if (is_grounded && eskf::ENABLE_LANDING_RESET) {
+                            // 着陸遷移時のみログ出力
+                            if (!was_grounded) {
+                                ESP_LOGI(TAG, "Landed - position hold enabled (alt=%.3fm)", tof_bottom_now);
+                            }
                             g_fusion.resetPositionVelocity();
+                        } else if (!is_grounded && was_grounded) {
+                            // 離陸遷移時
+                            ESP_LOGI(TAG, "Takeoff - position estimation enabled (alt=%.3fm)", tof_bottom_now);
                         }
 
                         g_imu_checkpoint = 14;  // フロー更新セクション
