@@ -38,6 +38,7 @@
 #include "stampfly_state.hpp"
 #include "system_manager.hpp"
 #include "eskf.hpp"
+#include "sensor_fusion.hpp"
 #include "filter.hpp"
 
 // Communication
@@ -158,7 +159,7 @@ namespace {
     stampfly::Button g_button;
 
     // Estimators
-    stampfly::ESKF g_eskf;
+    sf::SensorFusion g_fusion;  // ESKFをラップしたセンサーフュージョン
     stampfly::AttitudeEstimator g_attitude_est;
     stampfly::AltitudeEstimator g_altitude_est;
 
@@ -262,9 +263,9 @@ static void setMagReferenceFromBuffer()
     }
     stampfly::math::Vector3 avg = sum * (1.0f / count);
 
-    // ESKFに設定
-    if (g_eskf.isInitialized()) {
-        g_eskf.setMagReference(avg);
+    // センサーフュージョンに設定
+    if (g_fusion.isInitialized()) {
+        g_fusion.setMagReference(avg);
         g_mag_ref_set = true;
         ESP_LOGI(TAG, "Mag reference set from %d samples: (%.1f, %.1f, %.1f) uT",
                  count, avg.x, avg.y, avg.z);
@@ -279,12 +280,12 @@ static void setMagReferenceFromBuffer()
  */
 static void onBinlogStart()
 {
-    // ESKFをリセット（PC版と同じ初期状態にする）
-    if (g_eskf.isInitialized()) {
-        g_eskf.reset();
+    // センサーフュージョンをリセット（PC版と同じ初期状態にする）
+    if (g_fusion.isInitialized()) {
+        g_fusion.reset();
         // ジャイロバイアスを復元（reset()でゼロになるため）
-        g_eskf.setGyroBias(g_initial_gyro_bias);
-        ESP_LOGI(TAG, "ESKF reset for binlog, gyro bias restored");
+        g_fusion.setGyroBias(g_initial_gyro_bias);
+        ESP_LOGI(TAG, "Sensor fusion reset for binlog, gyro bias restored");
     }
 
     // mag_refを設定（バッファの最新値で更新）
@@ -436,9 +437,9 @@ static void IMUTask(void* pvParameters)
 
                 g_imu_checkpoint = 10;  // ESKF更新前
 
-                // Update ESKF predict step (400Hz)
+                // Update sensor fusion predict step (400Hz)
                 // g_eskf_ready: センサー安定・キャリブレーション完了後にtrue
-                if (g_eskf.isInitialized() && g_eskf_ready) {
+                if (g_fusion.isInitialized() && g_eskf_ready) {
                     static uint32_t flow_update_counter = 0;
                     static uint32_t eskf_error_counter = 0;
 
@@ -449,12 +450,9 @@ static void IMUTask(void* pvParameters)
                                    std::isfinite(g.x) && std::isfinite(g.y) && std::isfinite(g.z);
 
                     if (eskf_ok) {
-                        g_imu_checkpoint = 12;  // ESKF predict前
-                        g_eskf.predict(a, g, 0.0025f);  // 2.5ms (400Hz)
-
-                        g_imu_checkpoint = 13;  // updateAccelAttitude前
-                        // 加速度計による姿勢補正 (400Hz)
-                        g_eskf.updateAccelAttitude(a);
+                        g_imu_checkpoint = 12;  // predict前
+                        // IMU予測 + 加速度計姿勢補正（predictIMUが両方を実行）
+                        g_fusion.predictIMU(a, g, 0.0025f);  // 2.5ms (400Hz)
 
                         g_imu_checkpoint = 14;  // フロー更新セクション
 
@@ -474,10 +472,9 @@ static void IMUTask(void* pvParameters)
                                     float distance = tof_bottom;
                                     if (distance < 0.02f) distance = 0.02f;
                                     if (distance > 0.02f && distance < 4.0f) {
-                                        // 新API: 生カウントとdt、機体ジャイロを渡す
-                                        // ESKF内部で物理的に正しい変換を行う
+                                        // 生カウントとdt、機体ジャイロを渡す
                                         constexpr float dt = 0.01f;  // 100Hz (フローセンサーレート)
-                                        g_eskf.updateFlowRaw(flow_dx, flow_dy, distance, dt, g.x, g.y);
+                                        g_fusion.updateOpticalFlow(flow_dx, flow_dy, distance, dt, g.x, g.y);
                                     }
                                 }
                             }
@@ -491,7 +488,7 @@ static void IMUTask(void* pvParameters)
                         if (g_baro_data_ready) {
                             g_baro_data_ready = false;
                             if (g_baro_task_healthy) {
-                                // g_eskf.updateBaro(g_baro_data_cache);
+                                // g_fusion.updateBarometer(g_baro_data_cache);
                             }
                         }
 
@@ -502,7 +499,7 @@ static void IMUTask(void* pvParameters)
                         if (g_tof_data_ready) {
                             g_tof_data_ready = false;
                             if (g_tof_task_healthy && g_tof_data_cache > 0.01f && g_tof_data_cache < 4.0f) {
-                                g_eskf.updateToF(g_tof_data_cache);
+                                g_fusion.updateToF(g_tof_data_cache);
                             }
                         }
 
@@ -513,14 +510,14 @@ static void IMUTask(void* pvParameters)
                         if (g_mag_data_ready && g_mag_ref_set) {
                             g_mag_data_ready = false;
                             if (g_mag_task_healthy) {
-                                g_eskf.updateMag(g_mag_data_cache);
+                                g_fusion.updateMagnetometer(g_mag_data_cache);
                             }
                         }
 
                         g_imu_checkpoint = 20;  // getState前
 
-                        // Update StampFlyState with ESKF estimated state
-                        auto eskf_state = g_eskf.getState();
+                        // Update StampFlyState with estimated state
+                        auto eskf_state = g_fusion.getState();
 
                         g_imu_checkpoint = 21;  // getState後、検証前
 
@@ -617,8 +614,8 @@ static void IMUTask(void* pvParameters)
 
                             // 発散時は常にリセット（binlog onと同じ処理）
                             if (pos_diverged || vel_diverged) {
-                                g_eskf.reset();
-                                g_eskf.setGyroBias(g_initial_gyro_bias);
+                                g_fusion.reset();
+                                g_fusion.setGyroBias(g_initial_gyro_bias);
                                 setMagReferenceFromBuffer();
                             }
 
@@ -979,8 +976,8 @@ static void BaroTask(void* pvParameters)
                     g_baro_data_ready = true;
                 }
 
-                // Fallback to simple altitude estimator (ESKF未使用時)
-                if (!g_eskf.isInitialized() && g_altitude_est.isInitialized()) {
+                // Fallback to simple altitude estimator (センサーフュージョン未使用時)
+                if (!g_fusion.isInitialized() && g_altitude_est.isInitialized()) {
                     g_altitude_est.updateBaro(baro.altitude_m);
                 }
             } else {
@@ -1070,8 +1067,8 @@ static void ToFTask(void* pvParameters)
                             g_tof_data_cache = distance_m;
                             g_tof_data_ready = true;
 
-                            // Fallback to simple altitude estimator (ESKF未使用時)
-                            if (!g_eskf.isInitialized() && g_altitude_est.isInitialized() && g_attitude_est.isInitialized()) {
+                            // Fallback to simple altitude estimator (センサーフュージョン未使用時)
+                            if (!g_fusion.isInitialized() && g_altitude_est.isInitialized() && g_attitude_est.isInitialized()) {
                                 auto att = g_attitude_est.getState();
                                 g_altitude_est.updateToF(distance_m, att.pitch, att.roll);
                             }
@@ -1811,19 +1808,16 @@ static esp_err_t initEstimators()
         ESP_LOGW(TAG, "No magnetometer calibration found in NVS");
     }
 
-    // ESKF (15-state Error-State Kalman Filter)
+    // センサーフュージョン (ESKFをラップ)
     {
         auto& state = stampfly::StampFlyState::getInstance();
-        auto cfg = stampfly::ESKF::Config::defaultConfig();
-        // 地磁気はキャリブレーション済みの場合のみ有効化
-        cfg.mag_enabled = g_mag_cal.isCalibrated();
-        ESP_LOGI(TAG, "ESKF mag_enabled: %s", cfg.mag_enabled ? "true" : "false");
-        esp_err_t ret = g_eskf.init(cfg);
-        if (ret != ESP_OK) {
-            ESP_LOGW(TAG, "ESKF init failed: %s", esp_err_to_name(ret));
+        // デフォルト設定で初期化（全センサー有効）
+        bool ok = g_fusion.init();
+        if (!ok) {
+            ESP_LOGW(TAG, "Sensor fusion init failed");
             state.setESKFInitialized(false);
         } else {
-            ESP_LOGI(TAG, "ESKF initialized (predict at 400Hz)");
+            ESP_LOGI(TAG, "Sensor fusion initialized (predict at 400Hz)");
             state.setESKFInitialized(true);
 
             // ジャイロバイアスキャリブレーション（静止状態で実行）
@@ -1856,7 +1850,7 @@ static esp_err_t initEstimators()
                         gyro_sum_y / valid_samples,
                         gyro_sum_z / valid_samples
                     );
-                    g_eskf.setGyroBias(gyro_bias);
+                    g_fusion.setGyroBias(gyro_bias);
                     g_initial_gyro_bias = gyro_bias;  // binlog reset後に復元するため保存
                     ESP_LOGI(TAG, "Gyro bias set: [%.5f, %.5f, %.5f] rad/s",
                              gyro_bias.x, gyro_bias.y, gyro_bias.z);
@@ -1894,7 +1888,7 @@ static esp_err_t initEstimators()
                         mag_sum.y / mag_valid_samples,
                         mag_sum.z / mag_valid_samples
                     );
-                    g_eskf.setMagReference(mag_ref);
+                    g_fusion.setMagReference(mag_ref);
                     g_mag_ref_set = true;
                     ESP_LOGI(TAG, "Mag reference set: [%.1f, %.1f, %.1f] uT",
                              mag_ref.x, mag_ref.y, mag_ref.z);
@@ -2201,21 +2195,21 @@ extern "C" void app_main(void)
     vTaskDelay(pdMS_TO_TICKS(1000));
     state.setFlightState(stampfly::FlightState::IDLE);
 
-    // Wait for sensors to stabilize (ESKF is NOT running during this period)
-    // g_eskf_ready = false なので IMUTask は ESKF 処理をスキップしている
-    ESP_LOGI(TAG, "Waiting for sensors to stabilize (ESKF paused)...");
+    // Wait for sensors to stabilize (sensor fusion is NOT running during this period)
+    // g_eskf_ready = false なので IMUTask は sensor fusion 処理をスキップしている
+    ESP_LOGI(TAG, "Waiting for sensors to stabilize (sensor fusion paused)...");
     vTaskDelay(pdMS_TO_TICKS(2000));
 
-    // Initialize ESKF with fresh state and stable sensor data
-    // センサーが安定した状態でESKFをリセット・キャリブレーション
-    if (g_eskf.isInitialized()) {
-        g_eskf.reset();
-        g_eskf.setGyroBias(g_initial_gyro_bias);
+    // Initialize sensor fusion with fresh state and stable sensor data
+    // センサーが安定した状態でリセット・キャリブレーション
+    if (g_fusion.isInitialized()) {
+        g_fusion.reset();
+        g_fusion.setGyroBias(g_initial_gyro_bias);
         setMagReferenceFromBuffer();
 
-        // ESKF処理を開始
+        // センサーフュージョン処理を開始
         g_eskf_ready = true;
-        ESP_LOGI(TAG, "ESKF initialized with stable sensor data, ready to run");
+        ESP_LOGI(TAG, "Sensor fusion initialized with stable sensor data, ready to run");
     }
 
     // ESKF ready notification - 3 short beeps + green LED
