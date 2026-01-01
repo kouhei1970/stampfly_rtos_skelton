@@ -202,4 +202,98 @@ inline constexpr float GYRO_ATT_THRESHOLD = 0.5f;      // [rad/s]
 
 } // namespace eskf
 
+// =============================================================================
+// Simple Estimators (ESKF不要時のバックアップ推定器)
+// =============================================================================
+
+namespace attitude_estimator {
+inline constexpr float GYRO_WEIGHT = 0.98f;        // 相補フィルタのジャイロ重み
+inline constexpr float MAG_DECLINATION = 0.0f;     // 地磁気偏角 [rad]
+} // namespace attitude_estimator
+
+namespace altitude_estimator {
+inline constexpr float PROCESS_NOISE_ALT = 0.01f;       // 高度プロセスノイズ
+inline constexpr float PROCESS_NOISE_VEL = 0.1f;        // 速度プロセスノイズ
+inline constexpr float MEASUREMENT_NOISE_BARO = 1.0f;   // 気圧観測ノイズ
+inline constexpr float MEASUREMENT_NOISE_TOF = 0.05f;   // ToF観測ノイズ
+} // namespace altitude_estimator
+
+// =============================================================================
+// LPF (Low Pass Filter) Settings
+// =============================================================================
+
+namespace lpf {
+inline constexpr float ACCEL_CUTOFF_HZ = 50.0f;    // 加速度LPFカットオフ [Hz]
+inline constexpr float GYRO_CUTOFF_HZ = 100.0f;    // ジャイロLPFカットオフ [Hz]
+} // namespace lpf
+
+// =============================================================================
+// Sensor Driver Settings
+// =============================================================================
+
+namespace sensor {
+
+// BMM150 (地磁気センサー)
+// data_rate: 0=10Hz, 1=2Hz, 2=6Hz, 3=8Hz, 4=15Hz, 5=20Hz, 6=25Hz, 7=30Hz
+inline constexpr int BMM150_DATA_RATE = 0;         // ODR_10HZ
+// preset: 0=LOW_POWER, 1=REGULAR, 2=ENHANCED, 3=HIGH_ACCURACY
+inline constexpr int BMM150_PRESET = 1;            // REGULAR
+
+// BMP280 (気圧センサー)
+// mode: 0=SLEEP, 1=FORCED, 2=NORMAL
+inline constexpr int BMP280_MODE = 2;              // NORMAL
+// oversampling: 0=SKIP, 1=X1, 2=X2, 3=X4, 4=X8, 5=X16
+inline constexpr int BMP280_PRESS_OVERSAMPLING = 3; // X4
+inline constexpr int BMP280_TEMP_OVERSAMPLING = 2;  // X2
+// standby: 0=0.5ms, 1=62.5ms, 2=125ms, 3=250ms, 4=500ms, 5=1000ms, 6=2000ms, 7=4000ms
+inline constexpr int BMP280_STANDBY = 1;           // MS_62_5
+// filter: 0=OFF, 1=COEF_2, 2=COEF_4, 3=COEF_8, 4=COEF_16
+inline constexpr int BMP280_FILTER = 2;            // COEF_4
+
+// INA3221 (電源モニター)
+inline constexpr int POWER_BATTERY_CHANNEL = 1;    // バッテリー接続チャンネル
+inline constexpr float POWER_SHUNT_RESISTOR = 0.1f; // シャント抵抗 [Ω]
+
+} // namespace sensor
+
+// =============================================================================
+// Communication Settings
+// =============================================================================
+
+namespace comm {
+inline constexpr int WIFI_CHANNEL = 1;             // ESP-NOW WiFiチャンネル
+inline constexpr int TIMEOUT_MS = 500;             // 通信タイムアウト [ms]
+} // namespace comm
+
+namespace telemetry {
+inline constexpr int PORT = 80;                    // WebSocketポート
+inline constexpr int RATE_HZ = 50;                 // 送信レート [Hz]
+} // namespace telemetry
+
+namespace logger {
+inline constexpr int RATE_HZ = 400;                // ログレート [Hz]
+} // namespace logger
+
+// =============================================================================
+// Actuator Settings
+// =============================================================================
+
+namespace motor {
+inline constexpr int PWM_FREQ_HZ = 150000;         // PWM周波数 [Hz]
+inline constexpr int PWM_RESOLUTION_BITS = 8;      // PWM分解能 [bits]
+} // namespace motor
+
+namespace buzzer {
+inline constexpr int LEDC_CHANNEL = 4;             // LEDCチャンネル
+inline constexpr int LEDC_TIMER = 1;               // LEDCタイマー
+} // namespace buzzer
+
+namespace button {
+inline constexpr int DEBOUNCE_MS = 50;             // デバウンス時間 [ms]
+} // namespace button
+
+namespace led {
+inline constexpr int NUM_LEDS = 1;                 // LED数
+} // namespace led
+
 } // namespace config

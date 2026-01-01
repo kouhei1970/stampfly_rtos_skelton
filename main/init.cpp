@@ -113,8 +113,8 @@ esp_err_t sensors()
         stampfly::BMM150::Config cfg;
         cfg.i2c_bus = s_i2c_bus;
         cfg.i2c_addr = stampfly::BMM150_I2C_ADDR_DEFAULT;
-        cfg.data_rate = stampfly::BMM150DataRate::ODR_10HZ;
-        cfg.preset = stampfly::BMM150Preset::REGULAR;
+        cfg.data_rate = static_cast<stampfly::BMM150DataRate>(sensor::BMM150_DATA_RATE);
+        cfg.preset = static_cast<stampfly::BMM150Preset>(sensor::BMM150_PRESET);
 
         ret = g_mag.init(cfg);
         if (ret != ESP_OK) {
@@ -129,11 +129,11 @@ esp_err_t sensors()
         stampfly::BMP280::Config cfg;
         cfg.i2c_bus = s_i2c_bus;
         cfg.i2c_addr = stampfly::BMP280_I2C_ADDR_DEFAULT;
-        cfg.mode = stampfly::BMP280Mode::NORMAL;
-        cfg.press_os = stampfly::BMP280Oversampling::X4;
-        cfg.temp_os = stampfly::BMP280Oversampling::X2;
-        cfg.standby = stampfly::BMP280Standby::MS_62_5;
-        cfg.filter = stampfly::BMP280Filter::COEF_4;
+        cfg.mode = static_cast<stampfly::BMP280Mode>(sensor::BMP280_MODE);
+        cfg.press_os = static_cast<stampfly::BMP280Oversampling>(sensor::BMP280_PRESS_OVERSAMPLING);
+        cfg.temp_os = static_cast<stampfly::BMP280Oversampling>(sensor::BMP280_TEMP_OVERSAMPLING);
+        cfg.standby = static_cast<stampfly::BMP280Standby>(sensor::BMP280_STANDBY);
+        cfg.filter = static_cast<stampfly::BMP280Filter>(sensor::BMP280_FILTER);
 
         ret = g_baro.init(cfg);
         if (ret != ESP_OK) {
@@ -189,8 +189,8 @@ esp_err_t sensors()
         stampfly::PowerMonitor::Config cfg;
         cfg.i2c_bus = s_i2c_bus;
         cfg.i2c_addr = stampfly::INA3221_I2C_ADDR_GND;
-        cfg.battery_channel = 1;  // Battery is connected to CH1
-        cfg.shunt_resistor_ohm = 0.1f;
+        cfg.battery_channel = sensor::POWER_BATTERY_CHANNEL;
+        cfg.shunt_resistor_ohm = sensor::POWER_SHUNT_RESISTOR;
 
         ret = g_power.init(cfg);
         if (ret != ESP_OK) {
@@ -215,8 +215,8 @@ esp_err_t actuators()
         cfg.gpio[stampfly::MotorDriver::MOTOR_RR] = GPIO_MOTOR_M2;
         cfg.gpio[stampfly::MotorDriver::MOTOR_RL] = GPIO_MOTOR_M3;
         cfg.gpio[stampfly::MotorDriver::MOTOR_FL] = GPIO_MOTOR_M4;
-        cfg.pwm_freq_hz = 150000;  // 150kHz
-        cfg.pwm_resolution_bits = 8;
+        cfg.pwm_freq_hz = motor::PWM_FREQ_HZ;
+        cfg.pwm_resolution_bits = motor::PWM_RESOLUTION_BITS;
 
         ret = g_motor.init(cfg);
         if (ret != ESP_OK) {
@@ -231,7 +231,7 @@ esp_err_t actuators()
     {
         stampfly::LED::Config cfg;
         cfg.gpio = GPIO_LED;
-        cfg.num_leds = 1;
+        cfg.num_leds = led::NUM_LEDS;
 
         ret = g_led.init(cfg);
         if (ret != ESP_OK) {
@@ -246,8 +246,8 @@ esp_err_t actuators()
     {
         stampfly::Buzzer::Config cfg;
         cfg.gpio = GPIO_BUZZER;
-        cfg.ledc_channel = 4;
-        cfg.ledc_timer = 1;
+        cfg.ledc_channel = buzzer::LEDC_CHANNEL;
+        cfg.ledc_timer = buzzer::LEDC_TIMER;
 
         ret = g_buzzer.init(cfg);
         if (ret != ESP_OK) {
@@ -263,7 +263,7 @@ esp_err_t actuators()
     {
         stampfly::Button::Config cfg;
         cfg.gpio = GPIO_BUTTON;
-        cfg.debounce_ms = 50;
+        cfg.debounce_ms = button::DEBOUNCE_MS;
 
         ret = g_button.init(cfg);
         if (ret != ESP_OK) {
@@ -281,10 +281,10 @@ esp_err_t estimators()
 {
     ESP_LOGI(TAG, "Initializing estimators...");
 
-    // Initialize IMU filters
+    // Initialize IMU filters (config.hpp から設定)
     for (int i = 0; i < 3; i++) {
-        g_accel_lpf[i].init(400.0f, 50.0f);   // 400Hz sampling, 50Hz cutoff
-        g_gyro_lpf[i].init(400.0f, 100.0f);   // 400Hz sampling, 100Hz cutoff
+        g_accel_lpf[i].init(1.0f / IMU_DT, lpf::ACCEL_CUTOFF_HZ);
+        g_gyro_lpf[i].init(1.0f / IMU_DT, lpf::GYRO_CUTOFF_HZ);
     }
 
     // Initialize magnetometer calibrator and load from NVS
@@ -472,8 +472,8 @@ esp_err_t estimators()
     // Simple Attitude Estimator (backup/complementary)
     {
         stampfly::AttitudeEstimator::Config cfg;
-        cfg.gyro_weight = 0.98f;
-        cfg.mag_declination = 0.0f;  // Adjust for local declination
+        cfg.gyro_weight = attitude_estimator::GYRO_WEIGHT;
+        cfg.mag_declination = attitude_estimator::MAG_DECLINATION;
         esp_err_t ret = g_attitude_est.init(cfg);
         if (ret != ESP_OK) {
             ESP_LOGW(TAG, "AttitudeEstimator init failed: %s", esp_err_to_name(ret));
@@ -485,10 +485,10 @@ esp_err_t estimators()
     // Simple Altitude Estimator
     {
         stampfly::AltitudeEstimator::Config cfg;
-        cfg.process_noise_alt = 0.01f;
-        cfg.process_noise_vel = 0.1f;
-        cfg.measurement_noise_baro = 1.0f;
-        cfg.measurement_noise_tof = 0.05f;
+        cfg.process_noise_alt = altitude_estimator::PROCESS_NOISE_ALT;
+        cfg.process_noise_vel = altitude_estimator::PROCESS_NOISE_VEL;
+        cfg.measurement_noise_baro = altitude_estimator::MEASUREMENT_NOISE_BARO;
+        cfg.measurement_noise_tof = altitude_estimator::MEASUREMENT_NOISE_TOF;
         esp_err_t ret = g_altitude_est.init(cfg);
         if (ret != ESP_OK) {
             ESP_LOGW(TAG, "AltitudeEstimator init failed: %s", esp_err_to_name(ret));
@@ -507,8 +507,8 @@ esp_err_t communication()
     // ESP-NOW Controller Communication
     {
         stampfly::ControllerComm::Config cfg;
-        cfg.wifi_channel = 1;
-        cfg.timeout_ms = 500;
+        cfg.wifi_channel = comm::WIFI_CHANNEL;
+        cfg.timeout_ms = comm::TIMEOUT_MS;
 
         esp_err_t ret = g_comm.init(cfg);
         if (ret != ESP_OK) {
@@ -558,8 +558,8 @@ esp_err_t logger()
 {
     ESP_LOGI(TAG, "Initializing Logger...");
 
-    // 400Hz logging (matches ESKF rate)
-    esp_err_t ret = g_logger.init(400);
+    // Logging rate from config
+    esp_err_t ret = g_logger.init(logger::RATE_HZ);
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "Logger init failed: %s", esp_err_to_name(ret));
         return ret;
@@ -571,7 +571,7 @@ esp_err_t logger()
     // Set global pointer for CLI access
     g_logger_ptr = &g_logger;
 
-    ESP_LOGI(TAG, "Logger initialized at 400Hz");
+    ESP_LOGI(TAG, "Logger initialized at %dHz", logger::RATE_HZ);
     return ESP_OK;
 }
 
@@ -581,8 +581,8 @@ esp_err_t telemetry()
 
     auto& telem = stampfly::Telemetry::getInstance();
     stampfly::Telemetry::Config cfg;
-    cfg.port = 80;
-    cfg.rate_hz = 50;
+    cfg.port = telemetry::PORT;
+    cfg.rate_hz = telemetry::RATE_HZ;
 
     esp_err_t ret = telem.init(cfg);
     if (ret != ESP_OK) {
