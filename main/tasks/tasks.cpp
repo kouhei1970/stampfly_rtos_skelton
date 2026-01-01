@@ -1,0 +1,1126 @@
+/**
+ * @file tasks.cpp
+ * @brief FreeRTOSタスク関数の実装
+ */
+
+#include "tasks.hpp"
+#include "../config.hpp"
+#include "../globals.hpp"
+
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/semphr.h"
+#include "esp_log.h"
+#include "esp_timer.h"
+
+#include <cmath>
+#include <cstddef>  // for offsetof
+
+// Sensor drivers
+#include "bmi270_wrapper.hpp"
+#include "pmw3901_wrapper.hpp"
+#include "bmm150.hpp"
+#include "bmp280.hpp"
+#include "vl53l3cx_wrapper.hpp"
+#include "power_monitor.hpp"
+
+// Actuators
+#include "motor_driver.hpp"
+#include "led.hpp"
+#include "button.hpp"
+
+// State and estimation
+#include "stampfly_state.hpp"
+#include "system_manager.hpp"
+#include "sensor_fusion.hpp"
+#include "sensor_health.hpp"
+#include "filter.hpp"
+
+// Communication
+#include "controller_comm.hpp"
+#include "cli.hpp"
+#include "logger.hpp"
+#include "telemetry.hpp"
+
+static const char* TAG = "tasks";
+
+using namespace config;
+using namespace globals;
+
+// Helper function defined in main.cpp
+extern void setMagReferenceFromBuffer();
+
+// =============================================================================
+// Sensor Tasks
+// =============================================================================
+
+void IMUTask(void* pvParameters)
+{
+    ESP_LOGI(TAG, "IMUTask started (400Hz via ESP Timer)");
+
+    auto& state = stampfly::StampFlyState::getInstance();
+
+    static uint32_t imu_loop_counter = 0;
+    static uint32_t imu_read_fail_counter = 0;
+
+    // ヘルスモニター設定（10連続成功/3連続失敗）
+    g_health.imu.setThresholds(10, 3);
+
+    while (true) {
+        g_imu_checkpoint = 0;  // セマフォ待ち中
+
+        // Wait for timer semaphore (precise 2.5ms = 400Hz timing)
+        if (xSemaphoreTake(g_imu_semaphore, portMAX_DELAY) != pdTRUE) {
+            continue;
+        }
+
+        imu_loop_counter++;
+        g_imu_last_loop = imu_loop_counter;  // タイマーコールバックで監視用
+        g_imu_checkpoint = 1;  // ループ開始
+
+        // 10秒ごとにIMUタスク生存確認
+        if (imu_loop_counter % 4000 == 0) {
+            ESP_LOGI(TAG, "IMUTask alive: loop=%lu, read_fails=%lu, stack_free=%u",
+                     imu_loop_counter, imu_read_fail_counter,
+                     (unsigned)uxTaskGetStackHighWaterMark(nullptr));
+        }
+
+        g_imu_checkpoint = 2;  // isInitialized チェック前
+
+        if (g_imu.isInitialized()) {
+            stampfly::AccelData accel;
+            stampfly::GyroData gyro;
+
+            g_imu_checkpoint = 3;  // IMU読み取り前
+            if (g_imu.readSensorData(accel, gyro) == ESP_OK) {
+                g_imu_checkpoint = 4;  // IMU読み取り成功
+                g_health.imu.recordSuccess();
+                g_imu_task_healthy = g_health.imu.isHealthy();
+                imu_read_fail_counter = 0;
+
+                // ============================================================
+                // BMI270座標系 → 機体座標系(NED) 変換
+                // 図より:
+                //   BMI270のX → 機体Y (右方向)
+                //   BMI270のY → 機体X (前方)
+                //   BMI270のZ → 機体-Z (上向き、NEDでは下が正なので符号反転)
+                // 変換式:
+                //   機体X = センサY
+                //   機体Y = センサX
+                //   機体Z = -センサZ
+                //
+                // 単位変換:
+                //   加速度: g → m/s² (×9.81)
+                //   ジャイロ: rad/s (変換不要)
+                // ============================================================
+                constexpr float GRAVITY = 9.81f;
+                float accel_body_x = accel.y * GRAVITY;   // 前方正 [m/s²]
+                float accel_body_y = accel.x * GRAVITY;   // 右正 [m/s²]
+                float accel_body_z = -accel.z * GRAVITY;  // 下正 (NED) [m/s²]
+
+                float gyro_body_x = gyro.y;     // Roll rate [rad/s]
+                float gyro_body_y = gyro.x;     // Pitch rate [rad/s]
+                float gyro_body_z = -gyro.z;    // Yaw rate [rad/s]
+
+                // Apply low-pass filters (機体座標系で)
+                float filtered_accel[3] = {
+                    g_accel_lpf[0].apply(accel_body_x),
+                    g_accel_lpf[1].apply(accel_body_y),
+                    g_accel_lpf[2].apply(accel_body_z)
+                };
+                float filtered_gyro[3] = {
+                    g_gyro_lpf[0].apply(gyro_body_x),
+                    g_gyro_lpf[1].apply(gyro_body_y),
+                    g_gyro_lpf[2].apply(gyro_body_z)
+                };
+
+                // Update state
+                stampfly::StateVector3 accel_vec(filtered_accel[0], filtered_accel[1], filtered_accel[2]);
+                stampfly::StateVector3 gyro_vec(filtered_gyro[0], filtered_gyro[1], filtered_gyro[2]);
+                state.updateIMU(accel_vec, gyro_vec);
+
+                // Prepare vectors for estimators
+                stampfly::math::Vector3 a(filtered_accel[0], filtered_accel[1], filtered_accel[2]);
+                stampfly::math::Vector3 g(filtered_gyro[0], filtered_gyro[1], filtered_gyro[2]);
+
+                g_imu_checkpoint = 10;  // ESKF更新前
+
+                // Update sensor fusion predict step (400Hz)
+                // g_eskf_ready: センサー安定・キャリブレーション完了後にtrue
+                if (g_fusion.isInitialized() && g_eskf_ready) {
+                    static uint32_t flow_update_counter = 0;
+                    static uint32_t eskf_error_counter = 0;
+
+                    g_imu_checkpoint = 11;  // ESKF入力チェック
+
+                    // 入力値の事前チェック
+                    bool eskf_ok = std::isfinite(a.x) && std::isfinite(a.y) && std::isfinite(a.z) &&
+                                   std::isfinite(g.x) && std::isfinite(g.y) && std::isfinite(g.z);
+
+                    if (eskf_ok) {
+                        g_imu_checkpoint = 12;  // predict前
+                        // IMU予測 + 加速度計姿勢補正（predictIMUが両方を実行）
+                        g_fusion.predictIMU(a, g, 0.0025f);  // 2.5ms (400Hz)
+
+                        g_imu_checkpoint = 14;  // フロー更新セクション
+
+                        // オプティカルフロー更新（100Hz = 400Hz / 4）
+                        // ヘルスチェック: Flow + ToF が両方healthy必要（距離スケーリングに必要）
+                        flow_update_counter++;
+                        if (flow_update_counter >= 4) {
+                            flow_update_counter = 0;
+                            if (g_optflow_task_healthy && g_tof_task_healthy) {
+                                int16_t flow_dx, flow_dy;
+                                uint8_t flow_squal;
+                                float tof_bottom, tof_front;
+                                state.getFlowRawData(flow_dx, flow_dy, flow_squal);
+                                state.getToFData(tof_bottom, tof_front);
+                                // squal/distance チェックは SensorFusion 内部で実行
+                                constexpr float dt = 0.01f;  // 100Hz
+                                g_fusion.updateOpticalFlow(flow_dx, flow_dy, flow_squal, tof_bottom, dt, g.x, g.y);
+                            }
+                        }
+
+                        g_imu_checkpoint = 15;  // Baro更新セクション
+
+                        // Baro更新（data_readyフラグで制御、50Hz）
+                        // ヘルスチェック: Baro healthy必要
+                        // TODO: 気圧センサの値が確認できたら有効化
+                        if (g_baro_data_ready) {
+                            g_baro_data_ready = false;
+                            if (g_baro_task_healthy) {
+                                // g_fusion.updateBarometer(g_baro_data_cache);
+                            }
+                        }
+
+                        g_imu_checkpoint = 16;  // ToF更新セクション
+
+                        // ToF更新（data_readyフラグで制御、30Hz）
+                        // ヘルスチェック: ToF healthy必要
+                        if (g_tof_data_ready) {
+                            g_tof_data_ready = false;
+                            if (g_tof_task_healthy) {
+                                // 距離範囲チェックはSensorFusion内部で実行
+                                g_fusion.updateToF(g_tof_data_cache);
+                            }
+                        }
+
+                        g_imu_checkpoint = 17;  // Mag更新セクション
+
+                        // Mag更新（data_readyフラグで制御、10Hz）
+                        // ヘルスチェック: Mag healthy必要
+                        if (g_mag_data_ready && g_mag_ref_set) {
+                            g_mag_data_ready = false;
+                            if (g_mag_task_healthy) {
+                                g_fusion.updateMagnetometer(g_mag_data_cache);
+                            }
+                        }
+
+                        g_imu_checkpoint = 20;  // getState前
+
+                        // Update StampFlyState with estimated state
+                        auto eskf_state = g_fusion.getState();
+
+                        g_imu_checkpoint = 21;  // getState後、検証前
+
+                        // 出力値の検証（NaNチェック + 発散検出）
+                        bool eskf_valid = std::isfinite(eskf_state.roll) && std::isfinite(eskf_state.pitch);
+
+                        // 発散検出: 位置/速度が異常に大きい場合
+                        constexpr float MAX_POS = 100.0f;   // 100m以上は異常
+                        constexpr float MAX_VEL = 50.0f;    // 50m/s以上は異常
+                        bool pos_diverged = std::abs(eskf_state.position.x) > MAX_POS ||
+                                           std::abs(eskf_state.position.y) > MAX_POS ||
+                                           std::abs(eskf_state.position.z) > MAX_POS;
+                        bool vel_diverged = std::abs(eskf_state.velocity.x) > MAX_VEL ||
+                                           std::abs(eskf_state.velocity.y) > MAX_VEL ||
+                                           std::abs(eskf_state.velocity.z) > MAX_VEL;
+
+                        if (eskf_valid && !pos_diverged && !vel_diverged) {
+                            g_imu_checkpoint = 22;  // state更新前
+                            state.updateAttitude(eskf_state.roll, eskf_state.pitch, eskf_state.yaw);
+                            state.updateEstimatedPosition(eskf_state.position.x, eskf_state.position.y, eskf_state.position.z);
+                            state.updateEstimatedVelocity(eskf_state.velocity.x, eskf_state.velocity.y, eskf_state.velocity.z);
+                            state.updateGyroBias(eskf_state.gyro_bias.x, eskf_state.gyro_bias.y, eskf_state.gyro_bias.z);
+                            state.updateAccelBias(eskf_state.accel_bias.x, eskf_state.accel_bias.y, eskf_state.accel_bias.z);
+
+                            g_imu_checkpoint = 23;  // state更新後、ロギング前
+
+                            // === Binary logging (400Hz) ===
+                            if (g_logger.isRunning()) {
+                                stampfly::LogPacket pkt;
+                                pkt.header[0] = 0xAA;
+                                pkt.header[1] = 0x56;  // V2
+                                pkt.timestamp_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
+
+                                // IMU data (filtered, body frame)
+                                pkt.accel_x = filtered_accel[0];
+                                pkt.accel_y = filtered_accel[1];
+                                pkt.accel_z = filtered_accel[2];
+                                pkt.gyro_x = filtered_gyro[0];
+                                pkt.gyro_y = filtered_gyro[1];
+                                pkt.gyro_z = filtered_gyro[2];
+
+                                // Mag data (from state cache)
+                                stampfly::Vec3 mag_cached;
+                                state.getMagData(mag_cached);
+                                pkt.mag_x = mag_cached.x;
+                                pkt.mag_y = mag_cached.y;
+                                pkt.mag_z = mag_cached.z;
+
+                                // Baro data
+                                float baro_alt_cached, pressure_cached;
+                                state.getBaroData(baro_alt_cached, pressure_cached);
+                                pkt.pressure = pressure_cached;
+                                pkt.baro_alt = baro_alt_cached;
+
+                                // ToF data
+                                float tof_bottom_cached, tof_front_cached;
+                                state.getToFData(tof_bottom_cached, tof_front_cached);
+                                pkt.tof_bottom = tof_bottom_cached;
+                                pkt.tof_front = tof_front_cached;
+
+                                // OptFlow raw data
+                                int16_t flow_dx_cached, flow_dy_cached;
+                                uint8_t flow_squal_cached;
+                                state.getFlowRawData(flow_dx_cached, flow_dy_cached, flow_squal_cached);
+                                pkt.flow_dx = flow_dx_cached;
+                                pkt.flow_dy = flow_dy_cached;
+                                pkt.flow_squal = flow_squal_cached;
+
+                                // ESKF estimates
+                                pkt.pos_x = eskf_state.position.x;
+                                pkt.pos_y = eskf_state.position.y;
+                                pkt.pos_z = eskf_state.position.z;
+                                pkt.vel_x = eskf_state.velocity.x;
+                                pkt.vel_y = eskf_state.velocity.y;
+                                pkt.vel_z = eskf_state.velocity.z;
+                                pkt.roll = eskf_state.roll;
+                                pkt.pitch = eskf_state.pitch;
+                                pkt.yaw = eskf_state.yaw;
+                                pkt.gyro_bias_z = eskf_state.gyro_bias.z;
+                                pkt.accel_bias_x = eskf_state.accel_bias.x;
+                                pkt.accel_bias_y = eskf_state.accel_bias.y;
+
+                                // Status
+                                pkt.eskf_status = 1;  // running
+                                pkt.baro_ref_alt = g_baro_reference_altitude;
+                                memset(pkt.reserved, 0, sizeof(pkt.reserved));
+                                pkt.checksum = 0;  // Will be calculated by Logger
+
+                                g_logger.pushData(pkt);
+                            }
+                            g_imu_checkpoint = 24;  // ロギング完了
+                        } else {
+                            eskf_error_counter++;
+
+                            // 発散時は常にリセット（binlog onと同じ処理）
+                            if (pos_diverged || vel_diverged) {
+                                g_fusion.reset();
+                                g_fusion.setGyroBias(g_initial_gyro_bias);
+                                setMagReferenceFromBuffer();
+                            }
+
+                            // ログ出力は100回に1回（スパム防止）
+                            if (eskf_error_counter % 100 == 1) {
+                                if (!eskf_valid) {
+                                    ESP_LOGW(TAG, "ESKF output NaN, errors=%lu", eskf_error_counter);
+                                } else {
+                                    ESP_LOGW(TAG, "ESKF diverged: pos=[%.1f,%.1f,%.1f] vel=[%.1f,%.1f,%.1f]",
+                                             eskf_state.position.x, eskf_state.position.y, eskf_state.position.z,
+                                             eskf_state.velocity.x, eskf_state.velocity.y, eskf_state.velocity.z);
+                                }
+                            }
+                        }
+                    } else {
+                        eskf_error_counter++;
+                    }
+                }
+                // Fallback to simple attitude estimator if ESKF not available
+                else if (g_attitude_est.isInitialized()) {
+                    g_attitude_est.update(a, g, 0.0025f);
+                    auto att_state = g_attitude_est.getState();
+                    state.updateAttitude(att_state.roll, att_state.pitch, att_state.yaw);
+                }
+
+                g_imu_checkpoint = 30;  // ControlTask起動前
+
+                // Wake up ControlTask (runs at same 400Hz rate)
+                xSemaphoreGive(g_control_semaphore);
+
+                g_imu_checkpoint = 31;  // ControlTask起動後
+            } else {
+                g_health.imu.recordFailure();
+                g_imu_task_healthy = g_health.imu.isHealthy();
+                imu_read_fail_counter++;
+                // 連続失敗時にログ出力
+                if (imu_read_fail_counter % 400 == 1) {
+                    ESP_LOGW(TAG, "IMU read failed, consecutive fails=%lu", imu_read_fail_counter);
+                }
+            }
+        }
+
+        g_imu_checkpoint = 99;  // ループ完了（次のセマフォ待ちへ）
+        // No delay here - timing controlled by ESP Timer semaphore
+    }
+}
+
+/**
+ * @brief Control Task - 400Hz (2.5ms period)
+ *
+ * This task handles flight control (attitude/position control, motor mixing).
+ * It runs at 400Hz, synchronized with IMU updates via semaphore.
+ *
+ * ============================================================================
+ * STUB IMPLEMENTATION - Replace with your flight control code
+ * ============================================================================
+ *
+ * Typical flight control loop:
+ * 1. Read current state (attitude, position, velocity) from StampFlyState
+ * 2. Read control inputs (throttle, roll, pitch, yaw commands)
+ * 3. Compute control outputs using PID or other control algorithms
+ * 4. Apply motor mixing for X-quad configuration
+ * 5. Send PWM commands to motors
+ *
+ * See docs/developer_guide.md for detailed PID control example.
+ */
+void ControlTask(void* pvParameters)
+{
+    ESP_LOGI(TAG, "ControlTask started (400Hz via semaphore)");
+
+    auto& state = stampfly::StampFlyState::getInstance();
+
+    // ========================================================================
+    // Motor Layout (X-quad configuration, viewed from above)
+    // ========================================================================
+    //
+    //               Front
+    //          FL (M4)   FR (M1)
+    //             ╲   ▲   ╱
+    //              ╲  │  ╱
+    //               ╲ │ ╱
+    //                ╲│╱
+    //                 ╳         ← Center of drone
+    //                ╱│╲
+    //               ╱ │ ╲
+    //              ╱  │  ╲
+    //             ╱   │   ╲
+    //          RL (M3)    RR (M2)
+    //                Rear
+    //
+    // Motor rotation:
+    //   M1 (FR): CCW (Counter-Clockwise)
+    //   M2 (RR): CW  (Clockwise)
+    //   M3 (RL): CCW (Counter-Clockwise)
+    //   M4 (FL): CW  (Clockwise)
+    //
+    // ========================================================================
+
+    while (true) {
+        // Wait for control semaphore (given by IMU task after ESKF update)
+        if (xSemaphoreTake(g_control_semaphore, portMAX_DELAY) != pdTRUE) {
+            continue;
+        }
+
+        // Get current flight state
+        stampfly::FlightState flight_state = state.getFlightState();
+
+        // Only run control when ARMED or FLYING
+        if (flight_state != stampfly::FlightState::ARMED &&
+            flight_state != stampfly::FlightState::FLYING) {
+            // Ensure motors are stopped when not armed
+            g_motor.setMotor(stampfly::MotorDriver::MOTOR_FR, 0);
+            g_motor.setMotor(stampfly::MotorDriver::MOTOR_RR, 0);
+            g_motor.setMotor(stampfly::MotorDriver::MOTOR_RL, 0);
+            g_motor.setMotor(stampfly::MotorDriver::MOTOR_FL, 0);
+            continue;
+        }
+
+        // Get control input from controller
+        // throttle: 0.0 ~ 1.0
+        // roll, pitch, yaw: -1.0 ~ +1.0 (not used in this simple example)
+        float throttle, roll, pitch, yaw;
+        state.getControlInput(throttle, roll, pitch, yaw);
+
+        // Simple throttle control: all motors receive same throttle value
+        // TODO: Add attitude control (PID) and motor mixing for stable flight
+        g_motor.setMotor(stampfly::MotorDriver::MOTOR_FR, throttle);  // M1
+        g_motor.setMotor(stampfly::MotorDriver::MOTOR_RR, throttle);  // M2
+        g_motor.setMotor(stampfly::MotorDriver::MOTOR_RL, throttle);  // M3
+        g_motor.setMotor(stampfly::MotorDriver::MOTOR_FL, throttle);  // M4
+    }
+}
+
+/**
+ * @brief Optical Flow Task - 100Hz (10ms period)
+ */
+void OptFlowTask(void* pvParameters)
+{
+    ESP_LOGI(TAG, "OptFlowTask started");
+
+    TickType_t last_wake_time = xTaskGetTickCount();
+    const TickType_t period = pdMS_TO_TICKS(10);  // 100Hz
+
+    auto& state = stampfly::StampFlyState::getInstance();
+
+    // ヘルスモニター設定（10連続で状態変化）
+    g_health.optflow.setThresholds(10, 10);
+
+    static uint32_t optflow_loop_counter = 0;
+    static uint32_t last_logged_loop = 0;
+
+    while (true) {
+        g_optflow_checkpoint = 0;  // ループ開始
+        optflow_loop_counter++;
+        g_optflow_last_loop = optflow_loop_counter;
+
+        // 10秒ごと（1000回 @ 100Hz）に生存確認
+        if (optflow_loop_counter % 1000 == 0) {
+            // 前回のログから進行しているかチェック
+            if (optflow_loop_counter == last_logged_loop) {
+                ESP_LOGW(TAG, "OptFlowTask STUCK at checkpoint=%u, loop=%lu",
+                         g_optflow_checkpoint, optflow_loop_counter);
+            } else {
+                ESP_LOGI(TAG, "OptFlowTask alive: loop=%lu, stack_free=%u",
+                         optflow_loop_counter, (unsigned)uxTaskGetStackHighWaterMark(nullptr));
+            }
+            last_logged_loop = optflow_loop_counter;
+        }
+
+        g_optflow_checkpoint = 1;  // readMotionBurst前
+
+        if (g_optflow != nullptr) {
+            try {
+                auto burst = g_optflow->readMotionBurst();
+                g_optflow_checkpoint = 2;  // readMotionBurst成功
+                // Check quality
+                if (stampfly::OutlierDetector::isFlowValid(burst.squal)) {
+                    g_health.optflow.recordSuccess();
+                    g_optflow_task_healthy = g_health.optflow.isHealthy();
+
+                    // PMW3901座標系 → 中間座標系 変換
+                    int16_t flow_body_x = -burst.delta_y;
+                    int16_t flow_body_y =  burst.delta_x;
+
+                    state.updateOpticalFlow(flow_body_x, flow_body_y, burst.squal);
+                } else {
+                    g_health.optflow.recordFailure();
+                    g_optflow_task_healthy = g_health.optflow.isHealthy();
+                }
+            } catch (const stampfly::PMW3901Exception& e) {
+                g_health.optflow.recordFailure();
+                g_optflow_task_healthy = g_health.optflow.isHealthy();
+            }
+        }
+
+        g_optflow_checkpoint = 99;  // ループ完了
+        vTaskDelayUntil(&last_wake_time, period);
+    }
+}
+
+/**
+ * @brief Magnetometer Task - 100Hz (10ms period)
+ */
+void MagTask(void* pvParameters)
+{
+    ESP_LOGI(TAG, "MagTask started");
+
+    TickType_t last_wake_time = xTaskGetTickCount();
+    const TickType_t period = pdMS_TO_TICKS(10);  // 100Hz センサ読み取り
+
+    auto& state = stampfly::StampFlyState::getInstance();
+
+    // ESKF更新は10Hz（PC版と同じ）
+    int eskf_update_counter = 0;
+    constexpr int ESKF_UPDATE_DIVISOR = 10;  // 100Hz / 10 = 10Hz
+
+    // ヘルスモニター設定
+    g_health.mag.setThresholds(10, 10);
+
+    while (true) {
+        if (g_mag.isInitialized()) {
+            stampfly::MagData mag;
+            if (g_mag.read(mag) == ESP_OK) {
+                g_health.mag.recordSuccess();
+                g_mag_task_healthy = g_health.mag.isHealthy();
+                // ============================================================
+                // BMM150座標系 → 機体座標系(NED) 変換
+                // 実測により確認:
+                //   機体X = -センサY
+                //   機体Y = センサX
+                //   機体Z = センサZ
+                // ============================================================
+                float mag_body_x = -mag.y;  // 前方正
+                float mag_body_y = mag.x;   // 右正
+                float mag_body_z = mag.z;   // 下正 (NED)
+
+                // キャリブレーションデータ収集中の場合
+                if (g_mag_cal.getState() == stampfly::MagCalibrator::State::COLLECTING) {
+                    g_mag_cal.addSample(mag_body_x, mag_body_y, mag_body_z);
+                }
+
+                // キャリブレーション適用
+                float cal_mag_x, cal_mag_y, cal_mag_z;
+                if (g_mag_cal.isCalibrated()) {
+                    g_mag_cal.applyCalibration(mag_body_x, mag_body_y, mag_body_z,
+                                                cal_mag_x, cal_mag_y, cal_mag_z);
+                } else {
+                    // キャリブレーション未実施の場合は生データをそのまま使用
+                    cal_mag_x = mag_body_x;
+                    cal_mag_y = mag_body_y;
+                    cal_mag_z = mag_body_z;
+                }
+
+                // Update state with calibrated data
+                state.updateMag(cal_mag_x, cal_mag_y, cal_mag_z);
+
+                // キャリブレーション済みの場合のみESKF用データを準備
+                if (g_mag_cal.isCalibrated()) {
+                    stampfly::math::Vector3 m(cal_mag_x, cal_mag_y, cal_mag_z);
+
+                    // リングバッファに追加（ARM/binlog開始時の平均計算用）
+                    g_mag_buffer[g_mag_buffer_index] = m;
+                    g_mag_buffer_index = (g_mag_buffer_index + 1) % MAG_REF_BUFFER_SIZE;
+                    if (g_mag_buffer_count < MAG_REF_BUFFER_SIZE) {
+                        g_mag_buffer_count++;
+                    }
+
+                    // ESKF用データをキャッシュしてフラグを立てる（10Hz）
+                    // ESKF updateはIMUTask内で行う（レースコンディション防止）
+                    eskf_update_counter++;
+                    if (eskf_update_counter >= ESKF_UPDATE_DIVISOR) {
+                        eskf_update_counter = 0;
+                        g_mag_data_cache = m;
+                        g_mag_data_ready = true;
+                    }
+                }
+            } else {
+                g_health.mag.recordFailure();
+                g_mag_task_healthy = g_health.mag.isHealthy();
+            }
+        }
+
+        vTaskDelayUntil(&last_wake_time, period);
+    }
+}
+
+/**
+ * @brief Barometer Task - 50Hz (20ms period)
+ */
+void BaroTask(void* pvParameters)
+{
+    ESP_LOGI(TAG, "BaroTask started");
+
+    TickType_t last_wake_time = xTaskGetTickCount();
+    const TickType_t period = pdMS_TO_TICKS(20);  // 50Hz
+
+    auto& state = stampfly::StampFlyState::getInstance();
+
+    // ヘルスモニター設定
+    g_health.baro.setThresholds(5, 10);  // 5連続成功/10連続失敗
+
+    while (true) {
+        if (g_baro.isInitialized()) {
+            stampfly::BaroData baro;
+            if (g_baro.read(baro) == ESP_OK) {
+                g_health.baro.recordSuccess();
+                g_baro_task_healthy = g_health.baro.isHealthy();
+                // Use altitude from read() directly (already calculated)
+                state.updateBaro(baro.pressure_pa, baro.temperature_c, baro.altitude_m);
+
+                // 初回測定で基準高度を設定
+                if (!g_baro_reference_set) {
+                    g_baro_reference_altitude = baro.altitude_m;
+                    g_baro_reference_set = true;
+                    state.setBaroReferenceAltitude(g_baro_reference_altitude);
+                    ESP_LOGI(TAG, "Baro reference set: %.3f m", g_baro_reference_altitude);
+                }
+
+                // ESKF用データをキャッシュしてフラグを立てる（50Hz）
+                // ESKF updateはIMUTask内で行う（レースコンディション防止）
+                if (g_baro_reference_set) {
+                    float relative_alt = baro.altitude_m - g_baro_reference_altitude;
+                    g_baro_data_cache = relative_alt;
+                    g_baro_data_ready = true;
+                }
+
+                // Fallback to simple altitude estimator (センサーフュージョン未使用時)
+                if (!g_fusion.isInitialized() && g_altitude_est.isInitialized()) {
+                    g_altitude_est.updateBaro(baro.altitude_m);
+                }
+            } else {
+                g_health.baro.recordFailure();
+                g_baro_task_healthy = g_health.baro.isHealthy();
+            }
+        }
+
+        vTaskDelayUntil(&last_wake_time, period);
+    }
+}
+
+/**
+ * @brief ToF Task - 30Hz (33ms period)
+ */
+void ToFTask(void* pvParameters)
+{
+    ESP_LOGI(TAG, "ToFTask started, bottom_init=%d, front_init=%d",
+             g_tof_bottom.isInitialized(), g_tof_front.isInitialized());
+
+    TickType_t last_wake_time = xTaskGetTickCount();
+    const TickType_t period = pdMS_TO_TICKS(33);  // ~30Hz
+
+    auto& state = stampfly::StampFlyState::getInstance();
+
+    // Error counters for sensor disable on repeated failures
+    const int MAX_ERRORS = 10;
+    // ヘルスモニター設定 (5連続成功/10連続失敗)
+    g_health.tof.setThresholds(5, 10);
+    // 距離の急激な変化検出用
+    float tof_last_valid_distance = 0.0f;
+    constexpr float TOF_MAX_CHANGE_RATE = 2.0f;  // 最大変化率 [m/s]（30Hz想定で1回あたり約6.7cm）
+    constexpr float TOF_MAX_CHANGE_PER_CYCLE = TOF_MAX_CHANGE_RATE / 30.0f;  // 約0.067m
+    int bottom_errors = 0;
+    int front_errors = 0;
+    bool bottom_disabled = false;
+    bool front_disabled = false;
+
+    static int log_count = 0;
+
+    while (true) {
+        // Bottom ToF
+        if (g_tof_bottom.isInitialized() && !bottom_disabled) {
+            // Check if data is ready
+            bool data_ready = false;
+            g_tof_bottom.isDataReady(data_ready);
+
+            if (data_ready) {
+                uint16_t distance_mm;
+                uint8_t status;
+                esp_err_t ret = g_tof_bottom.getDistance(distance_mm, status);
+                if (ret == ESP_OK) {
+                    bottom_errors = 0;  // Reset on success
+
+                    // Only update if valid measurement (status 0-4)
+                    if (status <= 4) {
+                        float distance_m = distance_mm * 0.001f;
+
+                        // 距離の急激な変化をチェック
+                        bool distance_jump_detected = false;
+                        if (tof_last_valid_distance > 0.01f) {
+                            float change = std::abs(distance_m - tof_last_valid_distance);
+                            if (change > TOF_MAX_CHANGE_PER_CYCLE) {
+                                distance_jump_detected = true;
+                                ESP_LOGW(TAG, "ToF distance jump: %.3f -> %.3f (change=%.3f)",
+                                         tof_last_valid_distance, distance_m, change);
+                            }
+                        }
+
+                        state.updateToF(stampfly::ToFPosition::BOTTOM, distance_m, status);
+
+                        if (!distance_jump_detected) {
+                            g_health.tof.recordSuccess();
+                            g_tof_task_healthy = g_health.tof.isHealthy();
+
+                            // ESKF用データをキャッシュしてフラグを立てる（30Hz）
+                            // ESKF updateはIMUTask内で行う（レースコンディション防止）
+                            g_tof_data_cache = distance_m;
+                            g_tof_data_ready = true;
+
+                            // Fallback to simple altitude estimator (センサーフュージョン未使用時)
+                            if (!g_fusion.isInitialized() && g_altitude_est.isInitialized() && g_attitude_est.isInitialized()) {
+                                auto att = g_attitude_est.getState();
+                                g_altitude_est.updateToF(distance_m, att.pitch, att.roll);
+                            }
+                        } else {
+                            // 距離ジャンプ検出
+                            g_health.tof.recordFailure();
+                            g_tof_task_healthy = g_health.tof.isHealthy();
+                        }
+
+                        // 有効距離を記録（ジャンプ後も更新して追従可能に）
+                        tof_last_valid_distance = distance_m;
+                    } else {
+                        // ステータス異常
+                        g_health.tof.recordFailure();
+                        g_tof_task_healthy = g_health.tof.isHealthy();
+                    }
+
+                    // Debug log every 300 readings (~10 seconds at 30Hz)
+                    if (++log_count >= 300) {
+                        ESP_LOGI(TAG, "ToFTask alive: bottom=%dmm status=%d, stack_free=%u",
+                                 distance_mm, status, (unsigned)uxTaskGetStackHighWaterMark(nullptr));
+                        log_count = 0;
+                    }
+
+                    // Clear interrupt and start next measurement
+                    g_tof_bottom.clearInterruptAndStartMeasurement();
+                } else {
+                    g_health.tof.recordFailure();
+                    g_tof_task_healthy = g_health.tof.isHealthy();
+                    if (++bottom_errors >= MAX_ERRORS) {
+                        ESP_LOGW(TAG, "Bottom ToF disabled: err=%s", esp_err_to_name(ret));
+                        bottom_disabled = true;
+                    }
+                }
+            }
+        }
+
+        // Front ToF
+        if (g_tof_front.isInitialized() && !front_disabled) {
+            bool data_ready = false;
+            g_tof_front.isDataReady(data_ready);
+
+            if (data_ready) {
+                uint16_t distance_mm;
+                uint8_t status;
+                if (g_tof_front.getDistance(distance_mm, status) == ESP_OK) {
+                    front_errors = 0;  // Reset on success
+                    if (status <= 4) {
+                        float distance_m = distance_mm * 0.001f;
+                        state.updateToF(stampfly::ToFPosition::FRONT, distance_m, status);
+                    }
+                    g_tof_front.clearInterruptAndStartMeasurement();
+                } else {
+                    if (++front_errors >= MAX_ERRORS) {
+                        ESP_LOGW(TAG, "Front ToF disabled due to repeated errors");
+                        front_disabled = true;
+                    }
+                }
+            }
+        }
+
+        vTaskDelayUntil(&last_wake_time, period);
+    }
+}
+
+/**
+ * @brief Power Monitor Task - 10Hz (100ms period)
+ */
+void PowerTask(void* pvParameters)
+{
+    ESP_LOGI(TAG, "PowerTask started");
+
+    TickType_t last_wake_time = xTaskGetTickCount();
+    const TickType_t period = pdMS_TO_TICKS(100);  // 10Hz
+
+    auto& state = stampfly::StampFlyState::getInstance();
+    static uint32_t log_counter = 0;
+    static bool first_read = true;
+    static bool low_battery_warned = false;
+
+    while (true) {
+        if (g_power.isInitialized()) {
+            stampfly::PowerData power;
+            if (g_power.read(power) == ESP_OK) {
+                state.updatePower(power.voltage_v, power.current_ma / 1000.0f);
+
+                // Log first reading immediately, then every 5 seconds
+                if (first_read || ++log_counter >= 50) {
+                    ESP_LOGI(TAG, "Battery: %.2fV, %.1fmA, LowBat=%d",
+                             power.voltage_v, power.current_ma, g_power.isLowBattery());
+                    log_counter = 0;
+                    first_read = false;
+                }
+
+                // Low battery warning (only warn once to avoid continuous buzzing)
+                if (g_power.isLowBattery() && !low_battery_warned) {
+                    ESP_LOGW(TAG, "LOW BATTERY WARNING: %.2fV", power.voltage_v);
+                    state.setError(stampfly::ErrorCode::LOW_BATTERY);
+                    g_led.setPattern(stampfly::LED::Pattern::BLINK_FAST, 0xFF0000);
+                    g_buzzer.lowBatteryWarning();
+                    low_battery_warned = true;
+                }
+                // Reset warning flag when battery is charged again
+                if (!g_power.isLowBattery()) {
+                    low_battery_warned = false;
+                }
+            }
+        }
+
+        vTaskDelayUntil(&last_wake_time, period);
+    }
+}
+
+/**
+ * @brief LED Task - 30Hz (32ms period)
+ */
+void LEDTask(void* pvParameters)
+{
+    ESP_LOGI(TAG, "LEDTask started");
+
+    TickType_t last_wake_time = xTaskGetTickCount();
+    const TickType_t period = pdMS_TO_TICKS(32);  // ~30Hz
+
+    // Low battery threshold for battery replace warning (cyan)
+    constexpr float LOW_BATTERY_THRESHOLD = 3.4f;
+
+    auto& state = stampfly::StampFlyState::getInstance();
+    stampfly::FlightState prev_flight_state = stampfly::FlightState::INIT;
+    bool prev_low_battery = false;
+
+    while (true) {
+        // Check for low battery (< 3.4V = battery replace warning)
+        float voltage = state.getVoltage();
+        bool low_battery = (voltage > 0.5f) && (voltage < LOW_BATTERY_THRESHOLD);
+
+        // Update LED pattern based on flight state
+        stampfly::FlightState flight_state = state.getFlightState();
+
+        // Low battery takes priority over flight state
+        if (low_battery != prev_low_battery || flight_state != prev_flight_state) {
+            if (low_battery) {
+                // Battery replace warning - cyan blink
+                g_led.showLowBatteryCyan();
+            } else {
+                switch (flight_state) {
+                    case stampfly::FlightState::INIT:
+                        g_led.showInit();
+                        break;
+                    case stampfly::FlightState::CALIBRATING:
+                        g_led.showCalibrating();
+                        break;
+                    case stampfly::FlightState::IDLE:
+                        g_led.showIdle();
+                        break;
+                    case stampfly::FlightState::ARMED:
+                        g_led.showArmed();
+                        break;
+                    case stampfly::FlightState::FLYING:
+                        g_led.showFlying();
+                        break;
+                    case stampfly::FlightState::LANDING:
+                        g_led.showLanding();
+                        break;
+                    case stampfly::FlightState::ERROR:
+                        g_led.showError();
+                        break;
+                }
+            }
+            prev_flight_state = flight_state;
+            prev_low_battery = low_battery;
+        }
+
+        // Update LED animation
+        g_led.update();
+
+        vTaskDelayUntil(&last_wake_time, period);
+    }
+}
+
+/**
+ * @brief Button Task - 100Hz (10ms period)
+ */
+void ButtonTask(void* pvParameters)
+{
+    ESP_LOGI(TAG, "ButtonTask started");
+
+    TickType_t last_wake_time = xTaskGetTickCount();
+    const TickType_t period = pdMS_TO_TICKS(10);  // 100Hz
+
+    while (true) {
+        if (g_button.isInitialized()) {
+            g_button.tick();
+        }
+
+        vTaskDelayUntil(&last_wake_time, period);
+    }
+}
+
+/**
+ * @brief Communication Task - 50Hz (20ms period)
+ */
+void CommTask(void* pvParameters)
+{
+    ESP_LOGI(TAG, "CommTask started");
+
+    TickType_t last_wake_time = xTaskGetTickCount();
+    const TickType_t period = pdMS_TO_TICKS(20);  // 50Hz
+
+    auto& state = stampfly::StampFlyState::getInstance();
+
+    while (true) {
+        if (g_comm.isInitialized()) {
+            // Check connection timeout
+            g_comm.tick();
+
+            // Send telemetry if connected
+            if (g_comm.isConnected()) {
+                stampfly::TelemetryPacket telem = {};
+
+                // Fill telemetry data
+                telem.battery_mv = static_cast<uint16_t>(state.getVoltage() * 1000);
+                telem.altitude_cm = static_cast<int16_t>(state.getAltitude() * 100);
+
+                stampfly::StateVector3 vel = state.getVelocity();
+                telem.velocity_x = static_cast<int16_t>(vel.x * 1000);
+                telem.velocity_y = static_cast<int16_t>(vel.y * 1000);
+                telem.velocity_z = static_cast<int16_t>(vel.z * 1000);
+
+                stampfly::StateVector3 att = state.getAttitude();
+                telem.roll_deg10 = static_cast<int16_t>(att.x * 180.0f / M_PI * 10);
+                telem.pitch_deg10 = static_cast<int16_t>(att.y * 180.0f / M_PI * 10);
+                telem.yaw_deg10 = static_cast<int16_t>(att.z * 180.0f / M_PI * 10);
+
+                telem.state = static_cast<uint8_t>(state.getFlightState());
+
+                // Set warning flags
+                telem.flags = 0;
+                if (g_power.isLowBattery()) {
+                    telem.flags |= stampfly::TELEM_FLAG_LOW_BATTERY;
+                }
+                if (state.getErrorCode() != stampfly::ErrorCode::NONE) {
+                    telem.flags |= stampfly::TELEM_FLAG_SENSOR_ERROR;
+                }
+                if (state.getFlightState() == stampfly::FlightState::CALIBRATING) {
+                    telem.flags |= stampfly::TELEM_FLAG_CALIBRATING;
+                }
+
+                g_comm.sendTelemetry(telem);
+            }
+
+            // Update connection state
+            if (!g_comm.isConnected() && state.getPairingState() == stampfly::PairingState::PAIRED) {
+                state.setPairingState(stampfly::PairingState::PAIRED);  // Keep paired but disconnected
+            }
+        }
+
+        vTaskDelayUntil(&last_wake_time, period);
+    }
+}
+
+/**
+ * @brief CLI Task - Low priority, processes USB serial input
+ *
+ * Note: Binary logging moved to stampfly_logger component (400Hz via ESP Timer)
+ */
+void CLITask(void* pvParameters)
+{
+    ESP_LOGI(TAG, "CLITask started");
+
+    // Print initial prompt
+    g_cli.print("\r\n=== StampFly RTOS Skeleton ===\r\n");
+    g_cli.print("Type 'help' for available commands\r\n");
+    g_cli.print("> ");
+
+    TickType_t last_teleplot = xTaskGetTickCount();
+    TickType_t last_csvlog = xTaskGetTickCount();
+    const TickType_t teleplot_period = pdMS_TO_TICKS(50);  // 20Hz teleplot output
+    const TickType_t csvlog_period = pdMS_TO_TICKS(50);    // 20Hz CSV log output
+
+    while (true) {
+        if (g_cli.isInitialized()) {
+            g_cli.processInput();
+
+            TickType_t now = xTaskGetTickCount();
+
+            // Output teleplot data at fixed interval
+            if (g_cli.isTeleplotEnabled() && (now - last_teleplot) >= teleplot_period) {
+                g_cli.outputTeleplot();
+                last_teleplot = now;
+            }
+
+            // Output CSV log data at fixed interval
+            if (g_cli.isLogEnabled() && (now - last_csvlog) >= csvlog_period) {
+                g_cli.outputCSVLog();
+                last_csvlog = now;
+            }
+
+            // Binary logging now handled by stampfly_logger component at 400Hz
+            // controlled via g_logger.start()/stop()
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));  // 10ms polling (teleplot/csvlog only)
+    }
+}
+
+// =============================================================================
+// Telemetry Task - WebSocket data broadcast at 50Hz
+// =============================================================================
+
+void TelemetryTask(void* pvParameters)
+{
+    ESP_LOGI(TAG, "TelemetryTask started");
+
+    auto& telemetry = stampfly::Telemetry::getInstance();
+    auto& state = stampfly::StampFlyState::getInstance();
+
+    TickType_t last_wake_time = xTaskGetTickCount();
+    const TickType_t period = pdMS_TO_TICKS(20);  // 50Hz
+
+    // DEBUG: ESP32側送信カウンタ
+    static uint32_t esp32_send_counter = 0;
+
+    while (true) {
+        // Only broadcast when clients are connected
+        if (telemetry.hasClients()) {
+            stampfly::TelemetryWSPacket pkt = {};
+            pkt.header = 0xAA;
+            pkt.packet_type = 0x20;  // v2 extended packet
+            pkt.timestamp_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
+
+            // Get attitude from state (ESKF estimated)
+            state.getAttitudeEuler(pkt.roll, pkt.pitch, pkt.yaw);
+
+            // Get position and velocity (ESKF estimated)
+            auto pos = state.getPosition();
+            pkt.pos_x = pos.x;
+            pkt.pos_y = pos.y;
+            pkt.pos_z = pos.z;
+
+            auto vel = state.getVelocity();
+            pkt.vel_x = vel.x;
+            pkt.vel_y = vel.y;
+            pkt.vel_z = vel.z;
+
+            // Get bias-corrected IMU data
+            stampfly::Vec3 accel, gyro;
+            state.getIMUCorrected(accel, gyro);
+            pkt.gyro_x = gyro.x;
+            pkt.gyro_y = gyro.y;
+            pkt.gyro_z = gyro.z;
+            pkt.accel_x = accel.x;
+            pkt.accel_y = accel.y;
+            pkt.accel_z = accel.z;
+
+            // Get control inputs (normalized)
+            state.getControlInput(pkt.ctrl_throttle, pkt.ctrl_roll,
+                                  pkt.ctrl_pitch, pkt.ctrl_yaw);
+
+            // Get magnetometer data
+            stampfly::Vec3 mag;
+            state.getMagData(mag);
+            pkt.mag_x = mag.x;
+            pkt.mag_y = mag.y;
+            pkt.mag_z = mag.z;
+
+            // Get battery voltage
+            float voltage, current;
+            state.getPowerData(voltage, current);
+            pkt.voltage = voltage;
+
+            // Get flight state
+            pkt.flight_state = static_cast<uint8_t>(state.getFlightState());
+
+            // Sensor status (placeholder - all OK for now)
+            pkt.sensor_status = 0x1F;  // All sensors OK
+
+            // Heartbeat counter
+            esp32_send_counter++;
+            pkt.heartbeat = esp32_send_counter;
+
+            // Calculate checksum (XOR of all bytes before checksum field)
+            uint8_t checksum = 0;
+            const uint8_t* data = reinterpret_cast<const uint8_t*>(&pkt);
+            // checksum is at offset 92 (sizeof(pkt) - 4 for padding - 1 for checksum)
+            constexpr size_t checksum_offset = offsetof(stampfly::TelemetryWSPacket, checksum);
+            for (size_t i = 0; i < checksum_offset; i++) {
+                checksum ^= data[i];
+            }
+            pkt.checksum = checksum;
+
+            // Broadcast to all connected clients
+            telemetry.broadcast(&pkt, sizeof(pkt));
+        }
+
+        vTaskDelayUntil(&last_wake_time, period);
+    }
+}
