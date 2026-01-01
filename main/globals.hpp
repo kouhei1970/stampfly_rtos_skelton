@@ -174,6 +174,7 @@ extern stampfly::ControllerComm* g_comm_ptr;
 extern stampfly::LED* g_led_ptr;
 extern stampfly::MotorDriver* g_motor_ptr;
 extern stampfly::Buzzer* g_buzzer_ptr;
+extern sf::SensorFusion* g_fusion_ptr;
 
 // =============================================================================
 // Debug Checkpoints (C linkage for external access)

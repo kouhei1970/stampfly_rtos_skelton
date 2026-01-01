@@ -168,6 +168,14 @@ public:
     void reset();
 
     /**
+     * @brief 位置・速度のみリセット（姿勢・バイアスは維持）
+     *
+     * 離陸時・着陸時・飛行中の任意タイミングで使用。
+     * 現在位置を原点(0,0,0)にリセット。
+     */
+    void resetPositionVelocity();
+
+    /**
      * @brief ジャイロバイアス設定
      */
     void setGyroBias(const stampfly::math::Vector3& bias);

@@ -133,6 +133,15 @@ void SensorFusion::reset() {
     diverged_ = false;
 }
 
+void SensorFusion::resetPositionVelocity() {
+    if (!initialized_) {
+        return;
+    }
+
+    eskf_.resetPositionVelocity();
+    diverged_ = false;  // 発散状態もクリア
+}
+
 void SensorFusion::setGyroBias(const stampfly::math::Vector3& bias) {
     if (!initialized_) {
         return;

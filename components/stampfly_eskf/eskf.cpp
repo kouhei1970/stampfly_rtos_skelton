@@ -76,6 +76,34 @@ void ESKF::reset()
     P_(BA_Z, BA_Z) = ba_var;
 }
 
+void ESKF::resetPositionVelocity()
+{
+    // 位置・速度のみゼロにリセット（姿勢・バイアスは維持）
+    state_.position = Vector3::zero();
+    state_.velocity = Vector3::zero();
+
+    // 位置・速度の共分散を初期値に戻す
+    float pos_var = config_.init_pos_std * config_.init_pos_std;
+    float vel_var = config_.init_vel_std * config_.init_vel_std;
+
+    P_(POS_X, POS_X) = pos_var;
+    P_(POS_Y, POS_Y) = pos_var;
+    P_(POS_Z, POS_Z) = pos_var;
+    P_(VEL_X, VEL_X) = vel_var;
+    P_(VEL_Y, VEL_Y) = vel_var;
+    P_(VEL_Z, VEL_Z) = vel_var;
+
+    // 位置・速度と他状態の相関をクリア
+    for (int i = 0; i < 6; i++) {
+        for (int j = 6; j < 15; j++) {
+            P_(i, j) = 0.0f;
+            P_(j, i) = 0.0f;
+        }
+    }
+
+    ESP_LOGI(TAG, "Position/Velocity reset to origin");
+}
+
 void ESKF::setGyroBias(const Vector3& bias)
 {
     state_.gyro_bias = bias;

@@ -133,6 +133,7 @@ stampfly::ControllerComm* g_comm_ptr = nullptr;
 stampfly::LED* g_led_ptr = nullptr;
 stampfly::MotorDriver* g_motor_ptr = nullptr;
 stampfly::Buzzer* g_buzzer_ptr = nullptr;
+sf::SensorFusion* g_fusion_ptr = nullptr;
 
 // =============================================================================
 // Debug Checkpoints

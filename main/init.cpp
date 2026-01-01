@@ -405,6 +405,7 @@ esp_err_t estimators()
                      sensor_enables.optical_flow, sensor_enables.barometer,
                      sensor_enables.tof, sensor_enables.magnetometer);
             state.setESKFInitialized(true);
+            g_fusion_ptr = &g_fusion;  // Set pointer for CLI access
 
             // ジャイロバイアスキャリブレーション（静止状態で実行）
             if (g_imu.isInitialized()) {

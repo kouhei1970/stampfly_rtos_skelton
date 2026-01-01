@@ -51,6 +51,10 @@ extern stampfly::MotorDriver* g_motor_ptr;
 #include "buzzer.hpp"
 extern stampfly::Buzzer* g_buzzer_ptr;
 
+// External reference to sensor fusion (defined in globals.cpp)
+#include "sensor_fusion.hpp"
+extern sf::SensorFusion* g_fusion_ptr;
+
 namespace stampfly {
 
 // Forward declarations for command handlers
@@ -74,6 +78,7 @@ static void cmd_ctrl(int argc, char** argv, void* context);
 static void cmd_debug(int argc, char** argv, void* context);
 static void cmd_led(int argc, char** argv, void* context);
 static void cmd_sound(int argc, char** argv, void* context);
+static void cmd_pos(int argc, char** argv, void* context);
 
 esp_err_t CLI::init()
 {
@@ -235,6 +240,7 @@ void CLI::registerDefaultCommands()
     registerCommand("debug", cmd_debug, "Debug mode [on|off] (ignore errors)", this);
     registerCommand("led", cmd_led, "LED [brightness <0-255>]", this);
     registerCommand("sound", cmd_sound, "Sound [on|off]", this);
+    registerCommand("pos", cmd_pos, "Position [reset|status]", this);
 }
 
 // ========== Command Handlers ==========
@@ -1038,6 +1044,42 @@ static void cmd_sound(int argc, char** argv, void* context)
         cli->print("Sound OFF (saved)\r\n");
     } else {
         cli->print("Usage: sound [on|off]\r\n");
+    }
+}
+
+static void cmd_pos(int argc, char** argv, void* context)
+{
+    CLI* cli = static_cast<CLI*>(context);
+
+    if (g_fusion_ptr == nullptr) {
+        cli->print("Sensor fusion not available\r\n");
+        return;
+    }
+
+    if (argc < 2) {
+        // Show current position
+        auto state = g_fusion_ptr->getState();
+        cli->print("Position [m]: X=%.3f Y=%.3f Z=%.3f\r\n",
+                   state.position.x, state.position.y, state.position.z);
+        cli->print("Velocity [m/s]: X=%.3f Y=%.3f Z=%.3f\r\n",
+                   state.velocity.x, state.velocity.y, state.velocity.z);
+        cli->print("Usage: pos [reset|status]\r\n");
+        return;
+    }
+
+    if (strcmp(argv[1], "reset") == 0) {
+        g_fusion_ptr->resetPositionVelocity();
+        cli->print("Position/Velocity reset to origin\r\n");
+    } else if (strcmp(argv[1], "status") == 0) {
+        auto state = g_fusion_ptr->getState();
+        cli->print("=== Position Status ===\r\n");
+        cli->print("Position [m]: X=%.3f Y=%.3f Z=%.3f\r\n",
+                   state.position.x, state.position.y, state.position.z);
+        cli->print("Velocity [m/s]: X=%.3f Y=%.3f Z=%.3f\r\n",
+                   state.velocity.x, state.velocity.y, state.velocity.z);
+        cli->print("Diverged: %s\r\n", g_fusion_ptr->isDiverged() ? "YES" : "NO");
+    } else {
+        cli->print("Usage: pos [reset|status]\r\n");
     }
 }
 
