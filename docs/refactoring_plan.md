@@ -694,11 +694,32 @@ g_fusion.updateMagnetometer(g_mag_data_cache);
 
 ---
 
-### フェーズ2: センサーヘルスチェック統合
+### フェーズ2: センサーヘルスチェック統合 ✅ 完了
 
-- `sf_svc_health` コンポーネント作成
-- 各タスクに分散しているヘルスチェックロジックを統合
-- ヘルスステータスの一元管理
+**目標**: 各タスクに分散しているヘルスチェックパターンを統合
+
+**完了した作業**:
+
+| 作業 | 状態 |
+|------|------|
+| sf_svc_health コンポーネント作成 | ✅ |
+| SensorHealth クラス実装 | ✅ |
+| HealthMonitor クラス実装 | ✅ |
+| IMUTask に統合 | ✅ |
+| OptFlowTask に統合 | ✅ |
+| MagTask に統合 | ✅ |
+| BaroTask に統合 | ✅ |
+| ToFTask に統合 | ✅ |
+
+**API**:
+```cpp
+sf::HealthMonitor g_health;
+g_health.imu.setThresholds(10, 3);   // 10連続成功/3連続失敗
+g_health.imu.recordSuccess();
+g_health.imu.recordFailure();
+bool healthy = g_health.imu.isHealthy();
+bool ready = g_health.isFlightReady();  // IMU+ToF+OptFlow
+```
 
 ---
 
