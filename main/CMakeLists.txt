@@ -1,6 +1,21 @@
 idf_component_register(
-    SRCS "main.cpp" "globals.cpp" "init.cpp" "tasks/tasks.cpp"
-    INCLUDE_DIRS "."
+    SRCS
+        "main.cpp"
+        "globals.cpp"
+        "init.cpp"
+        "tasks/imu_task.cpp"
+        "tasks/control_task.cpp"
+        "tasks/optflow_task.cpp"
+        "tasks/mag_task.cpp"
+        "tasks/baro_task.cpp"
+        "tasks/tof_task.cpp"
+        "tasks/power_task.cpp"
+        "tasks/led_task.cpp"
+        "tasks/button_task.cpp"
+        "tasks/comm_task.cpp"
+        "tasks/cli_task.cpp"
+        "tasks/telemetry_task.cpp"
+    INCLUDE_DIRS "." "tasks"
     REQUIRES
         stampfly_imu
         stampfly_tof
