@@ -723,11 +723,34 @@ bool ready = g_health.isFlightReady();  // IMU+ToF+OptFlow
 
 ---
 
-### フェーズ3: main.cppファイル分割
+### フェーズ3: main.cppファイル分割 🔄 部分完了
 
-- `main/config.hpp` - GPIO、優先度、定数
-- `main/init.cpp` - 初期化関数群
-- `main/tasks/` - タスク関数群（IMUTask, BaroTask等を別ファイルに）
+**完了した作業**:
+
+| 作業 | 状態 | 備考 |
+|------|------|------|
+| config.hpp 抽出 | ✅ | GPIO、優先度、スタックサイズ、タイミング定数 |
+| init.cpp 抽出 | ⏸️ | 無名namespaceのためブロック中 |
+| tasks/ 分割 | ⏸️ | 無名namespaceのためブロック中 |
+
+**課題**: 現在のグローバル変数は無名namespace内に定義されており、ファイルスコープです。
+init関数やタスク関数を別ファイルに分割するには、extern宣言への変更が必要です。
+
+**今後の選択肢**:
+1. 無名namespace → 名前付きnamespace + extern宣言に変更（大規模変更）
+2. 現状維持（config.hppのみ分割、残りはmain.cpp内）
+
+**現在のmain.cpp構成** (2133行):
+```
+includes + config                ~60行
+globals (anonymous namespace)    ~120行
+helper functions                 ~60行
+task functions (12個)           ~1000行
+event handlers                   ~100行
+init functions (8個)             ~400行
+startTasks                       ~100行
+app_main                         ~130行
+```
 
 ---
 
