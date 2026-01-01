@@ -491,7 +491,8 @@ static void IMUTask(void* pvParameters)
                         // ヘルスチェック: ToF healthy必要
                         if (g_tof_data_ready) {
                             g_tof_data_ready = false;
-                            if (g_tof_task_healthy && g_tof_data_cache > 0.01f && g_tof_data_cache < 4.0f) {
+                            if (g_tof_task_healthy) {
+                                // 距離範囲チェックはSensorFusion内部で実行
                                 g_fusion.updateToF(g_tof_data_cache);
                             }
                         }
