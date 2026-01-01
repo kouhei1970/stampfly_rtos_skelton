@@ -291,6 +291,10 @@ esp_err_t estimators()
     g_mag_calibrator = &g_mag_cal;  // Set global pointer for CLI access
     if (g_mag_cal.loadFromNVS() == ESP_OK) {
         ESP_LOGI(TAG, "Magnetometer calibration loaded from NVS");
+        // デバッグ: isCalibrated()の状態を確認
+        auto cal = g_mag_cal.getCalibration();
+        ESP_LOGI(TAG, "  isCalibrated=%d, valid=%d, scale=[%.3f,%.3f,%.3f]",
+                 g_mag_cal.isCalibrated(), cal.valid, cal.scale_x, cal.scale_y, cal.scale_z);
     } else {
         ESP_LOGW(TAG, "No magnetometer calibration found in NVS");
     }

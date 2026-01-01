@@ -16,9 +16,18 @@ bool SensorFusion::init() {
 bool SensorFusion::init(const Config& config) {
     config_ = config;
 
-    // ESKF初期化（SensorFusion設定を反映）
+    // ESKF初期化
+    // 注意: SensorFusion::ConfigとESKF::Configは異なる抽象レベル
+    // - SensorFusion::Config: 高レベル（センサーON/OFF）
+    // - ESKF::Config: 低レベル（ノイズパラメータ等）
+    // 動作に影響する設定は明示的に変換する必要がある
     auto eskf_config = stampfly::ESKF::Config::defaultConfig();
+
+    // 動作変更設定の反映
     eskf_config.mag_enabled = config_.use_magnetometer;
+    // use_optical_flow, use_barometer, use_tofはupdateXXX()内でチェックするため
+    // ESKFレベルでの設定は不要
+
     if (eskf_.init(eskf_config) != ESP_OK) {
         return false;
     }

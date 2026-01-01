@@ -165,10 +165,12 @@ void IMUTask(void* pvParameters)
 
                         // Mag更新（data_readyフラグで制御、10Hz）
                         // ヘルスチェック: Mag healthy必要
+                        static uint32_t mag_update_count = 0;
                         if (g_mag_data_ready && g_mag_ref_set) {
                             g_mag_data_ready = false;
                             if (g_mag_task_healthy) {
                                 g_fusion.updateMagnetometer(g_mag_data_cache);
+                                mag_update_count++;
                             }
                         }
 
@@ -176,9 +178,9 @@ void IMUTask(void* pvParameters)
                         static uint32_t mag_debug_counter = 0;
                         if (++mag_debug_counter >= 4000) {  // 10秒 @ 400Hz
                             mag_debug_counter = 0;
-                            ESP_LOGI(TAG, "MAG DEBUG: data_ready=%d, ref_set=%d, healthy=%d, cache=(%.1f,%.1f,%.1f)",
-                                     g_mag_data_ready, g_mag_ref_set, g_mag_task_healthy,
-                                     g_mag_data_cache.x, g_mag_data_cache.y, g_mag_data_cache.z);
+                            ESP_LOGI(TAG, "MAG DEBUG: updates=%lu, ref_set=%d, healthy=%d, isCalibrated=%d",
+                                     mag_update_count, g_mag_ref_set, g_mag_task_healthy,
+                                     g_mag_cal.isCalibrated());
                         }
 
                         g_imu_checkpoint = 20;  // getState前

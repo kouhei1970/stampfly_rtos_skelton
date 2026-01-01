@@ -38,13 +38,21 @@ class SensorFusion {
 public:
     /**
      * @brief 設定構造体
+     *
+     * 注意: この設定はESKF::Configとは異なる抽象レベル
+     * - SensorFusion::Config: 高レベル（センサーON/OFF、閾値）
+     * - ESKF::Config: 低レベル（カルマンフィルタのノイズパラメータ等）
+     *
+     * 動作に影響する設定（use_magnetometer等）はinit()内で
+     * ESKF::Configに変換される。新しい動作設定を追加する場合は
+     * sensor_fusion.cpp::init()も更新すること。
      */
     struct Config {
         // センサー使用スイッチ（デフォルト: 全て有効）
         bool use_optical_flow = true;
         bool use_barometer = true;
         bool use_tof = true;
-        bool use_magnetometer = true;
+        bool use_magnetometer = true;  // → ESKF::Config::mag_enabled に変換
 
         // 発散検出閾値
         float max_position = 100.0f;   // [m]

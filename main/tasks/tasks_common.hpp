@@ -25,6 +25,7 @@
 #include "bmp280.hpp"
 #include "vl53l3cx_wrapper.hpp"
 #include "power_monitor.hpp"
+#include "mag_calibration.hpp"
 
 // Actuators
 #include "motor_driver.hpp"
