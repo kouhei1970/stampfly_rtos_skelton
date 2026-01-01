@@ -142,18 +142,23 @@ void ESKF::setYaw(float yaw)
 
 void ESKF::initializeAttitude(const Vector3& accel, const Vector3& mag)
 {
-    // 加速度計からロール/ピッチを計算（重力方向から）
-    // 機体座標系で加速度 = (ax, ay, az) のとき、
-    // 静止状態では (ax, ay, az) ≈ R^T * (0, 0, g)
-    // roll = atan2(ay, az), pitch = atan2(-ax, sqrt(ay² + az²))
+    // 加速度計からロール/ピッチを計算（重力の反力から）
+    // 加速度計は重力の反力を測定: a = -R^T * g
+    // NED座標系で静止時: a_body ≈ (0, 0, -g) （上向き = -Z）
+    //
+    // ロール右（右翼下）: a_body = (0, -g*sin(φ), -g*cos(φ))
+    //   → roll = atan2(-ay, -az) = φ
+    //
+    // ピッチアップ: a_body = (g*sin(θ), 0, -g*cos(θ))
+    //   → pitch = atan2(ax, sqrt(ay² + az²)) = θ
     float accel_norm = std::sqrt(accel.x * accel.x + accel.y * accel.y + accel.z * accel.z);
     if (accel_norm < 1.0f) {
         // 加速度が小さすぎる場合は水平とみなす
         state_.roll = 0.0f;
         state_.pitch = 0.0f;
     } else {
-        state_.roll = std::atan2(accel.y, accel.z);
-        state_.pitch = std::atan2(-accel.x, std::sqrt(accel.y * accel.y + accel.z * accel.z));
+        state_.roll = std::atan2(-accel.y, -accel.z);
+        state_.pitch = std::atan2(accel.x, std::sqrt(accel.y * accel.y + accel.z * accel.z));
     }
     state_.yaw = 0.0f;
 
