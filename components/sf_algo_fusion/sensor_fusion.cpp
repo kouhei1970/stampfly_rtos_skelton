@@ -56,14 +56,20 @@ bool SensorFusion::predictIMU(const stampfly::math::Vector3& accel_body,
     return !diverged_;
 }
 
-void SensorFusion::updateOpticalFlow(int16_t dx, int16_t dy, float distance,
-                                      float dt, float gyro_x, float gyro_y) {
+void SensorFusion::updateOpticalFlow(int16_t dx, int16_t dy, uint8_t squal,
+                                      float distance, float dt,
+                                      float gyro_x, float gyro_y) {
     if (!initialized_ || diverged_) {
         return;
     }
 
     // センサー無効時はスキップ
     if (!config_.use_optical_flow) {
+        return;
+    }
+
+    // 品質チェック（squal >= 0x19 で有効）
+    if (squal < 0x19) {
         return;
     }
 

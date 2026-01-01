@@ -109,9 +109,17 @@ public:
 
     /**
      * @brief オプティカルフロー更新
+     * @param dx X方向の生カウント
+     * @param dy Y方向の生カウント
+     * @param squal 表面品質（0x19以上で有効）
+     * @param distance ToF距離 [m]
+     * @param dt 時間刻み [s]
+     * @param gyro_x 機体X軸角速度 [rad/s]
+     * @param gyro_y 機体Y軸角速度 [rad/s]
      */
-    void updateOpticalFlow(int16_t dx, int16_t dy, float distance,
-                           float dt, float gyro_x, float gyro_y);
+    void updateOpticalFlow(int16_t dx, int16_t dy, uint8_t squal,
+                           float distance, float dt,
+                           float gyro_x, float gyro_y);
 
     /**
      * @brief 気圧高度更新

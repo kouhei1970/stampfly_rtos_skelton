@@ -464,19 +464,12 @@ static void IMUTask(void* pvParameters)
                             if (g_optflow_task_healthy && g_tof_task_healthy) {
                                 int16_t flow_dx, flow_dy;
                                 uint8_t flow_squal;
+                                float tof_bottom, tof_front;
                                 state.getFlowRawData(flow_dx, flow_dy, flow_squal);
-
-                                if (stampfly::OutlierDetector::isFlowValid(flow_squal)) {
-                                    float tof_bottom, tof_front;
-                                    state.getToFData(tof_bottom, tof_front);
-                                    float distance = tof_bottom;
-                                    if (distance < 0.02f) distance = 0.02f;
-                                    if (distance > 0.02f && distance < 4.0f) {
-                                        // 生カウントとdt、機体ジャイロを渡す
-                                        constexpr float dt = 0.01f;  // 100Hz (フローセンサーレート)
-                                        g_fusion.updateOpticalFlow(flow_dx, flow_dy, distance, dt, g.x, g.y);
-                                    }
-                                }
+                                state.getToFData(tof_bottom, tof_front);
+                                // squal/distance チェックは SensorFusion 内部で実行
+                                constexpr float dt = 0.01f;  // 100Hz
+                                g_fusion.updateOpticalFlow(flow_dx, flow_dy, flow_squal, tof_bottom, dt, g.x, g.y);
                             }
                         }
 
