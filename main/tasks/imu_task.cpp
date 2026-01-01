@@ -165,7 +165,7 @@ void IMUTask(void* pvParameters)
                             if (!is_grounded && g_optflow_task_healthy && g_tof_task_healthy) {
                                 if (takeoff_skip_counter > 0) {
                                     takeoff_skip_counter--;
-                                    // 離陸直後はスキップ（フローデータ安定待ち）
+                                    // 共分散リセット直後は過剰補正防止のためスキップ
                                 } else {
                                     int16_t flow_dx, flow_dy;
                                     uint8_t flow_squal;
@@ -195,7 +195,7 @@ void IMUTask(void* pvParameters)
 
                         // ToF更新（data_readyフラグで制御、30Hz）
                         // ヘルスチェック: ToF healthy必要
-                        // 離陸直後はスキップ（センサー安定待ち）
+                        // 離陸直後はスキップ（共分散リセット直後は観測更新で過剰補正が起きるため）
                         static int tof_takeoff_skip_counter = 0;
                         if (is_grounded) {
                             tof_takeoff_skip_counter = 10;  // 離陸後10回（~0.3秒@30Hz）スキップ
@@ -205,7 +205,7 @@ void IMUTask(void* pvParameters)
                             if (g_tof_task_healthy && !is_grounded) {
                                 if (tof_takeoff_skip_counter > 0) {
                                     tof_takeoff_skip_counter--;
-                                    // 離陸直後はスキップ
+                                    // 共分散リセット直後は過剰補正防止のためスキップ
                                 } else {
                                     // 距離範囲チェックはSensorFusion内部で実行
                                     g_fusion.updateToF(g_tof_data_cache);

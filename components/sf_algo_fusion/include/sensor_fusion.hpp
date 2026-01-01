@@ -163,6 +163,21 @@ public:
     bool isDiverged() const { return diverged_; }
 
     /**
+     * @brief 位置の共分散（対角成分の和）を取得
+     * @return P(x,x) + P(y,y) + P(z,z) [m²]
+     */
+    float getPositionVariance() const {
+        return eskf_.getPositionVariance();
+    }
+
+    /**
+     * @brief 速度の共分散（対角成分の和）を取得
+     */
+    float getVelocityVariance() const {
+        return eskf_.getVelocityVariance();
+    }
+
+    /**
      * @brief ESKFリセット
      */
     void reset();

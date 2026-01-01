@@ -267,6 +267,24 @@ public:
     State getState() const { return state_; }
 
     /**
+     * @brief 位置の共分散（対角成分の和）を取得
+     * @return P(x,x) + P(y,y) + P(z,z) [m²]
+     *
+     * 共分散収束判定に使用。値が小さいほど推定が安定。
+     */
+    float getPositionVariance() const {
+        return P_(0, 0) + P_(1, 1) + P_(2, 2);
+    }
+
+    /**
+     * @brief 速度の共分散（対角成分の和）を取得
+     * @return P(vx,vx) + P(vy,vy) + P(vz,vz) [(m/s)²]
+     */
+    float getVelocityVariance() const {
+        return P_(3, 3) + P_(4, 4) + P_(5, 5);
+    }
+
+    /**
      * @brief 状態リセット
      */
     void reset();

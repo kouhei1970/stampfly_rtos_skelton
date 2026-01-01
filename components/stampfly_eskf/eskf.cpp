@@ -86,6 +86,15 @@ void ESKF::resetPositionVelocity()
     float pos_var = config_.init_pos_std * config_.init_pos_std;
     float vel_var = config_.init_vel_std * config_.init_vel_std;
 
+    // 位置・速度ブロック全体をクリアしてから対角成分を設定
+    // （位置-速度間の相関、非対角成分も含めてクリア）
+    for (int i = 0; i < 6; i++) {
+        for (int j = 0; j < 6; j++) {
+            P_(i, j) = 0.0f;
+        }
+    }
+
+    // 対角成分を設定
     P_(POS_X, POS_X) = pos_var;
     P_(POS_Y, POS_Y) = pos_var;
     P_(POS_Z, POS_Z) = pos_var;
@@ -93,7 +102,7 @@ void ESKF::resetPositionVelocity()
     P_(VEL_Y, VEL_Y) = vel_var;
     P_(VEL_Z, VEL_Z) = vel_var;
 
-    // 位置・速度と他状態の相関をクリア
+    // 位置・速度と他状態（姿勢、バイアス）の相関をクリア
     for (int i = 0; i < 6; i++) {
         for (int j = 6; j < 15; j++) {
             P_(i, j) = 0.0f;
