@@ -354,10 +354,14 @@ esp_err_t estimators()
                 for (int i = 0; i < MAG_CALIB_SAMPLES; i++) {
                     stampfly::MagData raw_mag;
                     if (g_mag.read(raw_mag) == ESP_OK) {
-                        // センサ座標系 → 機体座標系変換
-                        float mag_body_x = raw_mag.y;
+                        // センサ座標系 → 機体座標系変換（mag_task.cppと同じ）
+                        // BMM150座標系 → 機体座標系(NED):
+                        //   機体X = -センサY
+                        //   機体Y = センサX
+                        //   機体Z = センサZ
+                        float mag_body_x = -raw_mag.y;
                         float mag_body_y = raw_mag.x;
-                        float mag_body_z = -raw_mag.z;
+                        float mag_body_z = raw_mag.z;
                         // キャリブレーション適用
                         float cal_x, cal_y, cal_z;
                         g_mag_cal.applyCalibration(mag_body_x, mag_body_y, mag_body_z, cal_x, cal_y, cal_z);
