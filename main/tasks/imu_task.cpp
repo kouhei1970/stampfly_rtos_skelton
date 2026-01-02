@@ -236,19 +236,68 @@ void IMUTask(void* pvParameters)
                             }
                         }
 
-                        // DEBUG: Mag状態を10秒ごとにログ
-                        static uint32_t mag_debug_counter = 0;
-                        if (++mag_debug_counter >= 4000) {  // 10秒 @ 400Hz
-                            mag_debug_counter = 0;
-                            ESP_LOGI(TAG, "MAG DEBUG: updates=%lu, ref_set=%d, healthy=%d, isCalibrated=%d",
-                                     mag_update_count, g_mag_ref_set, g_mag_task_healthy,
-                                     g_mag_cal.isCalibrated());
-                        }
-
                         g_imu_checkpoint = 20;  // getState前
 
                         // Update StampFlyState with estimated state
                         auto eskf_state = g_fusion.getState();
+
+                        // DEBUG: 起動後10秒間、1秒ごとに平均値の推移をログ出力
+                        static uint32_t startup_debug_counter = 0;
+                        static uint32_t startup_debug_seconds = 0;
+                        if (startup_debug_seconds < 10) {
+                            startup_debug_counter++;
+                            if (startup_debug_counter >= 400) {  // 1秒 @ 400Hz
+                                startup_debug_counter = 0;
+                                startup_debug_seconds++;
+
+                                // Accelバッファ平均を計算
+                                stampfly::math::Vector3 accel_avg(0, 0, 0);
+                                if (g_accel_buffer_count > 0) {
+                                    for (int i = 0; i < g_accel_buffer_count; i++) {
+                                        accel_avg.x += g_accel_buffer[i].x;
+                                        accel_avg.y += g_accel_buffer[i].y;
+                                        accel_avg.z += g_accel_buffer[i].z;
+                                    }
+                                    accel_avg.x /= g_accel_buffer_count;
+                                    accel_avg.y /= g_accel_buffer_count;
+                                    accel_avg.z /= g_accel_buffer_count;
+                                }
+
+                                // Magバッファ平均を計算
+                                stampfly::math::Vector3 mag_avg(0, 0, 0);
+                                if (g_mag_buffer_count > 0) {
+                                    for (int i = 0; i < g_mag_buffer_count; i++) {
+                                        mag_avg.x += g_mag_buffer[i].x;
+                                        mag_avg.y += g_mag_buffer[i].y;
+                                        mag_avg.z += g_mag_buffer[i].z;
+                                    }
+                                    mag_avg.x /= g_mag_buffer_count;
+                                    mag_avg.y /= g_mag_buffer_count;
+                                    mag_avg.z /= g_mag_buffer_count;
+                                }
+
+                                // mag_refを取得
+                                auto mag_ref = g_fusion.getMagReference();
+
+                                // 現在の姿勢（度に変換）
+                                constexpr float RAD_TO_DEG = 57.2957795f;
+                                float roll_deg = eskf_state.roll * RAD_TO_DEG;
+                                float pitch_deg = eskf_state.pitch * RAD_TO_DEG;
+                                float yaw_deg = eskf_state.yaw * RAD_TO_DEG;
+
+                                ESP_LOGI(TAG, "=== STARTUP DEBUG t=%lus ===", startup_debug_seconds);
+                                ESP_LOGI(TAG, "  Accel avg: [%.3f, %.3f, %.3f] (n=%d)",
+                                         accel_avg.x, accel_avg.y, accel_avg.z, g_accel_buffer_count);
+                                ESP_LOGI(TAG, "  Mag avg:   [%.2f, %.2f, %.2f] (n=%d)",
+                                         mag_avg.x, mag_avg.y, mag_avg.z, g_mag_buffer_count);
+                                ESP_LOGI(TAG, "  Mag ref:   [%.2f, %.2f, %.2f]",
+                                         mag_ref.x, mag_ref.y, mag_ref.z);
+                                ESP_LOGI(TAG, "  Mag now:   [%.2f, %.2f, %.2f]",
+                                         g_mag_data_cache.x, g_mag_data_cache.y, g_mag_data_cache.z);
+                                ESP_LOGI(TAG, "  Attitude:  roll=%.2f, pitch=%.2f, yaw=%.2f deg",
+                                         roll_deg, pitch_deg, yaw_deg);
+                            }
+                        }
 
                         g_imu_checkpoint = 21;  // getState後、検証前
 

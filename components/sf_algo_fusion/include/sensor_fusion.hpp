@@ -221,6 +221,14 @@ public:
                             const stampfly::math::Vector3& mag);
 
     /**
+     * @brief 地磁気参照ベクトル取得 (デバッグ用)
+     * @return mag_ref [uT] (NED座標系)
+     */
+    stampfly::math::Vector3 getMagReference() const {
+        return eskf_.getMagReference();
+    }
+
+    /**
      * @brief 内部ESKFへの直接アクセス（上級者向け）
      */
     stampfly::ESKF& getESKF() { return eskf_; }

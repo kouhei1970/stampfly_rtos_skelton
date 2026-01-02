@@ -352,6 +352,12 @@ public:
      */
     const Matrix<15, 15>& getCovariance() const { return P_; }
 
+    /**
+     * @brief 地磁気参照ベクトル取得 (デバッグ用)
+     * @return mag_ref [uT] (NED座標系)
+     */
+    Vector3 getMagReference() const { return config_.mag_ref; }
+
     bool isInitialized() const { return initialized_; }
 
 private:

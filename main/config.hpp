@@ -132,7 +132,7 @@ inline constexpr float ACCEL_BIAS_NOISE = 0.0001f;     // 加速度バイアス�
 // -----------------------------------------------------------------------------
 inline constexpr float BARO_NOISE = 0.1f;              // 気圧高度ノイズ [m]
 inline constexpr float TOF_NOISE = 0.002540f;          // ToFノイズ [m]
-inline constexpr float MAG_NOISE = 0.5f;               // 地磁気ノイズ [uT] (小さいほど観測を信頼)
+inline constexpr float MAG_NOISE = 0.2f;               // 地磁気ノイズ [uT] (小さいほど観測を信頼)
 inline constexpr float FLOW_NOISE = 0.005232f;         // オプティカルフローノイズ [m/s]
 inline constexpr float ACCEL_ATT_NOISE = 0.02f;        // 加速度計姿勢補正ノイズ [m/s²]
 
