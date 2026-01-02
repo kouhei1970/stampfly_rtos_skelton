@@ -22,11 +22,11 @@ idf_component_register(
         sf_hal_pmw3901
         sf_hal_bmm150
         sf_hal_bmp280
-        stampfly_power
+        sf_hal_power
         sf_hal_motor
-        stampfly_led
-        stampfly_buzzer
-        stampfly_button
+        sf_hal_led
+        sf_hal_buzzer
+        sf_hal_button
         sf_algo_filter
         sf_algo_eskf
         sf_algo_fusion
@@ -34,5 +34,5 @@ idf_component_register(
         sf_svc_state
         sf_svc_comm
         sf_svc_cli
-        stampfly_telemetry
+        sf_svc_telemetry
 )

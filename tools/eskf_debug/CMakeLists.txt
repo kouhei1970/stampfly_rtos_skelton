@@ -17,31 +17,31 @@ add_library(esp_stubs INTERFACE)
 target_include_directories(esp_stubs INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/stubs)
 
 # Math library (header-only)
-add_library(stampfly_math INTERFACE)
-target_include_directories(stampfly_math INTERFACE
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../components/stampfly_math/include
+add_library(sf_algo_math INTERFACE)
+target_include_directories(sf_algo_math INTERFACE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../components/sf_algo_math/include
 )
 
 # ESKF library (using actual component source with ESP-IDF stubs)
-add_library(stampfly_eskf
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../components/stampfly_eskf/eskf.cpp
+add_library(sf_algo_eskf
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../components/sf_algo_eskf/eskf.cpp
 )
-target_include_directories(stampfly_eskf PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../components/stampfly_eskf/include
+target_include_directories(sf_algo_eskf PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../components/sf_algo_eskf/include
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
 # esp_stubs must come BEFORE other includes to override ESP-IDF headers
-target_include_directories(stampfly_eskf BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/stubs)
-target_link_libraries(stampfly_eskf PUBLIC stampfly_math)
+target_include_directories(sf_algo_eskf BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/stubs)
+target_link_libraries(sf_algo_eskf PUBLIC sf_algo_math)
 
 # Main debug executable (simple test)
 add_executable(eskf_debug main.cpp)
-target_link_libraries(eskf_debug PRIVATE stampfly_eskf)
+target_link_libraries(eskf_debug PRIVATE sf_algo_eskf)
 
 # Replay tool (run ESKF on recorded sensor data)
 add_executable(eskf_replay replay.cpp)
-target_link_libraries(eskf_replay PRIVATE stampfly_eskf)
+target_link_libraries(eskf_replay PRIVATE sf_algo_eskf)
 
 # Unit test executable
 add_executable(eskf_test eskf_test.cpp)
-target_link_libraries(eskf_test PRIVATE stampfly_eskf)
+target_link_libraries(eskf_test PRIVATE sf_algo_eskf)
