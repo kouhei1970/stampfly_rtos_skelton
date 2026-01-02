@@ -771,10 +771,29 @@ main/
 
 ---
 
-### フェーズ4: 既存コンポーネントリネーム
+### フェーズ4: 既存コンポーネントリネーム（未着手）
 
 - `stampfly_*` → `sf_<layer>_*` への段階的移行
 - 例：`stampfly_eskf` → `sf_algo_eskf`
+
+**現状**:
+| 現在の名前 | 新名称（予定） | 状態 |
+|-----------|---------------|------|
+| stampfly_imu | sf_hal_bmi270 | 未着手 |
+| stampfly_mag | sf_hal_bmm150 | 未着手 |
+| stampfly_baro | sf_hal_bmp280 | 未着手 |
+| stampfly_tof | sf_hal_vl53l3cx | 未着手 |
+| stampfly_opticalflow | sf_hal_pmw3901 | 未着手 |
+| stampfly_motor | sf_hal_motor | 未着手 |
+| stampfly_eskf | sf_algo_eskf | 未着手 |
+| stampfly_filter | sf_algo_filter | 未着手 |
+| stampfly_pid | sf_algo_pid | 未着手 |
+| stampfly_state | sf_svc_state | 未着手 |
+| stampfly_logger | sf_svc_logger | 未着手 |
+| stampfly_cli | sf_svc_cli | 未着手 |
+| stampfly_comm | sf_svc_comm | 未着手 |
+| sf_algo_fusion | - | ✅ 新規則で作成済み |
+| sf_svc_health | - | ✅ 新規則で作成済み |
 
 ---
 
