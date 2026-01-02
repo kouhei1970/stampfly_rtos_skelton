@@ -212,6 +212,49 @@ inline constexpr int LANDING_HOLD_COUNT = 200;          // 着陸判定維持回
 } // namespace eskf
 
 // =============================================================================
+// Sensor Stability Thresholds (センサー安定判定閾値)
+// =============================================================================
+//
+// ESKF初期化前にセンサーの安定を確認するための閾値
+// 実測データ (2025-01-02) に基づいて設定
+//
+// | センサー | 観測std norm | 設定閾値 | 余裕 |
+// |---------|-------------|---------|------|
+// | Accel   | 0.017-0.020 | 0.025   | ~25% |
+// | Gyro    | 0.0025-0.003| 0.005   | ~70% |
+// | Mag     | 0.85-1.17   | 1.3     | ~10% |
+// | Baro    | ~0          | 0.01    | -    |
+// | ToF     | 0.0007-0.001| 0.003   | ~200%|
+// | OptFlow | dx/dy<1     | 3       | ~200%|
+//
+
+namespace stability {
+
+// 安定判定の標準偏差閾値（std norm）
+inline constexpr float ACCEL_STD_THRESHOLD = 0.025f;     // [m/s²]
+inline constexpr float GYRO_STD_THRESHOLD = 0.005f;      // [rad/s]
+inline constexpr float MAG_STD_THRESHOLD = 1.3f;         // [µT]
+inline constexpr float BARO_STD_THRESHOLD = 0.01f;       // [m]
+inline constexpr float TOF_STD_THRESHOLD = 0.003f;       // [m]
+inline constexpr float OPTFLOW_STD_THRESHOLD = 3.0f;     // [counts] dx+dy
+
+// 安定判定のタイミング
+inline constexpr int CHECK_INTERVAL_MS = 200;            // チェック間隔 [ms]
+inline constexpr int MIN_WAIT_MS = 2000;                 // 最小待機時間 [ms]
+inline constexpr int MAX_WAIT_MS = 10000;                // 最大待機時間 [ms]
+inline constexpr int STABLE_COUNT_REQUIRED = 5;          // 連続安定回数
+
+// バッファ最小サンプル数（統計計算に必要）
+inline constexpr int MIN_ACCEL_SAMPLES = 50;
+inline constexpr int MIN_GYRO_SAMPLES = 50;
+inline constexpr int MIN_MAG_SAMPLES = 50;
+inline constexpr int MIN_BARO_SAMPLES = 10;
+inline constexpr int MIN_TOF_SAMPLES = 5;
+inline constexpr int MIN_OPTFLOW_SAMPLES = 10;
+
+} // namespace stability
+
+// =============================================================================
 // Simple Estimators (ESKF不要時のバックアップ推定器)
 // =============================================================================
 

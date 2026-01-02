@@ -499,13 +499,8 @@ extern "C" void app_main(void)
     // g_eskf_ready = false なので IMUTask は sensor fusion 処理をスキップしている
     ESP_LOGI(TAG, "Waiting for sensors to stabilize (std-based detection)...");
 
-    // 安定判定パラメータ
-    constexpr float ACCEL_STD_THRESHOLD = 0.03f;   // 加速度std normの閾値
-    constexpr float MAG_STD_THRESHOLD = 1.5f;      // 地磁気std normの閾値
-    constexpr int STABLE_COUNT_REQUIRED = 5;       // 連続で条件を満たす回数
-    constexpr int CHECK_INTERVAL_MS = 200;         // チェック間隔 [ms]
-    constexpr int MIN_WAIT_MS = 10000;             // 最小待機時間 [ms] - ログ収集のため10秒に設定
-    constexpr int MAX_WAIT_MS = 15000;             // 最大待機時間 [ms]
+    // 安定判定パラメータ（config.hpp から取得）
+    using namespace config::stability;
 
     int stable_count = 0;
     int elapsed_ms = 0;
@@ -521,7 +516,7 @@ extern "C" void app_main(void)
         elapsed_ms += CHECK_INTERVAL_MS;
 
         // バッファからstd normを計算
-        if (g_accel_buffer_count >= 50 && g_mag_buffer_count >= 50) {
+        if (g_accel_buffer_count >= MIN_ACCEL_SAMPLES && g_mag_buffer_count >= MIN_MAG_SAMPLES) {
             // 加速度の平均と標準偏差を計算
             stampfly::math::Vector3 accel_sum = stampfly::math::Vector3::zero();
             stampfly::math::Vector3 accel_sum_sq = stampfly::math::Vector3::zero();
@@ -585,7 +580,7 @@ extern "C" void app_main(void)
                          accel_std.x, accel_std.y, accel_std.z, accel_std_norm, ACCEL_STD_THRESHOLD);
 
                 // Gyroscope
-                if (g_gyro_buffer_count >= 50) {
+                if (g_gyro_buffer_count >= MIN_GYRO_SAMPLES) {
                     stampfly::math::Vector3 gyro_sum = stampfly::math::Vector3::zero();
                     stampfly::math::Vector3 gyro_sum_sq = stampfly::math::Vector3::zero();
                     int gyro_n = std::min(g_gyro_buffer_count, REF_BUFFER_SIZE);
@@ -620,7 +615,7 @@ extern "C" void app_main(void)
                          mag_std.x, mag_std.y, mag_std.z, mag_std_norm, MAG_STD_THRESHOLD);
 
                 // Barometer
-                if (g_baro_buffer_count >= 10) {
+                if (g_baro_buffer_count >= MIN_BARO_SAMPLES) {
                     float baro_sum = 0.0f, baro_sum_sq = 0.0f;
                     int baro_n = std::min(g_baro_buffer_count, REF_BUFFER_SIZE);
                     for (int i = 0; i < baro_n; i++) {
@@ -635,7 +630,7 @@ extern "C" void app_main(void)
                 }
 
                 // ToF Bottom
-                if (g_tof_bottom_buffer_count >= 5) {
+                if (g_tof_bottom_buffer_count >= MIN_TOF_SAMPLES) {
                     float tof_sum = 0.0f, tof_sum_sq = 0.0f;
                     int tof_n = std::min(g_tof_bottom_buffer_count, REF_BUFFER_SIZE);
                     for (int i = 0; i < tof_n; i++) {
@@ -650,7 +645,7 @@ extern "C" void app_main(void)
                 }
 
                 // ToF Front
-                if (g_tof_front_buffer_count >= 5) {
+                if (g_tof_front_buffer_count >= MIN_TOF_SAMPLES) {
                     float tof_sum = 0.0f, tof_sum_sq = 0.0f;
                     int tof_n = std::min(g_tof_front_buffer_count, REF_BUFFER_SIZE);
                     for (int i = 0; i < tof_n; i++) {
@@ -665,7 +660,7 @@ extern "C" void app_main(void)
                 }
 
                 // Optical Flow
-                if (g_optflow_buffer_count >= 10) {
+                if (g_optflow_buffer_count >= MIN_OPTFLOW_SAMPLES) {
                     float dx_sum = 0.0f, dy_sum = 0.0f, squal_sum = 0.0f;
                     float dx_sum_sq = 0.0f, dy_sum_sq = 0.0f;
                     int flow_n = std::min(g_optflow_buffer_count, REF_BUFFER_SIZE);
