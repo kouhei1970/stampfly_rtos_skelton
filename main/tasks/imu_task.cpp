@@ -244,36 +244,41 @@ void IMUTask(void* pvParameters)
                         // DEBUG: 起動後10秒間、1秒ごとに平均値の推移をログ出力
                         static uint32_t startup_debug_counter = 0;
                         static uint32_t startup_debug_seconds = 0;
+                        static stampfly::math::Vector3 accel_sum(0, 0, 0);
+                        static stampfly::math::Vector3 mag_sum(0, 0, 0);
+                        static uint32_t accel_sample_count = 0;
+                        static uint32_t mag_sample_count = 0;
+
                         if (startup_debug_seconds < 10) {
+                            // 1秒間のセンサー値を累積
+                            accel_sum.x += a.x;
+                            accel_sum.y += a.y;
+                            accel_sum.z += a.z;
+                            accel_sample_count++;
+
+                            mag_sum.x += g_mag_data_cache.x;
+                            mag_sum.y += g_mag_data_cache.y;
+                            mag_sum.z += g_mag_data_cache.z;
+                            mag_sample_count++;
+
                             startup_debug_counter++;
                             if (startup_debug_counter >= 400) {  // 1秒 @ 400Hz
                                 startup_debug_counter = 0;
                                 startup_debug_seconds++;
 
-                                // Accelバッファ平均を計算
+                                // 1秒間の平均を計算
                                 stampfly::math::Vector3 accel_avg(0, 0, 0);
-                                if (g_accel_buffer_count > 0) {
-                                    for (int i = 0; i < g_accel_buffer_count; i++) {
-                                        accel_avg.x += g_accel_buffer[i].x;
-                                        accel_avg.y += g_accel_buffer[i].y;
-                                        accel_avg.z += g_accel_buffer[i].z;
-                                    }
-                                    accel_avg.x /= g_accel_buffer_count;
-                                    accel_avg.y /= g_accel_buffer_count;
-                                    accel_avg.z /= g_accel_buffer_count;
+                                if (accel_sample_count > 0) {
+                                    accel_avg.x = accel_sum.x / accel_sample_count;
+                                    accel_avg.y = accel_sum.y / accel_sample_count;
+                                    accel_avg.z = accel_sum.z / accel_sample_count;
                                 }
 
-                                // Magバッファ平均を計算
                                 stampfly::math::Vector3 mag_avg(0, 0, 0);
-                                if (g_mag_buffer_count > 0) {
-                                    for (int i = 0; i < g_mag_buffer_count; i++) {
-                                        mag_avg.x += g_mag_buffer[i].x;
-                                        mag_avg.y += g_mag_buffer[i].y;
-                                        mag_avg.z += g_mag_buffer[i].z;
-                                    }
-                                    mag_avg.x /= g_mag_buffer_count;
-                                    mag_avg.y /= g_mag_buffer_count;
-                                    mag_avg.z /= g_mag_buffer_count;
+                                if (mag_sample_count > 0) {
+                                    mag_avg.x = mag_sum.x / mag_sample_count;
+                                    mag_avg.y = mag_sum.y / mag_sample_count;
+                                    mag_avg.z = mag_sum.z / mag_sample_count;
                                 }
 
                                 // mag_refを取得
@@ -286,16 +291,22 @@ void IMUTask(void* pvParameters)
                                 float yaw_deg = eskf_state.yaw * RAD_TO_DEG;
 
                                 ESP_LOGI(TAG, "=== STARTUP DEBUG t=%lus ===", startup_debug_seconds);
-                                ESP_LOGI(TAG, "  Accel avg: [%.3f, %.3f, %.3f] (n=%d)",
-                                         accel_avg.x, accel_avg.y, accel_avg.z, g_accel_buffer_count);
-                                ESP_LOGI(TAG, "  Mag avg:   [%.2f, %.2f, %.2f] (n=%d)",
-                                         mag_avg.x, mag_avg.y, mag_avg.z, g_mag_buffer_count);
-                                ESP_LOGI(TAG, "  Mag ref:   [%.2f, %.2f, %.2f]",
+                                ESP_LOGI(TAG, "  Accel 1s avg: [%.3f, %.3f, %.3f] (n=%lu)",
+                                         accel_avg.x, accel_avg.y, accel_avg.z, accel_sample_count);
+                                ESP_LOGI(TAG, "  Mag 1s avg:   [%.2f, %.2f, %.2f] (n=%lu)",
+                                         mag_avg.x, mag_avg.y, mag_avg.z, mag_sample_count);
+                                ESP_LOGI(TAG, "  Mag ref:      [%.2f, %.2f, %.2f]",
                                          mag_ref.x, mag_ref.y, mag_ref.z);
-                                ESP_LOGI(TAG, "  Mag now:   [%.2f, %.2f, %.2f]",
+                                ESP_LOGI(TAG, "  Mag now:      [%.2f, %.2f, %.2f]",
                                          g_mag_data_cache.x, g_mag_data_cache.y, g_mag_data_cache.z);
-                                ESP_LOGI(TAG, "  Attitude:  roll=%.2f, pitch=%.2f, yaw=%.2f deg",
+                                ESP_LOGI(TAG, "  Attitude:     roll=%.2f, pitch=%.2f, yaw=%.2f deg",
                                          roll_deg, pitch_deg, yaw_deg);
+
+                                // リセット
+                                accel_sum = stampfly::math::Vector3(0, 0, 0);
+                                mag_sum = stampfly::math::Vector3(0, 0, 0);
+                                accel_sample_count = 0;
+                                mag_sample_count = 0;
                             }
                         }
 
