@@ -99,14 +99,19 @@ void IMUTask(void* pvParameters)
                 stampfly::math::Vector3 a(filtered_accel[0], filtered_accel[1], filtered_accel[2]);
                 stampfly::math::Vector3 g(filtered_gyro[0], filtered_gyro[1], filtered_gyro[2]);
 
-                // 加速度リングバッファに追加（姿勢初期化用）
-                // ESKFが準備できていない間のみ更新（初期化時に使用）
-                if (!g_eskf_ready) {
-                    g_accel_buffer[g_accel_buffer_index] = a;
-                    g_accel_buffer_index = (g_accel_buffer_index + 1) % REF_BUFFER_SIZE;
-                    if (g_accel_buffer_count < REF_BUFFER_SIZE) {
-                        g_accel_buffer_count++;
-                    }
+                // 加速度リングバッファに追加（常時更新）
+                // 初期化時は平均計算、ESKF実行時は最新値を使用
+                g_accel_buffer[g_accel_buffer_index] = a;
+                g_accel_buffer_index = (g_accel_buffer_index + 1) % REF_BUFFER_SIZE;
+                if (g_accel_buffer_count < REF_BUFFER_SIZE) {
+                    g_accel_buffer_count++;
+                }
+
+                // ジャイロも同様にバッファに追加
+                g_gyro_buffer[g_gyro_buffer_index] = g;
+                g_gyro_buffer_index = (g_gyro_buffer_index + 1) % REF_BUFFER_SIZE;
+                if (g_gyro_buffer_count < REF_BUFFER_SIZE) {
+                    g_gyro_buffer_count++;
                 }
 
                 g_imu_checkpoint = 10;  // ESKF更新前
@@ -114,7 +119,6 @@ void IMUTask(void* pvParameters)
                 // Update sensor fusion predict step (400Hz)
                 // g_eskf_ready: センサー安定・キャリブレーション完了後にtrue
                 if (g_fusion.isInitialized() && g_eskf_ready) {
-                    static uint32_t flow_update_counter = 0;
                     static uint32_t eskf_error_counter = 0;
 
                     g_imu_checkpoint = 11;  // ESKF入力チェック
@@ -141,8 +145,14 @@ void IMUTask(void* pvParameters)
                         }
                         // ヒステリシス: 閾値〜2倍の間は状態維持
 
+                        // バッファの最新値を取得
+                        int accel_latest_idx = (g_accel_buffer_index - 1 + REF_BUFFER_SIZE) % REF_BUFFER_SIZE;
+                        int gyro_latest_idx = (g_gyro_buffer_index - 1 + REF_BUFFER_SIZE) % REF_BUFFER_SIZE;
+                        const auto& accel_latest = g_accel_buffer[accel_latest_idx];
+                        const auto& gyro_latest = g_gyro_buffer[gyro_latest_idx];
+
                         // IMU予測 + 加速度計姿勢補正（predictIMUが両方を実行）
-                        g_fusion.predictIMU(a, g, 0.0025f);  // 2.5ms (400Hz)
+                        g_fusion.predictIMU(accel_latest, gyro_latest, 0.0025f);  // 2.5ms (400Hz)
 
                         // 接地中は位置・速度をゼロに保持（予測ドリフト防止）
                         if (is_grounded && eskf::ENABLE_LANDING_RESET) {
@@ -161,30 +171,30 @@ void IMUTask(void* pvParameters)
 
                         g_imu_checkpoint = 14;  // フロー更新セクション
 
-                        // オプティカルフロー更新（100Hz = 400Hz / 4）
+                        // オプティカルフロー更新（data_readyフラグで制御、100Hz）
                         // ヘルスチェック: Flow + ToF が両方healthy必要（距離スケーリングに必要）
                         // 接地中はスキップ（低高度ではフローが不正確）
-                        static int takeoff_skip_counter = 0;  // 離陸後のスキップカウンタ
+                        static int optflow_takeoff_skip_counter = 0;  // 離陸後のスキップカウンタ
                         if (is_grounded) {
-                            takeoff_skip_counter = 20;  // 離陸後20回（0.2秒@100Hz）スキップ
+                            optflow_takeoff_skip_counter = 20;  // 離陸後20回（0.2秒@100Hz）スキップ
                         }
 
-                        flow_update_counter++;
-                        if (flow_update_counter >= 4) {
-                            flow_update_counter = 0;
+                        if (g_optflow_data_ready) {
+                            g_optflow_data_ready = false;
                             if (!is_grounded && g_optflow_task_healthy && g_tof_task_healthy) {
-                                if (takeoff_skip_counter > 0) {
-                                    takeoff_skip_counter--;
+                                if (optflow_takeoff_skip_counter > 0) {
+                                    optflow_takeoff_skip_counter--;
                                     // 共分散リセット直後は過剰補正防止のためスキップ
-                                } else {
-                                    int16_t flow_dx, flow_dy;
-                                    uint8_t flow_squal;
-                                    float tof_bottom, tof_front;
-                                    state.getFlowRawData(flow_dx, flow_dy, flow_squal);
-                                    state.getToFData(tof_bottom, tof_front);
+                                } else if (g_optflow_buffer_count > 0 && g_tof_bottom_buffer_count > 0) {
+                                    // バッファの最新値を取得
+                                    int optflow_latest_idx = (g_optflow_buffer_index - 1 + REF_BUFFER_SIZE) % REF_BUFFER_SIZE;
+                                    int tof_latest_idx = (g_tof_bottom_buffer_index - 1 + REF_BUFFER_SIZE) % REF_BUFFER_SIZE;
+                                    const auto& flow = g_optflow_buffer[optflow_latest_idx];
+                                    float tof_bottom = g_tof_bottom_buffer[tof_latest_idx];
                                     // squal/distance チェックは SensorFusion 内部で実行
                                     constexpr float dt = 0.01f;  // 100Hz
-                                    g_fusion.updateOpticalFlow(flow_dx, flow_dy, flow_squal, tof_bottom, dt, g.x, g.y);
+                                    g_fusion.updateOpticalFlow(flow.dx, flow.dy, flow.squal, tof_bottom, dt,
+                                                               gyro_latest.x, gyro_latest.y);
                                 }
                             }
                         }
@@ -196,8 +206,10 @@ void IMUTask(void* pvParameters)
                         // TODO: 気圧センサの値が確認できたら有効化
                         if (g_baro_data_ready) {
                             g_baro_data_ready = false;
-                            if (g_baro_task_healthy) {
-                                // g_fusion.updateBarometer(g_baro_data_cache);
+                            if (g_baro_task_healthy && g_baro_buffer_count > 0) {
+                                // バッファの最新値を取得
+                                int baro_latest_idx = (g_baro_buffer_index - 1 + REF_BUFFER_SIZE) % REF_BUFFER_SIZE;
+                                // g_fusion.updateBarometer(g_baro_buffer[baro_latest_idx]);
                             }
                         }
 
@@ -210,28 +222,32 @@ void IMUTask(void* pvParameters)
                         if (is_grounded) {
                             tof_takeoff_skip_counter = 10;  // 離陸後10回（~0.3秒@30Hz）スキップ
                         }
-                        if (g_tof_data_ready) {
-                            g_tof_data_ready = false;
+                        if (g_tof_bottom_data_ready) {
+                            g_tof_bottom_data_ready = false;
                             if (g_tof_task_healthy && !is_grounded) {
                                 if (tof_takeoff_skip_counter > 0) {
                                     tof_takeoff_skip_counter--;
                                     // 共分散リセット直後は過剰補正防止のためスキップ
-                                } else {
+                                } else if (g_tof_bottom_buffer_count > 0) {
+                                    // バッファの最新値を取得
+                                    int tof_latest_idx = (g_tof_bottom_buffer_index - 1 + REF_BUFFER_SIZE) % REF_BUFFER_SIZE;
                                     // 距離範囲チェックはSensorFusion内部で実行
-                                    g_fusion.updateToF(g_tof_data_cache);
+                                    g_fusion.updateToF(g_tof_bottom_buffer[tof_latest_idx]);
                                 }
                             }
                         }
 
                         g_imu_checkpoint = 17;  // Mag更新セクション
 
-                        // Mag更新（data_readyフラグで制御、10Hz）
+                        // Mag更新（data_readyフラグで制御、100Hz）
                         // ヘルスチェック: Mag healthy必要
                         static uint32_t mag_update_count = 0;
                         if (g_mag_data_ready && g_mag_ref_set) {
                             g_mag_data_ready = false;
-                            if (g_mag_task_healthy) {
-                                g_fusion.updateMagnetometer(g_mag_data_cache);
+                            if (g_mag_task_healthy && g_mag_buffer_count > 0) {
+                                // バッファの最新値を取得
+                                int latest_idx = (g_mag_buffer_index - 1 + REF_BUFFER_SIZE) % REF_BUFFER_SIZE;
+                                g_fusion.updateMagnetometer(g_mag_buffer[latest_idx]);
                                 mag_update_count++;
                             }
                         }
@@ -240,112 +256,6 @@ void IMUTask(void* pvParameters)
 
                         // Update StampFlyState with estimated state
                         auto eskf_state = g_fusion.getState();
-
-                        // DEBUG: 起動後10秒間、1秒ごとに平均値と標準偏差をログ出力
-                        static uint32_t startup_debug_counter = 0;
-                        static uint32_t startup_debug_seconds = 0;
-                        static stampfly::math::Vector3 accel_sum(0, 0, 0);
-                        static stampfly::math::Vector3 accel_sum_sq(0, 0, 0);  // 二乗和
-                        static stampfly::math::Vector3 mag_sum(0, 0, 0);
-                        static stampfly::math::Vector3 mag_sum_sq(0, 0, 0);    // 二乗和
-                        static uint32_t accel_sample_count = 0;
-                        static uint32_t mag_sample_count = 0;
-
-                        if (startup_debug_seconds < 10) {
-                            // 1秒間のセンサー値を累積（平均と標準偏差用）
-                            accel_sum.x += a.x;
-                            accel_sum.y += a.y;
-                            accel_sum.z += a.z;
-                            accel_sum_sq.x += a.x * a.x;
-                            accel_sum_sq.y += a.y * a.y;
-                            accel_sum_sq.z += a.z * a.z;
-                            accel_sample_count++;
-
-                            mag_sum.x += g_mag_data_cache.x;
-                            mag_sum.y += g_mag_data_cache.y;
-                            mag_sum.z += g_mag_data_cache.z;
-                            mag_sum_sq.x += g_mag_data_cache.x * g_mag_data_cache.x;
-                            mag_sum_sq.y += g_mag_data_cache.y * g_mag_data_cache.y;
-                            mag_sum_sq.z += g_mag_data_cache.z * g_mag_data_cache.z;
-                            mag_sample_count++;
-
-                            startup_debug_counter++;
-                            if (startup_debug_counter >= 400) {  // 1秒 @ 400Hz
-                                startup_debug_counter = 0;
-                                startup_debug_seconds++;
-
-                                // 1秒間の平均と標準偏差を計算
-                                // σ = sqrt(E[x²] - E[x]²)
-                                stampfly::math::Vector3 accel_avg(0, 0, 0);
-                                stampfly::math::Vector3 accel_std(0, 0, 0);
-                                if (accel_sample_count > 0) {
-                                    float n = static_cast<float>(accel_sample_count);
-                                    accel_avg.x = accel_sum.x / n;
-                                    accel_avg.y = accel_sum.y / n;
-                                    accel_avg.z = accel_sum.z / n;
-                                    float var_x = accel_sum_sq.x / n - accel_avg.x * accel_avg.x;
-                                    float var_y = accel_sum_sq.y / n - accel_avg.y * accel_avg.y;
-                                    float var_z = accel_sum_sq.z / n - accel_avg.z * accel_avg.z;
-                                    accel_std.x = std::sqrt(std::max(0.0f, var_x));
-                                    accel_std.y = std::sqrt(std::max(0.0f, var_y));
-                                    accel_std.z = std::sqrt(std::max(0.0f, var_z));
-                                }
-
-                                stampfly::math::Vector3 mag_avg(0, 0, 0);
-                                stampfly::math::Vector3 mag_std(0, 0, 0);
-                                if (mag_sample_count > 0) {
-                                    float n = static_cast<float>(mag_sample_count);
-                                    mag_avg.x = mag_sum.x / n;
-                                    mag_avg.y = mag_sum.y / n;
-                                    mag_avg.z = mag_sum.z / n;
-                                    float var_x = mag_sum_sq.x / n - mag_avg.x * mag_avg.x;
-                                    float var_y = mag_sum_sq.y / n - mag_avg.y * mag_avg.y;
-                                    float var_z = mag_sum_sq.z / n - mag_avg.z * mag_avg.z;
-                                    mag_std.x = std::sqrt(std::max(0.0f, var_x));
-                                    mag_std.y = std::sqrt(std::max(0.0f, var_y));
-                                    mag_std.z = std::sqrt(std::max(0.0f, var_z));
-                                }
-
-                                // mag_refを取得
-                                auto mag_ref = g_fusion.getMagReference();
-
-                                // 現在の姿勢（度に変換）
-                                constexpr float RAD_TO_DEG = 57.2957795f;
-                                float roll_deg = eskf_state.roll * RAD_TO_DEG;
-                                float pitch_deg = eskf_state.pitch * RAD_TO_DEG;
-                                float yaw_deg = eskf_state.yaw * RAD_TO_DEG;
-
-                                // 標準偏差のノルム（安定性の指標）
-                                float accel_std_norm = std::sqrt(accel_std.x * accel_std.x +
-                                                                  accel_std.y * accel_std.y +
-                                                                  accel_std.z * accel_std.z);
-                                float mag_std_norm = std::sqrt(mag_std.x * mag_std.x +
-                                                                mag_std.y * mag_std.y +
-                                                                mag_std.z * mag_std.z);
-
-                                ESP_LOGI(TAG, "=== STARTUP DEBUG t=%lus ===", startup_debug_seconds);
-                                ESP_LOGI(TAG, "  Accel avg: [%.3f, %.3f, %.3f]",
-                                         accel_avg.x, accel_avg.y, accel_avg.z);
-                                ESP_LOGI(TAG, "  Accel std: [%.4f, %.4f, %.4f] norm=%.4f",
-                                         accel_std.x, accel_std.y, accel_std.z, accel_std_norm);
-                                ESP_LOGI(TAG, "  Mag avg:   [%.2f, %.2f, %.2f]",
-                                         mag_avg.x, mag_avg.y, mag_avg.z);
-                                ESP_LOGI(TAG, "  Mag std:   [%.3f, %.3f, %.3f] norm=%.3f",
-                                         mag_std.x, mag_std.y, mag_std.z, mag_std_norm);
-                                ESP_LOGI(TAG, "  Mag ref:   [%.2f, %.2f, %.2f]",
-                                         mag_ref.x, mag_ref.y, mag_ref.z);
-                                ESP_LOGI(TAG, "  Attitude:  roll=%.2f, pitch=%.2f, yaw=%.2f deg",
-                                         roll_deg, pitch_deg, yaw_deg);
-
-                                // リセット
-                                accel_sum = stampfly::math::Vector3(0, 0, 0);
-                                accel_sum_sq = stampfly::math::Vector3(0, 0, 0);
-                                mag_sum = stampfly::math::Vector3(0, 0, 0);
-                                mag_sum_sq = stampfly::math::Vector3(0, 0, 0);
-                                accel_sample_count = 0;
-                                mag_sample_count = 0;
-                            }
-                        }
 
                         g_imu_checkpoint = 21;  // getState後、検証前
 

@@ -59,6 +59,14 @@ void OptFlowTask(void* pvParameters)
                     int16_t flow_body_y =  burst.delta_x;
 
                     state.updateOpticalFlow(flow_body_x, flow_body_y, burst.squal);
+
+                    // リングバッファに追加（常時更新）
+                    g_optflow_buffer[g_optflow_buffer_index] = {flow_body_x, flow_body_y, burst.squal};
+                    g_optflow_buffer_index = (g_optflow_buffer_index + 1) % REF_BUFFER_SIZE;
+                    if (g_optflow_buffer_count < REF_BUFFER_SIZE) {
+                        g_optflow_buffer_count++;
+                    }
+                    g_optflow_data_ready = true;
                 } else {
                     g_health.optflow.recordFailure();
                     g_optflow_task_healthy = g_health.optflow.isHealthy();

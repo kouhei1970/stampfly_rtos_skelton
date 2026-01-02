@@ -63,16 +63,41 @@ bool g_baro_reference_set = false;
 // Sensor Reference Buffers
 // =============================================================================
 
-// Accelerometer buffer (for roll/pitch initialization)
+// Accelerometer buffer (for roll/pitch initialization and ESKF)
 stampfly::math::Vector3 g_accel_buffer[REF_BUFFER_SIZE];
 int g_accel_buffer_index = 0;
 int g_accel_buffer_count = 0;
 
-// Magnetometer buffer (for yaw=0 reference)
+// Gyroscope buffer (for ESKF)
+stampfly::math::Vector3 g_gyro_buffer[REF_BUFFER_SIZE];
+int g_gyro_buffer_index = 0;
+int g_gyro_buffer_count = 0;
+
+// Magnetometer buffer (for yaw=0 reference and ESKF)
 stampfly::math::Vector3 g_mag_buffer[REF_BUFFER_SIZE];
 int g_mag_buffer_index = 0;
 int g_mag_buffer_count = 0;
 bool g_mag_ref_set = false;
+
+// Barometer buffer (for ESKF altitude)
+float g_baro_buffer[REF_BUFFER_SIZE];
+int g_baro_buffer_index = 0;
+int g_baro_buffer_count = 0;
+
+// ToF bottom buffer (for ESKF altitude)
+float g_tof_bottom_buffer[REF_BUFFER_SIZE];
+int g_tof_bottom_buffer_index = 0;
+int g_tof_bottom_buffer_count = 0;
+
+// ToF front buffer (for obstacle detection)
+float g_tof_front_buffer[REF_BUFFER_SIZE];
+int g_tof_front_buffer_index = 0;
+int g_tof_front_buffer_count = 0;
+
+// Optical flow buffer (for ESKF velocity)
+OptFlowData g_optflow_buffer[REF_BUFFER_SIZE];
+int g_optflow_buffer_index = 0;
+int g_optflow_buffer_count = 0;
 
 // =============================================================================
 // Calibration Data
@@ -94,13 +119,12 @@ volatile bool g_baro_task_healthy = false;
 
 sf::HealthMonitor g_health;
 
+// Data ready flags (新しいデータがバッファに追加されたことを示す)
 volatile bool g_mag_data_ready = false;
 volatile bool g_baro_data_ready = false;
-volatile bool g_tof_data_ready = false;
-
-stampfly::math::Vector3 g_mag_data_cache;
-float g_baro_data_cache = 0.0f;
-float g_tof_data_cache = 0.0f;
+volatile bool g_tof_bottom_data_ready = false;
+volatile bool g_tof_front_data_ready = false;
+volatile bool g_optflow_data_ready = false;
 
 // =============================================================================
 // Task Handles

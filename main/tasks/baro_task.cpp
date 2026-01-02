@@ -39,11 +39,17 @@ void BaroTask(void* pvParameters)
                     ESP_LOGI(TAG, "Baro reference set: %.3f m", g_baro_reference_altitude);
                 }
 
-                // ESKF用データをキャッシュしてフラグを立てる（50Hz）
+                // ESKF用データをリングバッファに追加（50Hz）
                 // ESKF updateはIMUTask内で行う（レースコンディション防止）
                 if (g_baro_reference_set) {
                     float relative_alt = baro.altitude_m - g_baro_reference_altitude;
-                    g_baro_data_cache = relative_alt;
+
+                    // リングバッファに追加（常時更新）
+                    g_baro_buffer[g_baro_buffer_index] = relative_alt;
+                    g_baro_buffer_index = (g_baro_buffer_index + 1) % REF_BUFFER_SIZE;
+                    if (g_baro_buffer_count < REF_BUFFER_SIZE) {
+                        g_baro_buffer_count++;
+                    }
                     g_baro_data_ready = true;
                 }
 

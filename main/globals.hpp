@@ -101,16 +101,46 @@ extern bool g_baro_reference_set;
 
 inline constexpr int REF_BUFFER_SIZE = 100;
 
-// Accelerometer buffer (for roll/pitch initialization)
+// Accelerometer buffer (for roll/pitch initialization and ESKF)
 extern stampfly::math::Vector3 g_accel_buffer[REF_BUFFER_SIZE];
 extern int g_accel_buffer_index;
 extern int g_accel_buffer_count;
 
-// Magnetometer buffer (for yaw=0 reference)
+// Gyroscope buffer (for ESKF)
+extern stampfly::math::Vector3 g_gyro_buffer[REF_BUFFER_SIZE];
+extern int g_gyro_buffer_index;
+extern int g_gyro_buffer_count;
+
+// Magnetometer buffer (for yaw=0 reference and ESKF)
 extern stampfly::math::Vector3 g_mag_buffer[REF_BUFFER_SIZE];
 extern int g_mag_buffer_index;
 extern int g_mag_buffer_count;
 extern bool g_mag_ref_set;
+
+// Barometer buffer (for ESKF altitude)
+extern float g_baro_buffer[REF_BUFFER_SIZE];
+extern int g_baro_buffer_index;
+extern int g_baro_buffer_count;
+
+// ToF bottom buffer (for ESKF altitude)
+extern float g_tof_bottom_buffer[REF_BUFFER_SIZE];
+extern int g_tof_bottom_buffer_index;
+extern int g_tof_bottom_buffer_count;
+
+// ToF front buffer (for obstacle detection)
+extern float g_tof_front_buffer[REF_BUFFER_SIZE];
+extern int g_tof_front_buffer_index;
+extern int g_tof_front_buffer_count;
+
+// Optical flow buffer (for ESKF velocity)
+struct OptFlowData {
+    int16_t dx;
+    int16_t dy;
+    uint8_t squal;
+};
+extern OptFlowData g_optflow_buffer[REF_BUFFER_SIZE];
+extern int g_optflow_buffer_index;
+extern int g_optflow_buffer_count;
 
 // =============================================================================
 // Calibration Data
@@ -134,15 +164,12 @@ extern volatile bool g_baro_task_healthy;
 // Health monitor (centralized counting logic)
 extern sf::HealthMonitor g_health;
 
-// Data ready flags
+// Data ready flags (新しいデータがバッファに追加されたことを示す)
 extern volatile bool g_mag_data_ready;
 extern volatile bool g_baro_data_ready;
-extern volatile bool g_tof_data_ready;
-
-// Data cache
-extern stampfly::math::Vector3 g_mag_data_cache;
-extern float g_baro_data_cache;
-extern float g_tof_data_cache;
+extern volatile bool g_tof_bottom_data_ready;
+extern volatile bool g_tof_front_data_ready;
+extern volatile bool g_optflow_data_ready;
 
 // =============================================================================
 // Task Handles

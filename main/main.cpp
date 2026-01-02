@@ -513,6 +513,9 @@ extern "C" void app_main(void)
     float last_mag_std_norm = 0.0f;
     int64_t start_time = esp_timer_get_time();
 
+    // デバッグログ用（1秒ごとにログ出力）
+    int last_log_sec = 0;
+
     while (elapsed_ms < MAX_WAIT_MS) {
         vTaskDelay(pdMS_TO_TICKS(CHECK_INTERVAL_MS));
         elapsed_ms += CHECK_INTERVAL_MS;
@@ -534,9 +537,14 @@ extern "C" void app_main(void)
             float accel_var_x = accel_sum_sq.x / n - accel_avg.x * accel_avg.x;
             float accel_var_y = accel_sum_sq.y / n - accel_avg.y * accel_avg.y;
             float accel_var_z = accel_sum_sq.z / n - accel_avg.z * accel_avg.z;
-            float accel_std_norm = std::sqrt(std::max(0.0f, accel_var_x) +
-                                              std::max(0.0f, accel_var_y) +
-                                              std::max(0.0f, accel_var_z));
+            stampfly::math::Vector3 accel_std(
+                std::sqrt(std::max(0.0f, accel_var_x)),
+                std::sqrt(std::max(0.0f, accel_var_y)),
+                std::sqrt(std::max(0.0f, accel_var_z)));
+            float accel_std_norm = std::sqrt(accel_var_x + accel_var_y + accel_var_z);
+            accel_std_norm = std::sqrt(std::max(0.0f, accel_var_x) +
+                                        std::max(0.0f, accel_var_y) +
+                                        std::max(0.0f, accel_var_z));
 
             // 地磁気の平均と標準偏差を計算
             stampfly::math::Vector3 mag_sum = stampfly::math::Vector3::zero();
@@ -553,12 +561,32 @@ extern "C" void app_main(void)
             float mag_var_x = mag_sum_sq.x / n - mag_avg.x * mag_avg.x;
             float mag_var_y = mag_sum_sq.y / n - mag_avg.y * mag_avg.y;
             float mag_var_z = mag_sum_sq.z / n - mag_avg.z * mag_avg.z;
+            stampfly::math::Vector3 mag_std(
+                std::sqrt(std::max(0.0f, mag_var_x)),
+                std::sqrt(std::max(0.0f, mag_var_y)),
+                std::sqrt(std::max(0.0f, mag_var_z)));
             float mag_std_norm = std::sqrt(std::max(0.0f, mag_var_x) +
                                             std::max(0.0f, mag_var_y) +
                                             std::max(0.0f, mag_var_z));
 
             last_accel_std_norm = accel_std_norm;
             last_mag_std_norm = mag_std_norm;
+
+            // 1秒ごとにデバッグログ出力（安定化判定と同じデータを使用）
+            int current_sec = elapsed_ms / 1000;
+            if (current_sec > last_log_sec) {
+                last_log_sec = current_sec;
+                ESP_LOGI(TAG, "=== SENSOR DEBUG t=%ds (samples: accel=%d, mag=%d) ===",
+                         current_sec, accel_n, mag_n);
+                ESP_LOGI(TAG, "  Accel avg: [%.3f, %.3f, %.3f]",
+                         accel_avg.x, accel_avg.y, accel_avg.z);
+                ESP_LOGI(TAG, "  Accel std: [%.4f, %.4f, %.4f] norm=%.4f (threshold=%.2f)",
+                         accel_std.x, accel_std.y, accel_std.z, accel_std_norm, ACCEL_STD_THRESHOLD);
+                ESP_LOGI(TAG, "  Mag avg:   [%.2f, %.2f, %.2f]",
+                         mag_avg.x, mag_avg.y, mag_avg.z);
+                ESP_LOGI(TAG, "  Mag std:   [%.3f, %.3f, %.3f] norm=%.3f (threshold=%.1f)",
+                         mag_std.x, mag_std.y, mag_std.z, mag_std_norm, MAG_STD_THRESHOLD);
+            }
 
             // 条件チェック（最小待機時間経過後）
             bool accel_stable = accel_std_norm < ACCEL_STD_THRESHOLD;

@@ -70,10 +70,13 @@ void ToFTask(void* pvParameters)
                             g_health.tof.recordSuccess();
                             g_tof_task_healthy = g_health.tof.isHealthy();
 
-                            // ESKF用データをキャッシュしてフラグを立てる（30Hz）
-                            // ESKF updateはIMUTask内で行う（レースコンディション防止）
-                            g_tof_data_cache = distance_m;
-                            g_tof_data_ready = true;
+                            // リングバッファに追加（常時更新）
+                            g_tof_bottom_buffer[g_tof_bottom_buffer_index] = distance_m;
+                            g_tof_bottom_buffer_index = (g_tof_bottom_buffer_index + 1) % REF_BUFFER_SIZE;
+                            if (g_tof_bottom_buffer_count < REF_BUFFER_SIZE) {
+                                g_tof_bottom_buffer_count++;
+                            }
+                            g_tof_bottom_data_ready = true;
 
                             // Fallback to simple altitude estimator (センサーフュージョン未使用時)
                             if (!g_fusion.isInitialized() && g_altitude_est.isInitialized() && g_attitude_est.isInitialized()) {
@@ -127,6 +130,14 @@ void ToFTask(void* pvParameters)
                     if (status <= 4) {
                         float distance_m = distance_mm * 0.001f;
                         state.updateToF(stampfly::ToFPosition::FRONT, distance_m, status);
+
+                        // リングバッファに追加（常時更新）
+                        g_tof_front_buffer[g_tof_front_buffer_index] = distance_m;
+                        g_tof_front_buffer_index = (g_tof_front_buffer_index + 1) % REF_BUFFER_SIZE;
+                        if (g_tof_front_buffer_count < REF_BUFFER_SIZE) {
+                            g_tof_front_buffer_count++;
+                        }
+                        g_tof_front_data_ready = true;
                     }
                     g_tof_front.clearInterruptAndStartMeasurement();
                 } else {

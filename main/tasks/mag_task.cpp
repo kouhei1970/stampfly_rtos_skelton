@@ -19,10 +19,6 @@ void MagTask(void* pvParameters)
 
     auto& state = stampfly::StampFlyState::getInstance();
 
-    // ESKF更新は10Hz（PC版と同じ）
-    int eskf_update_counter = 0;
-    constexpr int ESKF_UPDATE_DIVISOR = 10;  // 100Hz / 10 = 10Hz
-
     // ヘルスモニター設定
     g_health.mag.setThresholds(10, 10);
 
@@ -67,21 +63,17 @@ void MagTask(void* pvParameters)
                 if (g_mag_cal.isCalibrated()) {
                     stampfly::math::Vector3 m(cal_mag_x, cal_mag_y, cal_mag_z);
 
-                    // リングバッファに追加（ARM/binlog開始時の平均計算用）
+                    // リングバッファに追加（常時更新）
+                    // 初期化時は平均計算、ESKF実行時は最新値を使用
                     g_mag_buffer[g_mag_buffer_index] = m;
                     g_mag_buffer_index = (g_mag_buffer_index + 1) % REF_BUFFER_SIZE;
                     if (g_mag_buffer_count < REF_BUFFER_SIZE) {
                         g_mag_buffer_count++;
                     }
 
-                    // ESKF用データをキャッシュしてフラグを立てる（10Hz）
+                    // 新しいデータがあることを示すフラグ（100Hz）
                     // ESKF updateはIMUTask内で行う（レースコンディション防止）
-                    eskf_update_counter++;
-                    if (eskf_update_counter >= ESKF_UPDATE_DIVISOR) {
-                        eskf_update_counter = 0;
-                        g_mag_data_cache = m;
-                        g_mag_data_ready = true;
-                    }
+                    g_mag_data_ready = true;
                 }
             } else {
                 g_health.mag.recordFailure();
