@@ -778,6 +778,56 @@ main/
 
 ---
 
+### フェーズ5: 着陸時ロジック実装 ✅ 完了
+
+**目標**: 着陸時に姿勢推定のみ継続し、位置・速度・加速度バイアス推定を停止
+
+**背景**:
+- 着陸状態では位置・速度の観測がないため、加速度バイアスが**不可観測**
+- 加速度バイアス推定を継続すると誤った値が蓄積し、姿勢（ロール・ピッチ）がドリフト
+- 着陸時のロール・ピッチを0付近に維持することが目標
+
+**完了した作業**:
+
+| 作業 | 状態 | 備考 |
+|------|------|------|
+| freeze_accel_bias_フラグ追加 | ✅ | ESKF内の加速度バイアス推定を停止 |
+| 全センサー更新関数にfreezeチェック追加 | ✅ | 7箇所（updateBaro, ToF, Mag, FlowRaw, Flow, AccelAttitude, injectErrorState） |
+| 接地中のupdateOpticalFlow/updateToF停止 | ✅ | 位置・速度更新を完全停止 |
+| 偽装データ削除 | ✅ | 不要になった接地中の偽装観測を削除 |
+| 起動時はフリーズ状態 | ✅ | freeze_accel_bias_のデフォルト値をtrueに |
+| ACCEL_BIAS_NOISE調整 | ✅ | 0.0001に設定（安定重視） |
+
+**着陸時ロジック（最終版）**:
+
+```
+接地中 (is_grounded = true):
+├── predict(skip_position=true)
+│   ├── 姿勢更新: ✅ 実行
+│   └── 位置・速度更新: ❌ スキップ
+├── updateAccelAttitude(): ✅ 実行（姿勢補正）
+│   └── accel_bias更新: ❌ フリーズ
+├── updateMagnetometer(): ✅ 実行（Yaw補正）
+│   └── accel_bias更新: ❌ フリーズ
+├── updateOpticalFlow(): ❌ 呼ばない
+├── updateToF(): ❌ 呼ばない
+└── holdPositionVelocity(): ✅ 状態を0に保持
+
+離陸時:
+└── setFreezeAccelBias(false): 加速度バイアス推定を再開
+```
+
+**ACCEL_BIAS_NOISE調整履歴**:
+
+| 値 | 結果 |
+|----|------|
+| 0.0001 | ✅ 安定（採用） |
+| 0.001 | △ やや不安定 |
+| 0.01 | ❌ 激しいドリフト |
+| 0.05 | ❌ 姿勢発散 |
+
+---
+
 ## sf_algo_fusion コンポーネント構成
 
 ```
