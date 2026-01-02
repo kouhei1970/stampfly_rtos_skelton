@@ -667,8 +667,8 @@ extern "C" void app_main(void)
                 ESP_LOGI(TAG, "  Mag std:   %.3f (th=%.1f) %s",
                          mag_std_norm, MAG_STD_THRESHOLD,
                          mag_std_norm < MAG_STD_THRESHOLD ? "OK" : "NG");
-                ESP_LOGI(TAG, "  Baro std:  %.4f (th=%.2f) %s",
-                         baro_std, BARO_STD_THRESHOLD,
+                ESP_LOGI(TAG, "  Baro std:  %.4f m (th=%.2f) avg=%.2f m %s",
+                         baro_std, BARO_STD_THRESHOLD, baro_avg,
                          baro_std < BARO_STD_THRESHOLD ? "OK" : "NG");
                 ESP_LOGI(TAG, "  ToF std:   %.4f (th=%.3f) %s",
                          tof_std, TOF_STD_THRESHOLD,
