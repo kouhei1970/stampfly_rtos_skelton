@@ -182,16 +182,6 @@ void IMUTask(void* pvParameters)
                             }
                             // 接地中: 位置・速度を0に保持
                             g_fusion.holdPositionVelocity();
-
-                            // DEBUG: 接地中の姿勢とバイアスを4秒ごとに出力
-                            static uint32_t grounded_debug_counter = 0;
-                            grounded_debug_counter++;
-                            if (grounded_debug_counter % 1600 == 1) {
-                                auto st = g_fusion.getState();
-                                ESP_LOGI(TAG, "Grounded: R=%.2f P=%.2f | AccelBias=[%.4f,%.4f,%.4f]",
-                                         st.roll * 57.3f, st.pitch * 57.3f,
-                                         st.accel_bias.x, st.accel_bias.y, st.accel_bias.z);
-                            }
                         } else if (!is_grounded && prev_grounded) {
                             // 離陸遷移時 - 共分散をリセットして安定した推定開始
                             has_taken_off = true;
