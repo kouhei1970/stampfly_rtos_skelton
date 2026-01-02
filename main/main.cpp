@@ -526,10 +526,8 @@ extern "C" void app_main(void)
     ESP_LOGI(TAG, "ESKF ready - you can start logging now");
     ESP_LOGI(TAG, "Free heap: %lu bytes", esp_get_free_heap_size());
     ESP_LOGI(TAG, "========================================");
-    ESP_LOGI(TAG, "Suppressing ESP_LOG output for CLI. Use 'loglevel' to re-enable.");
-
-    // Suppress ESP_LOG after initialization to keep CLI clean
-    esp_log_level_set("*", ESP_LOG_NONE);
+    // Log level is now managed by CLI (loaded from NVS at CLI::init())
+    // Use 'loglevel' command to change. Default (no NVS): none
 
     // Main loop - just monitor system health
     while (true) {

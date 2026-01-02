@@ -40,20 +40,20 @@ static esp_log_level_t loadLogLevelFromNVS()
     nvs_handle_t handle;
     esp_err_t ret = nvs_open(NVS_NAMESPACE_CLI, NVS_READONLY, &handle);
     if (ret != ESP_OK) {
-        return ESP_LOG_INFO;  // Default if NVS not available
+        return ESP_LOG_NONE;  // Default: silent (original behavior)
     }
 
-    uint8_t level_val = ESP_LOG_INFO;
+    uint8_t level_val = ESP_LOG_NONE;
     ret = nvs_get_u8(handle, NVS_KEY_LOGLEVEL, &level_val);
     nvs_close(handle);
 
     if (ret != ESP_OK) {
-        return ESP_LOG_INFO;  // Default if key not found
+        return ESP_LOG_NONE;  // Default: silent if key not found
     }
 
     // Validate range
     if (level_val > ESP_LOG_VERBOSE) {
-        return ESP_LOG_INFO;
+        return ESP_LOG_NONE;
     }
 
     return static_cast<esp_log_level_t>(level_val);
