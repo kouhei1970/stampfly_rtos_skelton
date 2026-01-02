@@ -387,7 +387,7 @@ public:
 
 private:
     bool initialized_ = false;
-    bool freeze_accel_bias_ = false;  // 加速度バイアス推定フリーズフラグ
+    bool freeze_accel_bias_ = true;   // 加速度バイアス推定フリーズフラグ（起動時は着陸状態）
     Config config_;
 
     // 名目状態
