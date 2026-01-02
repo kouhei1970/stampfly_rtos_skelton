@@ -241,24 +241,32 @@ void IMUTask(void* pvParameters)
                         // Update StampFlyState with estimated state
                         auto eskf_state = g_fusion.getState();
 
-                        // DEBUG: 起動後10秒間、1秒ごとに平均値の推移をログ出力
+                        // DEBUG: 起動後10秒間、1秒ごとに平均値と標準偏差をログ出力
                         static uint32_t startup_debug_counter = 0;
                         static uint32_t startup_debug_seconds = 0;
                         static stampfly::math::Vector3 accel_sum(0, 0, 0);
+                        static stampfly::math::Vector3 accel_sum_sq(0, 0, 0);  // 二乗和
                         static stampfly::math::Vector3 mag_sum(0, 0, 0);
+                        static stampfly::math::Vector3 mag_sum_sq(0, 0, 0);    // 二乗和
                         static uint32_t accel_sample_count = 0;
                         static uint32_t mag_sample_count = 0;
 
                         if (startup_debug_seconds < 10) {
-                            // 1秒間のセンサー値を累積
+                            // 1秒間のセンサー値を累積（平均と標準偏差用）
                             accel_sum.x += a.x;
                             accel_sum.y += a.y;
                             accel_sum.z += a.z;
+                            accel_sum_sq.x += a.x * a.x;
+                            accel_sum_sq.y += a.y * a.y;
+                            accel_sum_sq.z += a.z * a.z;
                             accel_sample_count++;
 
                             mag_sum.x += g_mag_data_cache.x;
                             mag_sum.y += g_mag_data_cache.y;
                             mag_sum.z += g_mag_data_cache.z;
+                            mag_sum_sq.x += g_mag_data_cache.x * g_mag_data_cache.x;
+                            mag_sum_sq.y += g_mag_data_cache.y * g_mag_data_cache.y;
+                            mag_sum_sq.z += g_mag_data_cache.z * g_mag_data_cache.z;
                             mag_sample_count++;
 
                             startup_debug_counter++;
@@ -266,19 +274,36 @@ void IMUTask(void* pvParameters)
                                 startup_debug_counter = 0;
                                 startup_debug_seconds++;
 
-                                // 1秒間の平均を計算
+                                // 1秒間の平均と標準偏差を計算
+                                // σ = sqrt(E[x²] - E[x]²)
                                 stampfly::math::Vector3 accel_avg(0, 0, 0);
+                                stampfly::math::Vector3 accel_std(0, 0, 0);
                                 if (accel_sample_count > 0) {
-                                    accel_avg.x = accel_sum.x / accel_sample_count;
-                                    accel_avg.y = accel_sum.y / accel_sample_count;
-                                    accel_avg.z = accel_sum.z / accel_sample_count;
+                                    float n = static_cast<float>(accel_sample_count);
+                                    accel_avg.x = accel_sum.x / n;
+                                    accel_avg.y = accel_sum.y / n;
+                                    accel_avg.z = accel_sum.z / n;
+                                    float var_x = accel_sum_sq.x / n - accel_avg.x * accel_avg.x;
+                                    float var_y = accel_sum_sq.y / n - accel_avg.y * accel_avg.y;
+                                    float var_z = accel_sum_sq.z / n - accel_avg.z * accel_avg.z;
+                                    accel_std.x = std::sqrt(std::max(0.0f, var_x));
+                                    accel_std.y = std::sqrt(std::max(0.0f, var_y));
+                                    accel_std.z = std::sqrt(std::max(0.0f, var_z));
                                 }
 
                                 stampfly::math::Vector3 mag_avg(0, 0, 0);
+                                stampfly::math::Vector3 mag_std(0, 0, 0);
                                 if (mag_sample_count > 0) {
-                                    mag_avg.x = mag_sum.x / mag_sample_count;
-                                    mag_avg.y = mag_sum.y / mag_sample_count;
-                                    mag_avg.z = mag_sum.z / mag_sample_count;
+                                    float n = static_cast<float>(mag_sample_count);
+                                    mag_avg.x = mag_sum.x / n;
+                                    mag_avg.y = mag_sum.y / n;
+                                    mag_avg.z = mag_sum.z / n;
+                                    float var_x = mag_sum_sq.x / n - mag_avg.x * mag_avg.x;
+                                    float var_y = mag_sum_sq.y / n - mag_avg.y * mag_avg.y;
+                                    float var_z = mag_sum_sq.z / n - mag_avg.z * mag_avg.z;
+                                    mag_std.x = std::sqrt(std::max(0.0f, var_x));
+                                    mag_std.y = std::sqrt(std::max(0.0f, var_y));
+                                    mag_std.z = std::sqrt(std::max(0.0f, var_z));
                                 }
 
                                 // mag_refを取得
@@ -290,21 +315,33 @@ void IMUTask(void* pvParameters)
                                 float pitch_deg = eskf_state.pitch * RAD_TO_DEG;
                                 float yaw_deg = eskf_state.yaw * RAD_TO_DEG;
 
+                                // 標準偏差のノルム（安定性の指標）
+                                float accel_std_norm = std::sqrt(accel_std.x * accel_std.x +
+                                                                  accel_std.y * accel_std.y +
+                                                                  accel_std.z * accel_std.z);
+                                float mag_std_norm = std::sqrt(mag_std.x * mag_std.x +
+                                                                mag_std.y * mag_std.y +
+                                                                mag_std.z * mag_std.z);
+
                                 ESP_LOGI(TAG, "=== STARTUP DEBUG t=%lus ===", startup_debug_seconds);
-                                ESP_LOGI(TAG, "  Accel 1s avg: [%.3f, %.3f, %.3f] (n=%lu)",
-                                         accel_avg.x, accel_avg.y, accel_avg.z, accel_sample_count);
-                                ESP_LOGI(TAG, "  Mag 1s avg:   [%.2f, %.2f, %.2f] (n=%lu)",
-                                         mag_avg.x, mag_avg.y, mag_avg.z, mag_sample_count);
-                                ESP_LOGI(TAG, "  Mag ref:      [%.2f, %.2f, %.2f]",
+                                ESP_LOGI(TAG, "  Accel avg: [%.3f, %.3f, %.3f]",
+                                         accel_avg.x, accel_avg.y, accel_avg.z);
+                                ESP_LOGI(TAG, "  Accel std: [%.4f, %.4f, %.4f] norm=%.4f",
+                                         accel_std.x, accel_std.y, accel_std.z, accel_std_norm);
+                                ESP_LOGI(TAG, "  Mag avg:   [%.2f, %.2f, %.2f]",
+                                         mag_avg.x, mag_avg.y, mag_avg.z);
+                                ESP_LOGI(TAG, "  Mag std:   [%.3f, %.3f, %.3f] norm=%.3f",
+                                         mag_std.x, mag_std.y, mag_std.z, mag_std_norm);
+                                ESP_LOGI(TAG, "  Mag ref:   [%.2f, %.2f, %.2f]",
                                          mag_ref.x, mag_ref.y, mag_ref.z);
-                                ESP_LOGI(TAG, "  Mag now:      [%.2f, %.2f, %.2f]",
-                                         g_mag_data_cache.x, g_mag_data_cache.y, g_mag_data_cache.z);
-                                ESP_LOGI(TAG, "  Attitude:     roll=%.2f, pitch=%.2f, yaw=%.2f deg",
+                                ESP_LOGI(TAG, "  Attitude:  roll=%.2f, pitch=%.2f, yaw=%.2f deg",
                                          roll_deg, pitch_deg, yaw_deg);
 
                                 // リセット
                                 accel_sum = stampfly::math::Vector3(0, 0, 0);
+                                accel_sum_sq = stampfly::math::Vector3(0, 0, 0);
                                 mag_sum = stampfly::math::Vector3(0, 0, 0);
+                                mag_sum_sq = stampfly::math::Vector3(0, 0, 0);
                                 accel_sample_count = 0;
                                 mag_sample_count = 0;
                             }
