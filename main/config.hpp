@@ -292,8 +292,8 @@ inline constexpr int BMM150_DATA_RATE = 0;         // ODR_10HZ
 inline constexpr int BMM150_PRESET = 1;            // REGULAR
 
 // BMP280 (気圧センサー)
-// mode: 0=SLEEP, 1=FORCED, 2=NORMAL
-inline constexpr int BMP280_MODE = 2;              // NORMAL
+// mode: 0=SLEEP, 1=FORCED, 3=NORMAL (2は無効値)
+inline constexpr int BMP280_MODE = 3;              // NORMAL
 // oversampling: 0=SKIP, 1=X1, 2=X2, 3=X4, 4=X8, 5=X16
 inline constexpr int BMP280_PRESS_OVERSAMPLING = 3; // X4
 inline constexpr int BMP280_TEMP_OVERSAMPLING = 2;  // X2
