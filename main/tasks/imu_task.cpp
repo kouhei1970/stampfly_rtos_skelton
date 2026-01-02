@@ -130,20 +130,34 @@ void IMUTask(void* pvParameters)
                     if (eskf_ok) {
                         g_imu_checkpoint = 12;  // predict前
 
-                        // 接地判定（ToF高度ベース）
-                        float tof_bottom_now, tof_front_now;
-                        state.getToFData(tof_bottom_now, tof_front_now);
+                        // 接地判定（ToF高度ベース、リングバッファから取得）
+                        float tof_bottom_now = 0.0f;
+                        if (g_tof_bottom_buffer_count > 0) {
+                            int tof_latest_idx = (g_tof_bottom_buffer_index - 1 + REF_BUFFER_SIZE) % REF_BUFFER_SIZE;
+                            tof_bottom_now = g_tof_bottom_buffer[tof_latest_idx];
+                        }
                         static bool is_grounded = true;        // 起動時は接地状態
                         static bool has_taken_off = false;     // 一度でも離陸したか
+                        static int takeoff_counter = 0;        // 離陸判定用カウンタ
+                        static int landing_counter = 0;        // 着陸判定用カウンタ
+                        constexpr int GROUNDED_TRANSITION_COUNT = 20;  // 50ms @ 400Hz
 
-                        // 接地状態の更新（ヒステリシス付き）
+                        // 接地状態の更新（連続条件付きヒステリシス）
                         bool prev_grounded = is_grounded;
                         if (tof_bottom_now < eskf::LANDING_ALT_THRESHOLD) {
-                            is_grounded = true;
+                            landing_counter++;
+                            takeoff_counter = 0;
+                            if (landing_counter >= GROUNDED_TRANSITION_COUNT) {
+                                is_grounded = true;
+                            }
                         } else if (tof_bottom_now > eskf::LANDING_ALT_THRESHOLD * 2.0f) {
-                            is_grounded = false;
+                            takeoff_counter++;
+                            landing_counter = 0;
+                            if (takeoff_counter >= GROUNDED_TRANSITION_COUNT) {
+                                is_grounded = false;
+                            }
                         }
-                        // ヒステリシス: 閾値〜2倍の間は状態維持
+                        // ヒステリシス: 閾値〜2倍の間は状態維持、カウンタもリセットしない
 
                         // バッファの最新値を取得
                         int accel_latest_idx = (g_accel_buffer_index - 1 + REF_BUFFER_SIZE) % REF_BUFFER_SIZE;
