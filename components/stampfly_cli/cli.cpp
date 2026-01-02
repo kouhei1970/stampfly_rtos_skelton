@@ -20,6 +20,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_vfs_cdcacm.h"
+#include "nvs_flash.h"
+#include "nvs.h"
 #include <cstdio>
 #include <cstring>
 #include <cstdarg>
@@ -27,6 +29,54 @@
 #include <unistd.h>
 
 static const char* TAG = "CLI";
+
+// NVS namespace and key for log level
+static const char* NVS_NAMESPACE_CLI = "stampfly_cli";
+static const char* NVS_KEY_LOGLEVEL = "loglevel";
+
+// Helper: Load log level from NVS
+static esp_log_level_t loadLogLevelFromNVS()
+{
+    nvs_handle_t handle;
+    esp_err_t ret = nvs_open(NVS_NAMESPACE_CLI, NVS_READONLY, &handle);
+    if (ret != ESP_OK) {
+        return ESP_LOG_INFO;  // Default if NVS not available
+    }
+
+    uint8_t level_val = ESP_LOG_INFO;
+    ret = nvs_get_u8(handle, NVS_KEY_LOGLEVEL, &level_val);
+    nvs_close(handle);
+
+    if (ret != ESP_OK) {
+        return ESP_LOG_INFO;  // Default if key not found
+    }
+
+    // Validate range
+    if (level_val > ESP_LOG_VERBOSE) {
+        return ESP_LOG_INFO;
+    }
+
+    return static_cast<esp_log_level_t>(level_val);
+}
+
+// Helper: Save log level to NVS
+static esp_err_t saveLogLevelToNVS(esp_log_level_t level)
+{
+    nvs_handle_t handle;
+    esp_err_t ret = nvs_open(NVS_NAMESPACE_CLI, NVS_READWRITE, &handle);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to open NVS for loglevel: %d", ret);
+        return ret;
+    }
+
+    ret = nvs_set_u8(handle, NVS_KEY_LOGLEVEL, static_cast<uint8_t>(level));
+    if (ret == ESP_OK) {
+        ret = nvs_commit(handle);
+    }
+
+    nvs_close(handle);
+    return ret;
+}
 
 // External reference to magnetometer calibrator (defined in main.cpp)
 extern stampfly::MagCalibrator* g_mag_calibrator;
@@ -102,6 +152,15 @@ esp_err_t CLI::init()
     input_pos_ = 0;
     memset(input_buffer_, 0, sizeof(input_buffer_));
     command_count_ = 0;
+
+    // Load and apply saved log level from NVS
+    esp_log_level_t saved_level = loadLogLevelFromNVS();
+    esp_log_level_set("*", saved_level);
+
+    static const char* level_names[] = {
+        "none", "error", "warn", "info", "debug", "verbose"
+    };
+    ESP_LOGI(TAG, "Log level restored from NVS: %s", level_names[saved_level]);
 
     initialized_ = true;
     ESP_LOGI(TAG, "CLI initialized");
@@ -513,7 +572,17 @@ static void cmd_loglevel(int argc, char** argv, void* context)
     }
 
     esp_log_level_set(tag, level);
-    cli->print("Log level set to '%s' for tag '%s'\r\n", level_names[level], tag);
+
+    // Save to NVS if setting global log level
+    if (strcmp(tag, "*") == 0) {
+        if (saveLogLevelToNVS(level) == ESP_OK) {
+            cli->print("Log level set to '%s' (saved to NVS)\r\n", level_names[level]);
+        } else {
+            cli->print("Log level set to '%s' (NVS save failed)\r\n", level_names[level]);
+        }
+    } else {
+        cli->print("Log level set to '%s' for tag '%s'\r\n", level_names[level], tag);
+    }
 }
 
 static void cmd_calib(int argc, char** argv, void* context)
