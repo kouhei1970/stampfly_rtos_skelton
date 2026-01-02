@@ -504,8 +504,8 @@ extern "C" void app_main(void)
     constexpr float MAG_STD_THRESHOLD = 1.5f;      // 地磁気std normの閾値
     constexpr int STABLE_COUNT_REQUIRED = 5;       // 連続で条件を満たす回数
     constexpr int CHECK_INTERVAL_MS = 200;         // チェック間隔 [ms]
-    constexpr int MIN_WAIT_MS = 1000;              // 最小待機時間 [ms]
-    constexpr int MAX_WAIT_MS = 10000;             // 最大待機時間 [ms]
+    constexpr int MIN_WAIT_MS = 10000;             // 最小待機時間 [ms] - ログ収集のため10秒に設定
+    constexpr int MAX_WAIT_MS = 15000;             // 最大待機時間 [ms]
 
     int stable_count = 0;
     int elapsed_ms = 0;
@@ -576,16 +576,118 @@ extern "C" void app_main(void)
             int current_sec = elapsed_ms / 1000;
             if (current_sec > last_log_sec) {
                 last_log_sec = current_sec;
-                ESP_LOGI(TAG, "=== SENSOR DEBUG t=%ds (samples: accel=%d, mag=%d) ===",
-                         current_sec, accel_n, mag_n);
-                ESP_LOGI(TAG, "  Accel avg: [%.3f, %.3f, %.3f]",
+                ESP_LOGI(TAG, "=== SENSOR STATS t=%ds ===", current_sec);
+
+                // Accelerometer
+                ESP_LOGI(TAG, "  Accel avg: [%.3f, %.3f, %.3f] m/s2",
                          accel_avg.x, accel_avg.y, accel_avg.z);
-                ESP_LOGI(TAG, "  Accel std: [%.4f, %.4f, %.4f] norm=%.4f (threshold=%.2f)",
+                ESP_LOGI(TAG, "  Accel std: [%.4f, %.4f, %.4f] norm=%.4f (th=%.2f)",
                          accel_std.x, accel_std.y, accel_std.z, accel_std_norm, ACCEL_STD_THRESHOLD);
-                ESP_LOGI(TAG, "  Mag avg:   [%.2f, %.2f, %.2f]",
+
+                // Gyroscope
+                if (g_gyro_buffer_count >= 50) {
+                    stampfly::math::Vector3 gyro_sum = stampfly::math::Vector3::zero();
+                    stampfly::math::Vector3 gyro_sum_sq = stampfly::math::Vector3::zero();
+                    int gyro_n = std::min(g_gyro_buffer_count, REF_BUFFER_SIZE);
+                    for (int i = 0; i < gyro_n; i++) {
+                        gyro_sum += g_gyro_buffer[i];
+                        gyro_sum_sq.x += g_gyro_buffer[i].x * g_gyro_buffer[i].x;
+                        gyro_sum_sq.y += g_gyro_buffer[i].y * g_gyro_buffer[i].y;
+                        gyro_sum_sq.z += g_gyro_buffer[i].z * g_gyro_buffer[i].z;
+                    }
+                    float gn = static_cast<float>(gyro_n);
+                    stampfly::math::Vector3 gyro_avg = gyro_sum * (1.0f / gn);
+                    float gyro_var_x = gyro_sum_sq.x / gn - gyro_avg.x * gyro_avg.x;
+                    float gyro_var_y = gyro_sum_sq.y / gn - gyro_avg.y * gyro_avg.y;
+                    float gyro_var_z = gyro_sum_sq.z / gn - gyro_avg.z * gyro_avg.z;
+                    stampfly::math::Vector3 gyro_std(
+                        std::sqrt(std::max(0.0f, gyro_var_x)),
+                        std::sqrt(std::max(0.0f, gyro_var_y)),
+                        std::sqrt(std::max(0.0f, gyro_var_z)));
+                    float gyro_std_norm = std::sqrt(std::max(0.0f, gyro_var_x) +
+                                                    std::max(0.0f, gyro_var_y) +
+                                                    std::max(0.0f, gyro_var_z));
+                    ESP_LOGI(TAG, "  Gyro avg:  [%.4f, %.4f, %.4f] rad/s (bias candidate)",
+                             gyro_avg.x, gyro_avg.y, gyro_avg.z);
+                    ESP_LOGI(TAG, "  Gyro std:  [%.5f, %.5f, %.5f] norm=%.5f",
+                             gyro_std.x, gyro_std.y, gyro_std.z, gyro_std_norm);
+                }
+
+                // Magnetometer
+                ESP_LOGI(TAG, "  Mag avg:   [%.2f, %.2f, %.2f] uT",
                          mag_avg.x, mag_avg.y, mag_avg.z);
-                ESP_LOGI(TAG, "  Mag std:   [%.3f, %.3f, %.3f] norm=%.3f (threshold=%.1f)",
+                ESP_LOGI(TAG, "  Mag std:   [%.3f, %.3f, %.3f] norm=%.3f (th=%.1f)",
                          mag_std.x, mag_std.y, mag_std.z, mag_std_norm, MAG_STD_THRESHOLD);
+
+                // Barometer
+                if (g_baro_buffer_count >= 10) {
+                    float baro_sum = 0.0f, baro_sum_sq = 0.0f;
+                    int baro_n = std::min(g_baro_buffer_count, REF_BUFFER_SIZE);
+                    for (int i = 0; i < baro_n; i++) {
+                        baro_sum += g_baro_buffer[i];
+                        baro_sum_sq += g_baro_buffer[i] * g_baro_buffer[i];
+                    }
+                    float baro_avg = baro_sum / baro_n;
+                    float baro_var = baro_sum_sq / baro_n - baro_avg * baro_avg;
+                    float baro_std = std::sqrt(std::max(0.0f, baro_var));
+                    ESP_LOGI(TAG, "  Baro avg:  %.3f m (relative), std=%.4f",
+                             baro_avg, baro_std);
+                }
+
+                // ToF Bottom
+                if (g_tof_bottom_buffer_count >= 5) {
+                    float tof_sum = 0.0f, tof_sum_sq = 0.0f;
+                    int tof_n = std::min(g_tof_bottom_buffer_count, REF_BUFFER_SIZE);
+                    for (int i = 0; i < tof_n; i++) {
+                        tof_sum += g_tof_bottom_buffer[i];
+                        tof_sum_sq += g_tof_bottom_buffer[i] * g_tof_bottom_buffer[i];
+                    }
+                    float tof_avg = tof_sum / tof_n;
+                    float tof_var = tof_sum_sq / tof_n - tof_avg * tof_avg;
+                    float tof_std = std::sqrt(std::max(0.0f, tof_var));
+                    ESP_LOGI(TAG, "  ToF bot:   %.3f m, std=%.4f (n=%d)",
+                             tof_avg, tof_std, tof_n);
+                }
+
+                // ToF Front
+                if (g_tof_front_buffer_count >= 5) {
+                    float tof_sum = 0.0f, tof_sum_sq = 0.0f;
+                    int tof_n = std::min(g_tof_front_buffer_count, REF_BUFFER_SIZE);
+                    for (int i = 0; i < tof_n; i++) {
+                        tof_sum += g_tof_front_buffer[i];
+                        tof_sum_sq += g_tof_front_buffer[i] * g_tof_front_buffer[i];
+                    }
+                    float tof_avg = tof_sum / tof_n;
+                    float tof_var = tof_sum_sq / tof_n - tof_avg * tof_avg;
+                    float tof_std = std::sqrt(std::max(0.0f, tof_var));
+                    ESP_LOGI(TAG, "  ToF front: %.3f m, std=%.4f (n=%d)",
+                             tof_avg, tof_std, tof_n);
+                }
+
+                // Optical Flow
+                if (g_optflow_buffer_count >= 10) {
+                    float dx_sum = 0.0f, dy_sum = 0.0f, squal_sum = 0.0f;
+                    float dx_sum_sq = 0.0f, dy_sum_sq = 0.0f;
+                    int flow_n = std::min(g_optflow_buffer_count, REF_BUFFER_SIZE);
+                    for (int i = 0; i < flow_n; i++) {
+                        dx_sum += g_optflow_buffer[i].dx;
+                        dy_sum += g_optflow_buffer[i].dy;
+                        squal_sum += g_optflow_buffer[i].squal;
+                        dx_sum_sq += g_optflow_buffer[i].dx * g_optflow_buffer[i].dx;
+                        dy_sum_sq += g_optflow_buffer[i].dy * g_optflow_buffer[i].dy;
+                    }
+                    float dx_avg = dx_sum / flow_n;
+                    float dy_avg = dy_sum / flow_n;
+                    float squal_avg = squal_sum / flow_n;
+                    float dx_var = dx_sum_sq / flow_n - dx_avg * dx_avg;
+                    float dy_var = dy_sum_sq / flow_n - dy_avg * dy_avg;
+                    float dx_std = std::sqrt(std::max(0.0f, dx_var));
+                    float dy_std = std::sqrt(std::max(0.0f, dy_var));
+                    ESP_LOGI(TAG, "  OptFlow:   dx=%.1f dy=%.1f squal=%.0f (std: dx=%.1f dy=%.1f)",
+                             dx_avg, dy_avg, squal_avg, dx_std, dy_std);
+                }
+
+                ESP_LOGI(TAG, "  ----------------------------------------");
             }
 
             // 条件チェック（最小待機時間経過後）
