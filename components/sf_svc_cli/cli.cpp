@@ -105,6 +105,10 @@ extern stampfly::Buzzer* g_buzzer_ptr;
 #include "sensor_fusion.hpp"
 extern sf::SensorFusion* g_fusion_ptr;
 
+// External reference to rate controller (defined in control_task.cpp)
+#include "rate_controller.hpp"
+extern RateController* g_rate_controller_ptr;
+
 namespace stampfly {
 
 // Forward declarations for command handlers
@@ -292,7 +296,7 @@ void CLI::registerDefaultCommands()
     registerCommand("pair", cmd_pair, "Enter pairing mode", this);
     registerCommand("unpair", cmd_unpair, "Clear pairing", this);
     registerCommand("reset", cmd_reset, "Reset system", this);
-    registerCommand("gain", cmd_gain, "Set control gain", this);
+    registerCommand("gain", cmd_gain, "Rate control gains [axis param value]", this);
     registerCommand("attitude", cmd_attitude, "Show attitude", this);
     registerCommand("version", cmd_version, "Show version info", this);
     registerCommand("ctrl", cmd_ctrl, "Show controller input [watch]", this);
@@ -941,15 +945,83 @@ static void cmd_gain(int argc, char** argv, void* context)
 {
     CLI* cli = static_cast<CLI*>(context);
 
-    if (argc < 3) {
-        cli->print("Usage: gain <name> <value>\r\n");
-        cli->print("Gains: kp_roll, kd_roll, kp_pitch, kd_pitch, kp_yaw, kd_yaw\r\n");
+    if (g_rate_controller_ptr == nullptr) {
+        cli->print("Rate controller not available\r\n");
         return;
     }
-    const char* name = argv[1];
-    float value = atof(argv[2]);
-    cli->print("Setting gain %s = %.4f (stub)\r\n", name, value);
-    // TODO: Save gain to control task
+
+    auto& rc = *g_rate_controller_ptr;
+
+    // Show current gains
+    if (argc < 2) {
+        cli->print("=== Rate Control Gains ===\r\n");
+        cli->print("Sensitivity (max rate [rad/s]):\r\n");
+        cli->print("  roll_max:  %.2f\r\n", rc.roll_rate_max);
+        cli->print("  pitch_max: %.2f\r\n", rc.pitch_rate_max);
+        cli->print("  yaw_max:   %.2f\r\n", rc.yaw_rate_max);
+        cli->print("\r\nRoll PID:\r\n");
+        cli->print("  Kp: %.4f  Ti: %.4f  Td: %.5f\r\n",
+                   rc.roll_pid.getKp(), rc.roll_pid.getTi(), rc.roll_pid.getTd());
+        cli->print("Pitch PID:\r\n");
+        cli->print("  Kp: %.4f  Ti: %.4f  Td: %.5f\r\n",
+                   rc.pitch_pid.getKp(), rc.pitch_pid.getTi(), rc.pitch_pid.getTd());
+        cli->print("Yaw PID:\r\n");
+        cli->print("  Kp: %.4f  Ti: %.4f  Td: %.5f\r\n",
+                   rc.yaw_pid.getKp(), rc.yaw_pid.getTi(), rc.yaw_pid.getTd());
+        cli->print("\r\nUsage: gain <axis> <param> <value>\r\n");
+        cli->print("  axis:  roll, pitch, yaw\r\n");
+        cli->print("  param: kp, ti, td, max\r\n");
+        cli->print("Example: gain roll kp 0.2\r\n");
+        return;
+    }
+
+    if (argc < 4) {
+        cli->print("Usage: gain <axis> <param> <value>\r\n");
+        cli->print("  axis:  roll, pitch, yaw\r\n");
+        cli->print("  param: kp, ti, td, max\r\n");
+        return;
+    }
+
+    const char* axis = argv[1];
+    const char* param = argv[2];
+    float value = atof(argv[3]);
+
+    // Select PID by axis
+    PID* pid = nullptr;
+    float* rate_max = nullptr;
+
+    if (strcmp(axis, "roll") == 0) {
+        pid = &rc.roll_pid;
+        rate_max = &rc.roll_rate_max;
+    } else if (strcmp(axis, "pitch") == 0) {
+        pid = &rc.pitch_pid;
+        rate_max = &rc.pitch_rate_max;
+    } else if (strcmp(axis, "yaw") == 0) {
+        pid = &rc.yaw_pid;
+        rate_max = &rc.yaw_rate_max;
+    } else {
+        cli->print("Unknown axis: %s (use roll, pitch, yaw)\r\n", axis);
+        return;
+    }
+
+    // Set parameter
+    if (strcmp(param, "kp") == 0) {
+        pid->setKp(value);
+        cli->print("%s Kp = %.4f\r\n", axis, value);
+    } else if (strcmp(param, "ti") == 0) {
+        pid->setTi(value);
+        cli->print("%s Ti = %.4f\r\n", axis, value);
+    } else if (strcmp(param, "td") == 0) {
+        pid->setTd(value);
+        cli->print("%s Td = %.5f\r\n", axis, value);
+    } else if (strcmp(param, "max") == 0) {
+        if (rate_max) {
+            *rate_max = value;
+            cli->print("%s rate_max = %.2f [rad/s]\r\n", axis, value);
+        }
+    } else {
+        cli->print("Unknown param: %s (use kp, ti, td, max)\r\n", param);
+    }
 }
 
 static void cmd_attitude(int, char**, void* context)

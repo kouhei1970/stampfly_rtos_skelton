@@ -340,6 +340,52 @@ inline constexpr int LEDC_CHANNEL = 4;             // LEDCチャンネル
 inline constexpr int LEDC_TIMER = 1;               // LEDCタイマー
 } // namespace buzzer
 
+// =============================================================================
+// Rate Control (角速度制御) Configuration
+// =============================================================================
+//
+// コントローラ入力 → 目標角速度 → PID制御 → モーターミキサー
+//
+// 感度パラメータ: スティック最大倒し量時の目標角速度 [rad/s]
+// PIDゲイン: 角速度追従のためのPIDパラメータ
+//
+
+namespace rate_control {
+
+// -----------------------------------------------------------------------------
+// 感度設定 (Sensitivity)
+// スティック入力 ±1.0 に対する最大目標角速度 [rad/s]
+// -----------------------------------------------------------------------------
+inline constexpr float ROLL_RATE_MAX = 5.0f;       // ロール最大角速度 [rad/s] (~286 deg/s)
+inline constexpr float PITCH_RATE_MAX = 5.0f;      // ピッチ最大角速度 [rad/s] (~286 deg/s)
+inline constexpr float YAW_RATE_MAX = 3.0f;        // ヨー最大角速度 [rad/s] (~172 deg/s)
+
+// -----------------------------------------------------------------------------
+// PIDゲイン (Rate Controller)
+// 不完全微分PID: C(s) = Kp(1 + 1/(Ti·s) + Td·s/(η·Td·s + 1))
+// -----------------------------------------------------------------------------
+
+// Roll rate PID
+inline constexpr float ROLL_RATE_KP = 0.15f;       // 比例ゲイン
+inline constexpr float ROLL_RATE_TI = 0.5f;        // 積分時間 [s] (0以下で無効)
+inline constexpr float ROLL_RATE_TD = 0.01f;       // 微分時間 [s] (0以下で無効)
+
+// Pitch rate PID
+inline constexpr float PITCH_RATE_KP = 0.15f;      // 比例ゲイン
+inline constexpr float PITCH_RATE_TI = 0.5f;       // 積分時間 [s]
+inline constexpr float PITCH_RATE_TD = 0.01f;      // 微分時間 [s]
+
+// Yaw rate PID
+inline constexpr float YAW_RATE_KP = 0.2f;         // 比例ゲイン
+inline constexpr float YAW_RATE_TI = 0.8f;         // 積分時間 [s]
+inline constexpr float YAW_RATE_TD = 0.0f;         // 微分時間 [s] (ヨーは微分なしが安定)
+
+// 共通パラメータ
+inline constexpr float PID_ETA = 0.1f;             // 不完全微分フィルタ係数 (0.1~0.2)
+inline constexpr float OUTPUT_LIMIT = 0.5f;        // PID出力制限 [-0.5, 0.5]
+
+} // namespace rate_control
+
 namespace button {
 inline constexpr int DEBOUNCE_MS = 50;             // デバウンス時間 [ms]
 } // namespace button
