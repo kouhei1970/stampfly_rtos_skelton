@@ -124,7 +124,7 @@ inline constexpr bool USE_MAGNETOMETER = true;     // 地磁気センサー（�
 inline constexpr float GYRO_NOISE = 0.009655f;         // ジャイロノイズ [rad/s/√Hz]
 inline constexpr float ACCEL_NOISE = 0.062885f;        // 加速度ノイズ [m/s²/√Hz]
 inline constexpr float GYRO_BIAS_NOISE = 0.000013f;    // ジャイロバイアスランダムウォーク
-inline constexpr float ACCEL_BIAS_NOISE = 0.0001f;     // 加速度バイアスランダムウォーク
+inline constexpr float ACCEL_BIAS_NOISE = 0.001f;      // 加速度バイアスランダムウォーク（動揺後の回復を速く）
 
 // -----------------------------------------------------------------------------
 // 観測ノイズ (R行列)
