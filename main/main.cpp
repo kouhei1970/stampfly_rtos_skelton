@@ -495,10 +495,111 @@ extern "C" void app_main(void)
     vTaskDelay(pdMS_TO_TICKS(1000));
     state.setFlightState(stampfly::FlightState::IDLE);
 
-    // Wait for sensors to stabilize (sensor fusion is NOT running during this period)
+    // Wait for sensors to stabilize based on standard deviation
     // g_eskf_ready = false なので IMUTask は sensor fusion 処理をスキップしている
-    ESP_LOGI(TAG, "Waiting for sensors to stabilize (sensor fusion paused)...");
-    vTaskDelay(pdMS_TO_TICKS(2000));
+    ESP_LOGI(TAG, "Waiting for sensors to stabilize (std-based detection)...");
+
+    // 安定判定パラメータ
+    constexpr float ACCEL_STD_THRESHOLD = 0.03f;   // 加速度std normの閾値
+    constexpr float MAG_STD_THRESHOLD = 1.5f;      // 地磁気std normの閾値
+    constexpr int STABLE_COUNT_REQUIRED = 5;       // 連続で条件を満たす回数
+    constexpr int CHECK_INTERVAL_MS = 200;         // チェック間隔 [ms]
+    constexpr int MIN_WAIT_MS = 1000;              // 最小待機時間 [ms]
+    constexpr int MAX_WAIT_MS = 10000;             // 最大待機時間 [ms]
+
+    int stable_count = 0;
+    int elapsed_ms = 0;
+    float last_accel_std_norm = 0.0f;
+    float last_mag_std_norm = 0.0f;
+    int64_t start_time = esp_timer_get_time();
+
+    while (elapsed_ms < MAX_WAIT_MS) {
+        vTaskDelay(pdMS_TO_TICKS(CHECK_INTERVAL_MS));
+        elapsed_ms += CHECK_INTERVAL_MS;
+
+        // バッファからstd normを計算
+        if (g_accel_buffer_count >= 50 && g_mag_buffer_count >= 50) {
+            // 加速度の平均と標準偏差を計算
+            stampfly::math::Vector3 accel_sum = stampfly::math::Vector3::zero();
+            stampfly::math::Vector3 accel_sum_sq = stampfly::math::Vector3::zero();
+            int accel_n = std::min(g_accel_buffer_count, REF_BUFFER_SIZE);
+            for (int i = 0; i < accel_n; i++) {
+                accel_sum += g_accel_buffer[i];
+                accel_sum_sq.x += g_accel_buffer[i].x * g_accel_buffer[i].x;
+                accel_sum_sq.y += g_accel_buffer[i].y * g_accel_buffer[i].y;
+                accel_sum_sq.z += g_accel_buffer[i].z * g_accel_buffer[i].z;
+            }
+            float n = static_cast<float>(accel_n);
+            stampfly::math::Vector3 accel_avg = accel_sum * (1.0f / n);
+            float accel_var_x = accel_sum_sq.x / n - accel_avg.x * accel_avg.x;
+            float accel_var_y = accel_sum_sq.y / n - accel_avg.y * accel_avg.y;
+            float accel_var_z = accel_sum_sq.z / n - accel_avg.z * accel_avg.z;
+            float accel_std_norm = std::sqrt(std::max(0.0f, accel_var_x) +
+                                              std::max(0.0f, accel_var_y) +
+                                              std::max(0.0f, accel_var_z));
+
+            // 地磁気の平均と標準偏差を計算
+            stampfly::math::Vector3 mag_sum = stampfly::math::Vector3::zero();
+            stampfly::math::Vector3 mag_sum_sq = stampfly::math::Vector3::zero();
+            int mag_n = std::min(g_mag_buffer_count, REF_BUFFER_SIZE);
+            for (int i = 0; i < mag_n; i++) {
+                mag_sum += g_mag_buffer[i];
+                mag_sum_sq.x += g_mag_buffer[i].x * g_mag_buffer[i].x;
+                mag_sum_sq.y += g_mag_buffer[i].y * g_mag_buffer[i].y;
+                mag_sum_sq.z += g_mag_buffer[i].z * g_mag_buffer[i].z;
+            }
+            n = static_cast<float>(mag_n);
+            stampfly::math::Vector3 mag_avg = mag_sum * (1.0f / n);
+            float mag_var_x = mag_sum_sq.x / n - mag_avg.x * mag_avg.x;
+            float mag_var_y = mag_sum_sq.y / n - mag_avg.y * mag_avg.y;
+            float mag_var_z = mag_sum_sq.z / n - mag_avg.z * mag_avg.z;
+            float mag_std_norm = std::sqrt(std::max(0.0f, mag_var_x) +
+                                            std::max(0.0f, mag_var_y) +
+                                            std::max(0.0f, mag_var_z));
+
+            last_accel_std_norm = accel_std_norm;
+            last_mag_std_norm = mag_std_norm;
+
+            // 条件チェック（最小待機時間経過後）
+            bool accel_stable = accel_std_norm < ACCEL_STD_THRESHOLD;
+            bool mag_stable = mag_std_norm < MAG_STD_THRESHOLD;
+
+            if (elapsed_ms >= MIN_WAIT_MS && accel_stable && mag_stable) {
+                stable_count++;
+                ESP_LOGI(TAG, "Stability check %d/%d: accel_std=%.4f mag_std=%.3f (t=%dms)",
+                         stable_count, STABLE_COUNT_REQUIRED,
+                         accel_std_norm, mag_std_norm, elapsed_ms);
+
+                if (stable_count >= STABLE_COUNT_REQUIRED) {
+                    break;  // 安定条件を満たした
+                }
+            } else {
+                if (stable_count > 0) {
+                    ESP_LOGW(TAG, "Stability reset: accel_std=%.4f mag_std=%.3f (t=%dms)",
+                             accel_std_norm, mag_std_norm, elapsed_ms);
+                }
+                stable_count = 0;  // 条件を満たさなければリセット
+            }
+        }
+    }
+
+    int64_t end_time = esp_timer_get_time();
+    float stabilization_time_ms = (end_time - start_time) / 1000.0f;
+
+    if (stable_count >= STABLE_COUNT_REQUIRED) {
+        ESP_LOGI(TAG, "========================================");
+        ESP_LOGI(TAG, "Sensors stabilized after %.0f ms", stabilization_time_ms);
+        ESP_LOGI(TAG, "  Final accel std norm: %.4f (threshold: %.2f)",
+                 last_accel_std_norm, ACCEL_STD_THRESHOLD);
+        ESP_LOGI(TAG, "  Final mag std norm:   %.3f (threshold: %.1f)",
+                 last_mag_std_norm, MAG_STD_THRESHOLD);
+        ESP_LOGI(TAG, "========================================");
+    } else {
+        ESP_LOGW(TAG, "Sensor stabilization timeout after %.0f ms", stabilization_time_ms);
+        ESP_LOGW(TAG, "  Last accel std norm: %.4f, Last mag std norm: %.3f",
+                 last_accel_std_norm, last_mag_std_norm);
+        ESP_LOGW(TAG, "Proceeding with initialization anyway...");
+    }
 
     // Initialize sensor fusion with fresh state and stable sensor data
     // センサーが安定した状態でリセット・キャリブレーション
@@ -509,7 +610,7 @@ extern "C" void app_main(void)
 
         // センサーフュージョン処理を開始
         g_eskf_ready = true;
-        ESP_LOGI(TAG, "Sensor fusion initialized with stable sensor data, ready to run");
+        ESP_LOGI(TAG, "Sensor fusion initialized and ready to run");
     }
 
     // ESKF ready notification - 3 short beeps + green LED
