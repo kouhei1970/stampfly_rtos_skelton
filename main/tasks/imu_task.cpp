@@ -313,6 +313,16 @@ void IMUTask(void* pvParameters)
                             state.updateGyroBias(eskf_state.gyro_bias.x, eskf_state.gyro_bias.y, eskf_state.gyro_bias.z);
                             state.updateAccelBias(eskf_state.accel_bias.x, eskf_state.accel_bias.y, eskf_state.accel_bias.z);
 
+                            // 姿勢・バイアス定期ログ（4秒ごと）
+                            static uint32_t attitude_log_counter = 0;
+                            attitude_log_counter++;
+                            if (attitude_log_counter % 1600 == 0) {
+                                ESP_LOGI(TAG, "Att: R=%.2f P=%.2f Y=%.2f | BA=[%.4f,%.4f,%.4f] %s",
+                                         eskf_state.roll * 57.3f, eskf_state.pitch * 57.3f, eskf_state.yaw * 57.3f,
+                                         eskf_state.accel_bias.x, eskf_state.accel_bias.y, eskf_state.accel_bias.z,
+                                         is_grounded ? "(grounded)" : "(flying)");
+                            }
+
                             g_imu_checkpoint = 23;  // state更新後、ロギング前
 
                             // === Binary logging (400Hz) ===
