@@ -201,6 +201,14 @@ public:
     void holdPositionVelocity();
 
     /**
+     * @brief 着陸時リセット（姿勢推定は継続）
+     *
+     * 位置・速度・加速度バイアスを0にリセット。
+     * 姿勢とジャイロバイアスは維持。
+     */
+    void resetForLanding();
+
+    /**
      * @brief ジャイロバイアス設定
      */
     void setGyroBias(const stampfly::math::Vector3& bias);

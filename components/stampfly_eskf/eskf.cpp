@@ -163,6 +163,59 @@ void ESKF::holdPositionVelocity()
     state_.velocity = Vector3::zero();
 }
 
+void ESKF::resetForLanding()
+{
+    // 位置・速度・加速度バイアスを0にリセット
+    // 姿勢・ジャイロバイアスは維持（姿勢推定継続）
+    state_.position = Vector3::zero();
+    state_.velocity = Vector3::zero();
+    state_.accel_bias = Vector3::zero();
+
+    // 共分散の設定
+    float pos_var = config_.init_pos_std * config_.init_pos_std;
+    float vel_var = config_.init_vel_std * config_.init_vel_std;
+    float ba_var = config_.init_accel_bias_std * config_.init_accel_bias_std;
+
+    // 位置・速度ブロック（0-5）をクリアして対角成分を設定
+    for (int i = 0; i < 6; i++) {
+        for (int j = 0; j < 6; j++) {
+            P_(i, j) = 0.0f;
+        }
+    }
+    P_(POS_X, POS_X) = pos_var;
+    P_(POS_Y, POS_Y) = pos_var;
+    P_(POS_Z, POS_Z) = pos_var;
+    P_(VEL_X, VEL_X) = vel_var;
+    P_(VEL_Y, VEL_Y) = vel_var;
+    P_(VEL_Z, VEL_Z) = vel_var;
+
+    // 加速度バイアスブロック（12-14）をクリアして対角成分を設定
+    for (int i = 12; i < 15; i++) {
+        for (int j = 12; j < 15; j++) {
+            P_(i, j) = 0.0f;
+        }
+    }
+    P_(BA_X, BA_X) = ba_var;
+    P_(BA_Y, BA_Y) = ba_var;
+    P_(BA_Z, BA_Z) = ba_var;
+
+    // 位置・速度と他状態（姿勢、バイアス）の相関をクリア
+    for (int i = 0; i < 6; i++) {
+        for (int j = 6; j < 15; j++) {
+            P_(i, j) = 0.0f;
+            P_(j, i) = 0.0f;
+        }
+    }
+
+    // 加速度バイアスと姿勢・ジャイロバイアスの相関をクリア
+    for (int i = 12; i < 15; i++) {
+        for (int j = 6; j < 12; j++) {
+            P_(i, j) = 0.0f;
+            P_(j, i) = 0.0f;
+        }
+    }
+}
+
 void ESKF::setGyroBias(const Vector3& bias)
 {
     state_.gyro_bias = bias;

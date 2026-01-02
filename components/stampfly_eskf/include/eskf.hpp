@@ -308,6 +308,15 @@ public:
     void holdPositionVelocity();
 
     /**
+     * @brief 着陸時リセット（姿勢推定は継続）
+     *
+     * 位置・速度・加速度バイアスを0にリセット。
+     * 姿勢とジャイロバイアスは維持し、姿勢推定を継続。
+     * 共分散は適切な初期値に設定。
+     */
+    void resetForLanding();
+
+    /**
      * @brief ジャイロバイアスを設定
      * @param bias ジャイロバイアス [rad/s] (ボディ座標系)
      *

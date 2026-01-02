@@ -172,14 +172,14 @@ void IMUTask(void* pvParameters)
                         // 接地中はskip_position=trueで位置更新をスキップ（ドリフト防止）
                         g_fusion.predictIMU(accel_latest, gyro_latest, 0.0025f, skip_position);
 
-                        // 接地中は位置・速度をゼロに保持（着陸遷移時の初回用）
+                        // 接地中の処理
                         if (skip_position) {
-                            // 着陸遷移時のみログ出力（一度離陸した後のみ）
+                            // 着陸遷移時: 位置・速度・加速度バイアスをリセット（姿勢は維持）
                             if (!prev_grounded && has_taken_off) {
-                                ESP_LOGI(TAG, "Landed - position hold enabled (alt=%.3fm)", tof_bottom_now);
+                                g_fusion.resetForLanding();
+                                ESP_LOGI(TAG, "Landed - reset for landing (alt=%.3fm)", tof_bottom_now);
                             }
-                            // holdPositionVelocity: 状態のみゼロ、共分散は維持
-                            // 着陸遷移時に非ゼロの位置をゼロにリセットするため必要
+                            // 接地中: 位置・速度を0に保持
                             g_fusion.holdPositionVelocity();
 
                             // DEBUG: 接地中の姿勢とバイアスを4秒ごとに出力

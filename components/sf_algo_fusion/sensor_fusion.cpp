@@ -151,6 +151,15 @@ void SensorFusion::holdPositionVelocity() {
     eskf_.holdPositionVelocity();
 }
 
+void SensorFusion::resetForLanding() {
+    if (!initialized_) {
+        return;
+    }
+
+    eskf_.resetForLanding();
+    diverged_ = false;
+}
+
 void SensorFusion::setGyroBias(const stampfly::math::Vector3& bias) {
     if (!initialized_) {
         return;
