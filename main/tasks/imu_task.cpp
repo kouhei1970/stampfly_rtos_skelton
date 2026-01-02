@@ -204,8 +204,7 @@ void IMUTask(void* pvParameters)
 
                         // オプティカルフロー更新（data_readyフラグで制御、100Hz）
                         // ヘルスチェック: Flow + ToF が両方healthy必要（距離スケーリングに必要）
-                        // OpticalFlow更新
-                        // 接地中: 速度=0観測を与えてバイアス修正を継続
+                        // 接地中: 位置・速度更新を停止するため呼ばない
                         // 飛行中: 実センサ値を使用
                         static int optflow_takeoff_skip_counter = 0;  // 離陸後のスキップカウンタ
                         if (is_grounded) {
@@ -214,17 +213,14 @@ void IMUTask(void* pvParameters)
 
                         if (g_optflow_data_ready) {
                             g_optflow_data_ready = false;
-                            constexpr float dt = 0.01f;  // 100Hz
 
-                            if (is_grounded) {
-                                // 接地中: 速度=0観測（偽装データ）
-                                // dx=0, dy=0, squal=255(高品質), height=0.03m, gyro=0
-                                g_fusion.updateOpticalFlow(0, 0, 255, 0.03f, dt, 0.0f, 0.0f);
-                            } else if (g_optflow_task_healthy && g_tof_task_healthy) {
+                            // 接地中は位置・速度更新を停止（センサー更新を呼ばない）
+                            if (!is_grounded && g_optflow_task_healthy && g_tof_task_healthy) {
                                 if (optflow_takeoff_skip_counter > 0) {
                                     optflow_takeoff_skip_counter--;
                                     // 共分散リセット直後は過剰補正防止のためスキップ
                                 } else if (g_optflow_buffer_count > 0 && g_tof_bottom_buffer_count > 0) {
+                                    constexpr float dt = 0.01f;  // 100Hz
                                     // バッファの最新値を取得
                                     int optflow_latest_idx = (g_optflow_buffer_index - 1 + REF_BUFFER_SIZE) % REF_BUFFER_SIZE;
                                     int tof_latest_idx = (g_tof_bottom_buffer_index - 1 + REF_BUFFER_SIZE) % REF_BUFFER_SIZE;
@@ -254,7 +250,7 @@ void IMUTask(void* pvParameters)
                         g_imu_checkpoint = 16;  // ToF更新セクション
 
                         // ToF更新（data_readyフラグで制御、30Hz）
-                        // 接地中: 高さ=0観測を与えて位置推定を継続
+                        // 接地中: 位置更新を停止するため呼ばない
                         // 飛行中: 実センサ値を使用
                         static int tof_takeoff_skip_counter = 0;
                         if (is_grounded) {
@@ -262,10 +258,9 @@ void IMUTask(void* pvParameters)
                         }
                         if (g_tof_bottom_data_ready) {
                             g_tof_bottom_data_ready = false;
-                            if (is_grounded) {
-                                // 接地中: 高さ=0観測（偽装データ）
-                                g_fusion.updateToF(0.03f);  // 地面高さ=3cm
-                            } else if (g_tof_task_healthy) {
+
+                            // 接地中は位置更新を停止（センサー更新を呼ばない）
+                            if (!is_grounded && g_tof_task_healthy) {
                                 if (tof_takeoff_skip_counter > 0) {
                                     tof_takeoff_skip_counter--;
                                     // 共分散リセット直後は過剰補正防止のためスキップ
