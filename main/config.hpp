@@ -234,7 +234,7 @@ namespace stability {
 inline constexpr float ACCEL_STD_THRESHOLD = 0.025f;     // [m/s²]
 inline constexpr float GYRO_STD_THRESHOLD = 0.005f;      // [rad/s]
 inline constexpr float MAG_STD_THRESHOLD = 1.3f;         // [µT]
-inline constexpr float BARO_STD_THRESHOLD = 0.01f;       // [m]
+inline constexpr float BARO_STD_THRESHOLD = 0.05f;       // [m] BMP280の実測値は約0.04m
 inline constexpr float TOF_STD_THRESHOLD = 0.003f;       // [m]
 inline constexpr float OPTFLOW_STD_THRESHOLD = 3.0f;     // [counts] dx+dy
 
