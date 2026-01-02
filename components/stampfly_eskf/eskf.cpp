@@ -14,6 +14,10 @@ static const char* TAG = "ESKF";
 
 namespace stampfly {
 
+// DEBUG: 着陸後の追跡用
+static int g_post_landing_inject_count = 0;
+static bool g_post_landing_tracking = false;
+
 // エラー状態インデックス
 enum StateIdx {
     POS_X = 0, POS_Y = 1, POS_Z = 2,
@@ -167,12 +171,22 @@ void ESKF::resetForLanding()
 {
     // 位置・速度・加速度バイアスを0にリセット
     // 姿勢・ジャイロバイアスは維持（姿勢推定継続）
+    ESP_LOGI("ESKF", "resetForLanding: BEFORE accel_bias=[%.4f,%.4f,%.4f]",
+             state_.accel_bias.x, state_.accel_bias.y, state_.accel_bias.z);
+
     state_.position = Vector3::zero();
     state_.velocity = Vector3::zero();
     state_.accel_bias = Vector3::zero();
 
     // 加速度バイアス推定をフリーズ（接地中は可観測性がないため）
     freeze_accel_bias_ = true;
+
+    ESP_LOGI("ESKF", "resetForLanding: AFTER accel_bias=[%.4f,%.4f,%.4f], freeze=%d",
+             state_.accel_bias.x, state_.accel_bias.y, state_.accel_bias.z, freeze_accel_bias_);
+
+    // DEBUG: 着陸後のinjectErrorState追跡を開始
+    g_post_landing_inject_count = 0;
+    g_post_landing_tracking = true;
 
     // 共分散の設定
     float pos_var = config_.init_pos_std * config_.init_pos_std;
@@ -775,9 +789,11 @@ void ESKF::updateBaro(float altitude)
     if (config_.mag_enabled) {
         state_.gyro_bias.z += dx[BG_Z];
     }
-    state_.accel_bias.x += dx[BA_X];
-    state_.accel_bias.y += dx[BA_Y];
-    state_.accel_bias.z += dx[BA_Z];
+    if (!freeze_accel_bias_) {
+        state_.accel_bias.x += dx[BA_X];
+        state_.accel_bias.y += dx[BA_Y];
+        state_.accel_bias.z += dx[BA_Z];
+    }
     ba_dx_baro.add(dx[BA_X], dx[BA_Y], dx[BA_Z]);
 
     // Joseph形式共分散更新: P' = (I - K*H) * P * (I - K*H)^T + K * R * K^T
@@ -871,9 +887,11 @@ void ESKF::updateToF(float distance)
     if (config_.mag_enabled) {
         state_.gyro_bias.z += dx[BG_Z];
     }
-    state_.accel_bias.x += dx[BA_X];
-    state_.accel_bias.y += dx[BA_Y];
-    state_.accel_bias.z += dx[BA_Z];
+    if (!freeze_accel_bias_) {
+        state_.accel_bias.x += dx[BA_X];
+        state_.accel_bias.y += dx[BA_Y];
+        state_.accel_bias.z += dx[BA_Z];
+    }
     ba_dx_tof.add(dx[BA_X], dx[BA_Y], dx[BA_Z]);
 
     // Joseph形式共分散更新: P' = (I - K*H) * P * (I - K*H)^T + K * R * K^T
@@ -1045,9 +1063,11 @@ void ESKF::updateMag(const Vector3& mag)
     if (config_.mag_enabled) {
         state_.gyro_bias.z += dx[BG_Z];
     }
-    state_.accel_bias.x += dx[BA_X];
-    state_.accel_bias.y += dx[BA_Y];
-    state_.accel_bias.z += dx[BA_Z];
+    if (!freeze_accel_bias_) {
+        state_.accel_bias.x += dx[BA_X];
+        state_.accel_bias.y += dx[BA_Y];
+        state_.accel_bias.z += dx[BA_Z];
+    }
     ba_dx_mag.add(dx[BA_X], dx[BA_Y], dx[BA_Z]);
 
     // Joseph形式共分散更新: P' = (I - K*H) * P * (I - K*H)^T + K * R * K^T
@@ -1231,9 +1251,11 @@ void ESKF::updateFlowWithGyro(float flow_x, float flow_y, float distance,
     if (config_.mag_enabled) {
         state_.gyro_bias.z += dx[BG_Z];
     }
-    state_.accel_bias.x += dx[BA_X];
-    state_.accel_bias.y += dx[BA_Y];
-    state_.accel_bias.z += dx[BA_Z];
+    if (!freeze_accel_bias_) {
+        state_.accel_bias.x += dx[BA_X];
+        state_.accel_bias.y += dx[BA_Y];
+        state_.accel_bias.z += dx[BA_Z];
+    }
     ba_dx_flow.add(dx[BA_X], dx[BA_Y], dx[BA_Z]);
 
     // ========================================================================
@@ -1422,9 +1444,11 @@ void ESKF::updateFlowRaw(int16_t flow_dx, int16_t flow_dy, float distance,
     if (config_.mag_enabled) {
         state_.gyro_bias.z += dx[BG_Z];
     }
-    state_.accel_bias.x += dx[BA_X];
-    state_.accel_bias.y += dx[BA_Y];
-    state_.accel_bias.z += dx[BA_Z];
+    if (!freeze_accel_bias_) {
+        state_.accel_bias.x += dx[BA_X];
+        state_.accel_bias.y += dx[BA_Y];
+        state_.accel_bias.z += dx[BA_Z];
+    }
     ba_dx_flow.add(dx[BA_X], dx[BA_Y], dx[BA_Z]);
 
     // Joseph形式共分散更新
@@ -1627,9 +1651,11 @@ void ESKF::updateAccelAttitude(const Vector3& accel)
     if (config_.mag_enabled) {
         state_.gyro_bias.z += dx[BG_Z];
     }
-    state_.accel_bias.x += dx[BA_X];
-    state_.accel_bias.y += dx[BA_Y];
-    state_.accel_bias.z += dx[BA_Z];
+    if (!freeze_accel_bias_) {
+        state_.accel_bias.x += dx[BA_X];
+        state_.accel_bias.y += dx[BA_Y];
+        state_.accel_bias.z += dx[BA_Z];
+    }
     ba_dx_accel.add(dx[BA_X], dx[BA_Y], dx[BA_Z]);
     logBaContributions();
 
@@ -1688,6 +1714,19 @@ void ESKF::updateAccelAttitude(const Vector3& accel)
 
 void ESKF::injectErrorState(const Matrix<15, 1>& dx)
 {
+    // DEBUG: 着陸直後の最初の数回をログ
+    if (g_post_landing_tracking && g_post_landing_inject_count < 10) {
+        ESP_LOGI("ESKF", "POST-LANDING inject #%d: freeze=%d, dx_BA=[%.4f,%.4f], bias_now=[%.4f,%.4f]",
+                 g_post_landing_inject_count,
+                 freeze_accel_bias_,
+                 dx(BA_X, 0), dx(BA_Y, 0),
+                 state_.accel_bias.x, state_.accel_bias.y);
+        g_post_landing_inject_count++;
+        if (g_post_landing_inject_count >= 10) {
+            g_post_landing_tracking = false;  // 追跡終了
+        }
+    }
+
     state_.position.x += dx(POS_X, 0);
     state_.position.y += dx(POS_Y, 0);
     state_.position.z += dx(POS_Z, 0);
@@ -1721,6 +1760,16 @@ void ESKF::injectErrorState(const Matrix<15, 1>& dx)
         state_.accel_bias.x += dx(BA_X, 0);
         state_.accel_bias.y += dx(BA_Y, 0);
         state_.accel_bias.z += dx(BA_Z, 0);
+    }
+    // DEBUG: フリーズ後にdxが大きい場合のみログ（1回だけ）
+    else {
+        static int freeze_log_count = 0;
+        if (freeze_log_count < 3 && (std::abs(dx(BA_X, 0)) > 0.001f || std::abs(dx(BA_Y, 0)) > 0.001f)) {
+            ESP_LOGI("ESKF", "injectErrorState: FROZEN, skip dx=[%.4f,%.4f,%.4f], bias stays [%.4f,%.4f,%.4f]",
+                     dx(BA_X, 0), dx(BA_Y, 0), dx(BA_Z, 0),
+                     state_.accel_bias.x, state_.accel_bias.y, state_.accel_bias.z);
+            freeze_log_count++;
+        }
     }
 }
 
