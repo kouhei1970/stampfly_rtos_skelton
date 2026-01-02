@@ -531,6 +531,17 @@ extern "C" void app_main(void)
             g_tof_bottom_buffer_count >= MIN_TOF_SAMPLES &&
             g_optflow_buffer_count >= MIN_OPTFLOW_SAMPLES;
 
+        // デバッグ: バッファが ready でない場合、1秒ごとにカウントを表示
+        if (!buffers_ready) {
+            int current_sec = elapsed_ms / 1000;
+            if (current_sec > last_log_sec) {
+                last_log_sec = current_sec;
+                ESP_LOGW(TAG, "Buffers not ready: accel=%d gyro=%d mag=%d baro=%d tof=%d flow=%d",
+                         g_accel_buffer_count, g_gyro_buffer_count, g_mag_buffer_count,
+                         g_baro_buffer_count, g_tof_bottom_buffer_count, g_optflow_buffer_count);
+            }
+        }
+
         // バッファからstd normを計算
         if (buffers_ready) {
             // 加速度の平均と標準偏差を計算
