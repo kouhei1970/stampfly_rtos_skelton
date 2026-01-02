@@ -22,12 +22,23 @@ void BaroTask(void* pvParameters)
     // ヘルスモニター設定
     g_health.baro.setThresholds(5, 10);  // 5連続成功/10連続失敗
 
+    uint32_t loop_count = 0;
+    float last_alt = 0.0f;
+
     while (true) {
         if (g_baro.isInitialized()) {
             stampfly::BaroData baro;
             if (g_baro.read(baro) == ESP_OK) {
                 g_health.baro.recordSuccess();
                 g_baro_task_healthy = g_health.baro.isHealthy();
+
+                // デバッグ: 5秒ごと or 高度変化時にログ出力
+                loop_count++;
+                if (loop_count % 250 == 0 || std::abs(baro.altitude_m - last_alt) > 0.5f) {
+                    ESP_LOGI(TAG, "Baro read: P=%.1f Pa, T=%.2f C, Alt=%.3f m",
+                             baro.pressure_pa, baro.temperature_c, baro.altitude_m);
+                    last_alt = baro.altitude_m;
+                }
                 // Use altitude from read() directly (already calculated)
                 state.updateBaro(baro.pressure_pa, baro.temperature_c, baro.altitude_m);
 
