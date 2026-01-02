@@ -313,8 +313,23 @@ public:
      * 位置・速度・加速度バイアスを0にリセット。
      * 姿勢とジャイロバイアスは維持し、姿勢推定を継続。
      * 共分散は適切な初期値に設定。
+     * 加速度バイアス推定も自動的にフリーズされる。
      */
     void resetForLanding();
+
+    /**
+     * @brief 加速度バイアス推定のフリーズ設定
+     * @param freeze true: バイアス推定を停止（状態更新をスキップ）
+     *
+     * 接地中など、バイアスの可観測性がない状況で使用。
+     * フリーズ中もKalman更新は実行されるが、dx[BA_*]は状態に適用されない。
+     */
+    void setFreezeAccelBias(bool freeze) { freeze_accel_bias_ = freeze; }
+
+    /**
+     * @brief 加速度バイアス推定がフリーズ中か
+     */
+    bool isAccelBiasFrozen() const { return freeze_accel_bias_; }
 
     /**
      * @brief ジャイロバイアスを設定
@@ -372,6 +387,7 @@ public:
 
 private:
     bool initialized_ = false;
+    bool freeze_accel_bias_ = false;  // 加速度バイアス推定フリーズフラグ
     Config config_;
 
     // 名目状態

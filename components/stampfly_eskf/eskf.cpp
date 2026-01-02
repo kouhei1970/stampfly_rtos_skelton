@@ -171,6 +171,9 @@ void ESKF::resetForLanding()
     state_.velocity = Vector3::zero();
     state_.accel_bias = Vector3::zero();
 
+    // 加速度バイアス推定をフリーズ（接地中は可観測性がないため）
+    freeze_accel_bias_ = true;
+
     // 共分散の設定
     float pos_var = config_.init_pos_std * config_.init_pos_std;
     float vel_var = config_.init_vel_std * config_.init_vel_std;
@@ -1712,9 +1715,13 @@ void ESKF::injectErrorState(const Matrix<15, 1>& dx)
         state_.gyro_bias.z += dx(BG_Z, 0);
     }
 
-    state_.accel_bias.x += dx(BA_X, 0);
-    state_.accel_bias.y += dx(BA_Y, 0);
-    state_.accel_bias.z += dx(BA_Z, 0);
+    // 加速度バイアス推定がフリーズ中は状態を更新しない
+    // （接地中など可観測性がない状況でバイアス破壊を防止）
+    if (!freeze_accel_bias_) {
+        state_.accel_bias.x += dx(BA_X, 0);
+        state_.accel_bias.y += dx(BA_Y, 0);
+        state_.accel_bias.z += dx(BA_Z, 0);
+    }
 }
 
 template<int M>

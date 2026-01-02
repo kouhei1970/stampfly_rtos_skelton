@@ -175,9 +175,10 @@ void IMUTask(void* pvParameters)
                         // 接地中の処理
                         if (skip_position) {
                             // 着陸遷移時: 位置・速度・加速度バイアスをリセット（姿勢は維持）
+                            // resetForLanding()内で加速度バイアス推定もフリーズされる
                             if (!prev_grounded && has_taken_off) {
                                 g_fusion.resetForLanding();
-                                ESP_LOGI(TAG, "Landed - reset for landing (alt=%.3fm)", tof_bottom_now);
+                                ESP_LOGI(TAG, "Landed - reset for landing, accel bias frozen (alt=%.3fm)", tof_bottom_now);
                             }
                             // 接地中: 位置・速度を0に保持
                             g_fusion.holdPositionVelocity();
@@ -195,7 +196,8 @@ void IMUTask(void* pvParameters)
                             // 離陸遷移時 - 共分散をリセットして安定した推定開始
                             has_taken_off = true;
                             g_fusion.resetPositionVelocity();  // 共分散も適切な初期値に
-                            ESP_LOGI(TAG, "Takeoff - position estimation enabled (alt=%.3fm)", tof_bottom_now);
+                            g_fusion.setFreezeAccelBias(false);  // 加速度バイアス推定を再開
+                            ESP_LOGI(TAG, "Takeoff - position estimation enabled, accel bias unfrozen (alt=%.3fm)", tof_bottom_now);
                         }
 
                         g_imu_checkpoint = 14;  // フロー更新セクション

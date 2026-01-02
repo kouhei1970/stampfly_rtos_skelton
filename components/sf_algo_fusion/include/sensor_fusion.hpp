@@ -239,6 +239,21 @@ public:
     }
 
     /**
+     * @brief 加速度バイアス推定のフリーズ設定
+     * @param freeze true: バイアス推定を停止
+     *
+     * 接地中など可観測性がない状況で使用。
+     * resetForLanding()で自動的にtrueに設定される。
+     * 離陸時にfalseに戻す必要がある。
+     */
+    void setFreezeAccelBias(bool freeze) { eskf_.setFreezeAccelBias(freeze); }
+
+    /**
+     * @brief 加速度バイアス推定がフリーズ中か
+     */
+    bool isAccelBiasFrozen() const { return eskf_.isAccelBiasFrozen(); }
+
+    /**
      * @brief 内部ESKFへの直接アクセス（上級者向け）
      */
     stampfly::ESKF& getESKF() { return eskf_; }
