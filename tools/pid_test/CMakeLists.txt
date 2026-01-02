@@ -13,13 +13,13 @@ set(CMAKE_CXX_FLAGS_DEBUG "-g -O0")
 set(CMAKE_CXX_FLAGS_RELEASE "-O3")
 
 # PID library (directly from component)
-add_library(stampfly_pid
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../components/stampfly_pid/pid.cpp
+add_library(sf_algo_pid
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../components/sf_algo_pid/pid.cpp
 )
-target_include_directories(stampfly_pid PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../components/stampfly_pid/include
+target_include_directories(sf_algo_pid PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../components/sf_algo_pid/include
 )
 
 # Unit test executable
 add_executable(pid_test pid_test.cpp)
-target_link_libraries(pid_test PRIVATE stampfly_pid)
+target_link_libraries(pid_test PRIVATE sf_algo_pid)

@@ -17,22 +17,22 @@ idf_component_register(
         "tasks/telemetry_task.cpp"
     INCLUDE_DIRS "." "tasks"
     REQUIRES
-        stampfly_imu
-        stampfly_tof
-        stampfly_opticalflow
-        stampfly_mag
-        stampfly_baro
+        sf_hal_bmi270
+        sf_hal_vl53l3cx
+        sf_hal_pmw3901
+        sf_hal_bmm150
+        sf_hal_bmp280
         stampfly_power
-        stampfly_motor
+        sf_hal_motor
         stampfly_led
         stampfly_buzzer
         stampfly_button
-        stampfly_filter
-        stampfly_eskf
+        sf_algo_filter
+        sf_algo_eskf
         sf_algo_fusion
         sf_svc_health
-        stampfly_state
-        stampfly_comm
-        stampfly_cli
+        sf_svc_state
+        sf_svc_comm
+        sf_svc_cli
         stampfly_telemetry
 )
