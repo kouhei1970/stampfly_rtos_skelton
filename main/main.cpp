@@ -504,8 +504,15 @@ extern "C" void app_main(void)
 
     int stable_count = 0;
     int elapsed_ms = 0;
+
+    // 各センサーの最終std norm値を保持
     float last_accel_std_norm = 0.0f;
+    float last_gyro_std_norm = 0.0f;
     float last_mag_std_norm = 0.0f;
+    float last_baro_std = 0.0f;
+    float last_tof_std = 0.0f;
+    float last_optflow_std = 0.0f;
+
     int64_t start_time = esp_timer_get_time();
 
     // デバッグログ用（1秒ごとにログ出力）
@@ -515,8 +522,17 @@ extern "C" void app_main(void)
         vTaskDelay(pdMS_TO_TICKS(CHECK_INTERVAL_MS));
         elapsed_ms += CHECK_INTERVAL_MS;
 
+        // 全センサーのバッファが最小サンプル数を満たしているかチェック
+        bool buffers_ready =
+            g_accel_buffer_count >= MIN_ACCEL_SAMPLES &&
+            g_gyro_buffer_count >= MIN_GYRO_SAMPLES &&
+            g_mag_buffer_count >= MIN_MAG_SAMPLES &&
+            g_baro_buffer_count >= MIN_BARO_SAMPLES &&
+            g_tof_bottom_buffer_count >= MIN_TOF_SAMPLES &&
+            g_optflow_buffer_count >= MIN_OPTFLOW_SAMPLES;
+
         // バッファからstd normを計算
-        if (g_accel_buffer_count >= MIN_ACCEL_SAMPLES && g_mag_buffer_count >= MIN_MAG_SAMPLES) {
+        if (buffers_ready) {
             // 加速度の平均と標準偏差を計算
             stampfly::math::Vector3 accel_sum = stampfly::math::Vector3::zero();
             stampfly::math::Vector3 accel_sum_sq = stampfly::math::Vector3::zero();
@@ -564,144 +580,133 @@ extern "C" void app_main(void)
                                             std::max(0.0f, mag_var_y) +
                                             std::max(0.0f, mag_var_z));
 
-            last_accel_std_norm = accel_std_norm;
-            last_mag_std_norm = mag_std_norm;
+            // ジャイロの統計計算
+            stampfly::math::Vector3 gyro_sum = stampfly::math::Vector3::zero();
+            stampfly::math::Vector3 gyro_sum_sq = stampfly::math::Vector3::zero();
+            int gyro_n = std::min(g_gyro_buffer_count, REF_BUFFER_SIZE);
+            for (int i = 0; i < gyro_n; i++) {
+                gyro_sum += g_gyro_buffer[i];
+                gyro_sum_sq.x += g_gyro_buffer[i].x * g_gyro_buffer[i].x;
+                gyro_sum_sq.y += g_gyro_buffer[i].y * g_gyro_buffer[i].y;
+                gyro_sum_sq.z += g_gyro_buffer[i].z * g_gyro_buffer[i].z;
+            }
+            float gn = static_cast<float>(gyro_n);
+            stampfly::math::Vector3 gyro_avg = gyro_sum * (1.0f / gn);
+            float gyro_var_x = gyro_sum_sq.x / gn - gyro_avg.x * gyro_avg.x;
+            float gyro_var_y = gyro_sum_sq.y / gn - gyro_avg.y * gyro_avg.y;
+            float gyro_var_z = gyro_sum_sq.z / gn - gyro_avg.z * gyro_avg.z;
+            stampfly::math::Vector3 gyro_std(
+                std::sqrt(std::max(0.0f, gyro_var_x)),
+                std::sqrt(std::max(0.0f, gyro_var_y)),
+                std::sqrt(std::max(0.0f, gyro_var_z)));
+            float gyro_std_norm = std::sqrt(std::max(0.0f, gyro_var_x) +
+                                            std::max(0.0f, gyro_var_y) +
+                                            std::max(0.0f, gyro_var_z));
 
-            // 1秒ごとにデバッグログ出力（安定化判定と同じデータを使用）
+            // 気圧高度の統計計算
+            float baro_sum = 0.0f, baro_sum_sq = 0.0f;
+            int baro_n = std::min(g_baro_buffer_count, REF_BUFFER_SIZE);
+            for (int i = 0; i < baro_n; i++) {
+                baro_sum += g_baro_buffer[i];
+                baro_sum_sq += g_baro_buffer[i] * g_baro_buffer[i];
+            }
+            float baro_avg = baro_sum / baro_n;
+            float baro_var = baro_sum_sq / baro_n - baro_avg * baro_avg;
+            float baro_std = std::sqrt(std::max(0.0f, baro_var));
+
+            // ToF底面の統計計算
+            float tof_sum = 0.0f, tof_sum_sq = 0.0f;
+            int tof_n = std::min(g_tof_bottom_buffer_count, REF_BUFFER_SIZE);
+            for (int i = 0; i < tof_n; i++) {
+                tof_sum += g_tof_bottom_buffer[i];
+                tof_sum_sq += g_tof_bottom_buffer[i] * g_tof_bottom_buffer[i];
+            }
+            float tof_avg = tof_sum / tof_n;
+            float tof_var = tof_sum_sq / tof_n - tof_avg * tof_avg;
+            float tof_std = std::sqrt(std::max(0.0f, tof_var));
+
+            // オプティカルフローの統計計算
+            float dx_sum = 0.0f, dy_sum = 0.0f, squal_sum = 0.0f;
+            float dx_sum_sq = 0.0f, dy_sum_sq = 0.0f;
+            int flow_n = std::min(g_optflow_buffer_count, REF_BUFFER_SIZE);
+            for (int i = 0; i < flow_n; i++) {
+                dx_sum += g_optflow_buffer[i].dx;
+                dy_sum += g_optflow_buffer[i].dy;
+                squal_sum += g_optflow_buffer[i].squal;
+                dx_sum_sq += g_optflow_buffer[i].dx * g_optflow_buffer[i].dx;
+                dy_sum_sq += g_optflow_buffer[i].dy * g_optflow_buffer[i].dy;
+            }
+            float dx_avg = dx_sum / flow_n;
+            float dy_avg = dy_sum / flow_n;
+            (void)squal_sum;  // 将来のsqual安定判定用に保持
+            float dx_var = dx_sum_sq / flow_n - dx_avg * dx_avg;
+            float dy_var = dy_sum_sq / flow_n - dy_avg * dy_avg;
+            float dx_std = std::sqrt(std::max(0.0f, dx_var));
+            float dy_std = std::sqrt(std::max(0.0f, dy_var));
+            float optflow_std = dx_std + dy_std;  // dx_std + dy_std で判定
+
+            // 最終値を保存
+            last_accel_std_norm = accel_std_norm;
+            last_gyro_std_norm = gyro_std_norm;
+            last_mag_std_norm = mag_std_norm;
+            last_baro_std = baro_std;
+            last_tof_std = tof_std;
+            last_optflow_std = optflow_std;
+
+            // 1秒ごとにデバッグログ出力
             int current_sec = elapsed_ms / 1000;
             if (current_sec > last_log_sec) {
                 last_log_sec = current_sec;
                 ESP_LOGI(TAG, "=== SENSOR STATS t=%ds ===", current_sec);
-
-                // Accelerometer
-                ESP_LOGI(TAG, "  Accel avg: [%.3f, %.3f, %.3f] m/s2",
-                         accel_avg.x, accel_avg.y, accel_avg.z);
-                ESP_LOGI(TAG, "  Accel std: [%.4f, %.4f, %.4f] norm=%.4f (th=%.2f)",
-                         accel_std.x, accel_std.y, accel_std.z, accel_std_norm, ACCEL_STD_THRESHOLD);
-
-                // Gyroscope
-                if (g_gyro_buffer_count >= MIN_GYRO_SAMPLES) {
-                    stampfly::math::Vector3 gyro_sum = stampfly::math::Vector3::zero();
-                    stampfly::math::Vector3 gyro_sum_sq = stampfly::math::Vector3::zero();
-                    int gyro_n = std::min(g_gyro_buffer_count, REF_BUFFER_SIZE);
-                    for (int i = 0; i < gyro_n; i++) {
-                        gyro_sum += g_gyro_buffer[i];
-                        gyro_sum_sq.x += g_gyro_buffer[i].x * g_gyro_buffer[i].x;
-                        gyro_sum_sq.y += g_gyro_buffer[i].y * g_gyro_buffer[i].y;
-                        gyro_sum_sq.z += g_gyro_buffer[i].z * g_gyro_buffer[i].z;
-                    }
-                    float gn = static_cast<float>(gyro_n);
-                    stampfly::math::Vector3 gyro_avg = gyro_sum * (1.0f / gn);
-                    float gyro_var_x = gyro_sum_sq.x / gn - gyro_avg.x * gyro_avg.x;
-                    float gyro_var_y = gyro_sum_sq.y / gn - gyro_avg.y * gyro_avg.y;
-                    float gyro_var_z = gyro_sum_sq.z / gn - gyro_avg.z * gyro_avg.z;
-                    stampfly::math::Vector3 gyro_std(
-                        std::sqrt(std::max(0.0f, gyro_var_x)),
-                        std::sqrt(std::max(0.0f, gyro_var_y)),
-                        std::sqrt(std::max(0.0f, gyro_var_z)));
-                    float gyro_std_norm = std::sqrt(std::max(0.0f, gyro_var_x) +
-                                                    std::max(0.0f, gyro_var_y) +
-                                                    std::max(0.0f, gyro_var_z));
-                    ESP_LOGI(TAG, "  Gyro avg:  [%.4f, %.4f, %.4f] rad/s (bias candidate)",
-                             gyro_avg.x, gyro_avg.y, gyro_avg.z);
-                    ESP_LOGI(TAG, "  Gyro std:  [%.5f, %.5f, %.5f] norm=%.5f",
-                             gyro_std.x, gyro_std.y, gyro_std.z, gyro_std_norm);
-                }
-
-                // Magnetometer
-                ESP_LOGI(TAG, "  Mag avg:   [%.2f, %.2f, %.2f] uT",
-                         mag_avg.x, mag_avg.y, mag_avg.z);
-                ESP_LOGI(TAG, "  Mag std:   [%.3f, %.3f, %.3f] norm=%.3f (th=%.1f)",
-                         mag_std.x, mag_std.y, mag_std.z, mag_std_norm, MAG_STD_THRESHOLD);
-
-                // Barometer
-                if (g_baro_buffer_count >= MIN_BARO_SAMPLES) {
-                    float baro_sum = 0.0f, baro_sum_sq = 0.0f;
-                    int baro_n = std::min(g_baro_buffer_count, REF_BUFFER_SIZE);
-                    for (int i = 0; i < baro_n; i++) {
-                        baro_sum += g_baro_buffer[i];
-                        baro_sum_sq += g_baro_buffer[i] * g_baro_buffer[i];
-                    }
-                    float baro_avg = baro_sum / baro_n;
-                    float baro_var = baro_sum_sq / baro_n - baro_avg * baro_avg;
-                    float baro_std = std::sqrt(std::max(0.0f, baro_var));
-                    ESP_LOGI(TAG, "  Baro avg:  %.3f m (relative), std=%.4f",
-                             baro_avg, baro_std);
-                }
-
-                // ToF Bottom
-                if (g_tof_bottom_buffer_count >= MIN_TOF_SAMPLES) {
-                    float tof_sum = 0.0f, tof_sum_sq = 0.0f;
-                    int tof_n = std::min(g_tof_bottom_buffer_count, REF_BUFFER_SIZE);
-                    for (int i = 0; i < tof_n; i++) {
-                        tof_sum += g_tof_bottom_buffer[i];
-                        tof_sum_sq += g_tof_bottom_buffer[i] * g_tof_bottom_buffer[i];
-                    }
-                    float tof_avg = tof_sum / tof_n;
-                    float tof_var = tof_sum_sq / tof_n - tof_avg * tof_avg;
-                    float tof_std = std::sqrt(std::max(0.0f, tof_var));
-                    ESP_LOGI(TAG, "  ToF bot:   %.3f m, std=%.4f (n=%d)",
-                             tof_avg, tof_std, tof_n);
-                }
-
-                // ToF Front
-                if (g_tof_front_buffer_count >= MIN_TOF_SAMPLES) {
-                    float tof_sum = 0.0f, tof_sum_sq = 0.0f;
-                    int tof_n = std::min(g_tof_front_buffer_count, REF_BUFFER_SIZE);
-                    for (int i = 0; i < tof_n; i++) {
-                        tof_sum += g_tof_front_buffer[i];
-                        tof_sum_sq += g_tof_front_buffer[i] * g_tof_front_buffer[i];
-                    }
-                    float tof_avg = tof_sum / tof_n;
-                    float tof_var = tof_sum_sq / tof_n - tof_avg * tof_avg;
-                    float tof_std = std::sqrt(std::max(0.0f, tof_var));
-                    ESP_LOGI(TAG, "  ToF front: %.3f m, std=%.4f (n=%d)",
-                             tof_avg, tof_std, tof_n);
-                }
-
-                // Optical Flow
-                if (g_optflow_buffer_count >= MIN_OPTFLOW_SAMPLES) {
-                    float dx_sum = 0.0f, dy_sum = 0.0f, squal_sum = 0.0f;
-                    float dx_sum_sq = 0.0f, dy_sum_sq = 0.0f;
-                    int flow_n = std::min(g_optflow_buffer_count, REF_BUFFER_SIZE);
-                    for (int i = 0; i < flow_n; i++) {
-                        dx_sum += g_optflow_buffer[i].dx;
-                        dy_sum += g_optflow_buffer[i].dy;
-                        squal_sum += g_optflow_buffer[i].squal;
-                        dx_sum_sq += g_optflow_buffer[i].dx * g_optflow_buffer[i].dx;
-                        dy_sum_sq += g_optflow_buffer[i].dy * g_optflow_buffer[i].dy;
-                    }
-                    float dx_avg = dx_sum / flow_n;
-                    float dy_avg = dy_sum / flow_n;
-                    float squal_avg = squal_sum / flow_n;
-                    float dx_var = dx_sum_sq / flow_n - dx_avg * dx_avg;
-                    float dy_var = dy_sum_sq / flow_n - dy_avg * dy_avg;
-                    float dx_std = std::sqrt(std::max(0.0f, dx_var));
-                    float dy_std = std::sqrt(std::max(0.0f, dy_var));
-                    ESP_LOGI(TAG, "  OptFlow:   dx=%.1f dy=%.1f squal=%.0f (std: dx=%.1f dy=%.1f)",
-                             dx_avg, dy_avg, squal_avg, dx_std, dy_std);
-                }
-
+                ESP_LOGI(TAG, "  Accel std: %.4f (th=%.3f) %s",
+                         accel_std_norm, ACCEL_STD_THRESHOLD,
+                         accel_std_norm < ACCEL_STD_THRESHOLD ? "OK" : "NG");
+                ESP_LOGI(TAG, "  Gyro std:  %.5f (th=%.3f) %s",
+                         gyro_std_norm, GYRO_STD_THRESHOLD,
+                         gyro_std_norm < GYRO_STD_THRESHOLD ? "OK" : "NG");
+                ESP_LOGI(TAG, "  Mag std:   %.3f (th=%.1f) %s",
+                         mag_std_norm, MAG_STD_THRESHOLD,
+                         mag_std_norm < MAG_STD_THRESHOLD ? "OK" : "NG");
+                ESP_LOGI(TAG, "  Baro std:  %.4f (th=%.2f) %s",
+                         baro_std, BARO_STD_THRESHOLD,
+                         baro_std < BARO_STD_THRESHOLD ? "OK" : "NG");
+                ESP_LOGI(TAG, "  ToF std:   %.4f (th=%.3f) %s",
+                         tof_std, TOF_STD_THRESHOLD,
+                         tof_std < TOF_STD_THRESHOLD ? "OK" : "NG");
+                ESP_LOGI(TAG, "  Flow std:  %.1f (th=%.1f) %s",
+                         optflow_std, OPTFLOW_STD_THRESHOLD,
+                         optflow_std < OPTFLOW_STD_THRESHOLD ? "OK" : "NG");
                 ESP_LOGI(TAG, "  ----------------------------------------");
             }
 
-            // 条件チェック（最小待機時間経過後）
+            // 全センサーの安定判定（最小待機時間経過後）
             bool accel_stable = accel_std_norm < ACCEL_STD_THRESHOLD;
+            bool gyro_stable = gyro_std_norm < GYRO_STD_THRESHOLD;
             bool mag_stable = mag_std_norm < MAG_STD_THRESHOLD;
+            bool baro_stable = baro_std < BARO_STD_THRESHOLD;
+            bool tof_stable = tof_std < TOF_STD_THRESHOLD;
+            bool optflow_stable = optflow_std < OPTFLOW_STD_THRESHOLD;
 
-            if (elapsed_ms >= MIN_WAIT_MS && accel_stable && mag_stable) {
+            bool all_stable = accel_stable && gyro_stable && mag_stable &&
+                              baro_stable && tof_stable && optflow_stable;
+
+            if (elapsed_ms >= MIN_WAIT_MS && all_stable) {
                 stable_count++;
-                ESP_LOGI(TAG, "Stability check %d/%d: accel_std=%.4f mag_std=%.3f (t=%dms)",
-                         stable_count, STABLE_COUNT_REQUIRED,
-                         accel_std_norm, mag_std_norm, elapsed_ms);
+                ESP_LOGI(TAG, "Stability check %d/%d: ALL SENSORS STABLE (t=%dms)",
+                         stable_count, STABLE_COUNT_REQUIRED, elapsed_ms);
 
                 if (stable_count >= STABLE_COUNT_REQUIRED) {
                     break;  // 安定条件を満たした
                 }
             } else {
                 if (stable_count > 0) {
-                    ESP_LOGW(TAG, "Stability reset: accel_std=%.4f mag_std=%.3f (t=%dms)",
-                             accel_std_norm, mag_std_norm, elapsed_ms);
+                    ESP_LOGW(TAG, "Stability reset at t=%dms - unstable sensors:", elapsed_ms);
+                    if (!accel_stable) ESP_LOGW(TAG, "  Accel: %.4f > %.3f", accel_std_norm, ACCEL_STD_THRESHOLD);
+                    if (!gyro_stable) ESP_LOGW(TAG, "  Gyro: %.5f > %.3f", gyro_std_norm, GYRO_STD_THRESHOLD);
+                    if (!mag_stable) ESP_LOGW(TAG, "  Mag: %.3f > %.1f", mag_std_norm, MAG_STD_THRESHOLD);
+                    if (!baro_stable) ESP_LOGW(TAG, "  Baro: %.4f > %.2f", baro_std, BARO_STD_THRESHOLD);
+                    if (!tof_stable) ESP_LOGW(TAG, "  ToF: %.4f > %.3f", tof_std, TOF_STD_THRESHOLD);
+                    if (!optflow_stable) ESP_LOGW(TAG, "  Flow: %.1f > %.1f", optflow_std, OPTFLOW_STD_THRESHOLD);
                 }
                 stable_count = 0;  // 条件を満たさなければリセット
             }
@@ -713,16 +718,29 @@ extern "C" void app_main(void)
 
     if (stable_count >= STABLE_COUNT_REQUIRED) {
         ESP_LOGI(TAG, "========================================");
-        ESP_LOGI(TAG, "Sensors stabilized after %.0f ms", stabilization_time_ms);
-        ESP_LOGI(TAG, "  Final accel std norm: %.4f (threshold: %.2f)",
-                 last_accel_std_norm, ACCEL_STD_THRESHOLD);
-        ESP_LOGI(TAG, "  Final mag std norm:   %.3f (threshold: %.1f)",
-                 last_mag_std_norm, MAG_STD_THRESHOLD);
+        ESP_LOGI(TAG, "ALL SENSORS STABILIZED after %.0f ms", stabilization_time_ms);
+        ESP_LOGI(TAG, "  Accel: %.4f < %.3f", last_accel_std_norm, ACCEL_STD_THRESHOLD);
+        ESP_LOGI(TAG, "  Gyro:  %.5f < %.3f", last_gyro_std_norm, GYRO_STD_THRESHOLD);
+        ESP_LOGI(TAG, "  Mag:   %.3f < %.1f", last_mag_std_norm, MAG_STD_THRESHOLD);
+        ESP_LOGI(TAG, "  Baro:  %.4f < %.2f", last_baro_std, BARO_STD_THRESHOLD);
+        ESP_LOGI(TAG, "  ToF:   %.4f < %.3f", last_tof_std, TOF_STD_THRESHOLD);
+        ESP_LOGI(TAG, "  Flow:  %.1f < %.1f", last_optflow_std, OPTFLOW_STD_THRESHOLD);
         ESP_LOGI(TAG, "========================================");
     } else {
         ESP_LOGW(TAG, "Sensor stabilization timeout after %.0f ms", stabilization_time_ms);
-        ESP_LOGW(TAG, "  Last accel std norm: %.4f, Last mag std norm: %.3f",
-                 last_accel_std_norm, last_mag_std_norm);
+        ESP_LOGW(TAG, "Final sensor status:");
+        ESP_LOGW(TAG, "  Accel: %.4f (th=%.3f) %s", last_accel_std_norm, ACCEL_STD_THRESHOLD,
+                 last_accel_std_norm < ACCEL_STD_THRESHOLD ? "OK" : "NG");
+        ESP_LOGW(TAG, "  Gyro:  %.5f (th=%.3f) %s", last_gyro_std_norm, GYRO_STD_THRESHOLD,
+                 last_gyro_std_norm < GYRO_STD_THRESHOLD ? "OK" : "NG");
+        ESP_LOGW(TAG, "  Mag:   %.3f (th=%.1f) %s", last_mag_std_norm, MAG_STD_THRESHOLD,
+                 last_mag_std_norm < MAG_STD_THRESHOLD ? "OK" : "NG");
+        ESP_LOGW(TAG, "  Baro:  %.4f (th=%.2f) %s", last_baro_std, BARO_STD_THRESHOLD,
+                 last_baro_std < BARO_STD_THRESHOLD ? "OK" : "NG");
+        ESP_LOGW(TAG, "  ToF:   %.4f (th=%.3f) %s", last_tof_std, TOF_STD_THRESHOLD,
+                 last_tof_std < TOF_STD_THRESHOLD ? "OK" : "NG");
+        ESP_LOGW(TAG, "  Flow:  %.1f (th=%.1f) %s", last_optflow_std, OPTFLOW_STD_THRESHOLD,
+                 last_optflow_std < OPTFLOW_STD_THRESHOLD ? "OK" : "NG");
         ESP_LOGW(TAG, "Proceeding with initialization anyway...");
     }
 
