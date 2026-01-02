@@ -165,16 +165,21 @@ void IMUTask(void* pvParameters)
                         const auto& accel_latest = g_accel_buffer[accel_latest_idx];
                         const auto& gyro_latest = g_gyro_buffer[gyro_latest_idx];
 
-                        // IMU予測 + 加速度計姿勢補正（predictIMUが両方を実行）
-                        g_fusion.predictIMU(accel_latest, gyro_latest, 0.0025f);  // 2.5ms (400Hz)
+                        // 接地中かどうかを判定してskip_positionフラグを設定
+                        bool skip_position = is_grounded && eskf::ENABLE_LANDING_RESET;
 
-                        // 接地中は位置・速度をゼロに保持（予測ドリフト防止）
-                        if (is_grounded && eskf::ENABLE_LANDING_RESET) {
+                        // IMU予測 + 加速度計姿勢補正（predictIMUが両方を実行）
+                        // 接地中はskip_position=trueで位置更新をスキップ（ドリフト防止）
+                        g_fusion.predictIMU(accel_latest, gyro_latest, 0.0025f, skip_position);
+
+                        // 接地中は位置・速度をゼロに保持（着陸遷移時の初回用）
+                        if (skip_position) {
                             // 着陸遷移時のみログ出力（一度離陸した後のみ）
                             if (!prev_grounded && has_taken_off) {
                                 ESP_LOGI(TAG, "Landed - position hold enabled (alt=%.3fm)", tof_bottom_now);
                             }
                             // holdPositionVelocity: 状態のみゼロ、共分散は維持
+                            // 着陸遷移時に非ゼロの位置をゼロにリセットするため必要
                             g_fusion.holdPositionVelocity();
                         } else if (!is_grounded && prev_grounded) {
                             // 離陸遷移時 - 共分散をリセットして安定した推定開始
@@ -289,8 +294,15 @@ void IMUTask(void* pvParameters)
                         if (eskf_valid && !pos_diverged && !vel_diverged) {
                             g_imu_checkpoint = 22;  // state更新前
                             state.updateAttitude(eskf_state.roll, eskf_state.pitch, eskf_state.yaw);
-                            state.updateEstimatedPosition(eskf_state.position.x, eskf_state.position.y, eskf_state.position.z);
-                            state.updateEstimatedVelocity(eskf_state.velocity.x, eskf_state.velocity.y, eskf_state.velocity.z);
+
+                            // 接地中は位置・速度を確実にゼロで更新（HTMLView等への表示用）
+                            if (skip_position) {
+                                state.updateEstimatedPosition(0.0f, 0.0f, 0.0f);
+                                state.updateEstimatedVelocity(0.0f, 0.0f, 0.0f);
+                            } else {
+                                state.updateEstimatedPosition(eskf_state.position.x, eskf_state.position.y, eskf_state.position.z);
+                                state.updateEstimatedVelocity(eskf_state.velocity.x, eskf_state.velocity.y, eskf_state.velocity.z);
+                            }
                             state.updateGyroBias(eskf_state.gyro_bias.x, eskf_state.gyro_bias.y, eskf_state.gyro_bias.z);
                             state.updateAccelBias(eskf_state.accel_bias.x, eskf_state.accel_bias.y, eskf_state.accel_bias.z);
 

@@ -198,8 +198,9 @@ public:
      * @param accel 加速度 [m/s²] (ボディ座標系)
      * @param gyro 角速度 [rad/s] (ボディ座標系)
      * @param dt 時間刻み [s]
+     * @param skip_position 位置・速度の更新をスキップ（接地中用）
      */
-    void predict(const Vector3& accel, const Vector3& gyro, float dt);
+    void predict(const Vector3& accel, const Vector3& gyro, float dt, bool skip_position = false);
 
     /**
      * @brief 気圧高度更新

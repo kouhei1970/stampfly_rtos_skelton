@@ -28,7 +28,8 @@ bool SensorFusion::init(const stampfly::ESKF::Config& config,
 
 bool SensorFusion::predictIMU(const stampfly::math::Vector3& accel_body,
                                const stampfly::math::Vector3& gyro_body,
-                               float dt) {
+                               float dt,
+                               bool skip_position) {
     if (!initialized_) {
         return false;
     }
@@ -42,8 +43,8 @@ bool SensorFusion::predictIMU(const stampfly::math::Vector3& accel_body,
         return false;
     }
 
-    // ESKF予測ステップ
-    eskf_.predict(accel_body, gyro_body, dt);
+    // ESKF予測ステップ（接地中はskip_position=trueで位置更新をスキップ）
+    eskf_.predict(accel_body, gyro_body, dt, skip_position);
 
     // 加速度計による姿勢補正
     eskf_.updateAccelAttitude(accel_body);

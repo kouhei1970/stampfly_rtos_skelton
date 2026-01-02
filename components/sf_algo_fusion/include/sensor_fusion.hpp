@@ -109,11 +109,13 @@ public:
      * @param accel_body 加速度 [m/s²] 機体座標系
      * @param gyro_body 角速度 [rad/s] 機体座標系
      * @param dt 時間刻み [s]
+     * @param skip_position 位置・速度の更新をスキップ（接地中用）
      * @return 発散していない場合true
      */
     bool predictIMU(const stampfly::math::Vector3& accel_body,
                     const stampfly::math::Vector3& gyro_body,
-                    float dt);
+                    float dt,
+                    bool skip_position = false);
 
     // =========================================================================
     // 各センサー更新（非同期、データ準備時に呼び出し）

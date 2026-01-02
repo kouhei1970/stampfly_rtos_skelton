@@ -191,7 +191,7 @@ void ESKF::initializeAttitude(const Vector3& accel, const Vector3& mag)
              config_.mag_ref.x, config_.mag_ref.y, config_.mag_ref.z);
 }
 
-void ESKF::predict(const Vector3& accel, const Vector3& gyro, float dt)
+void ESKF::predict(const Vector3& accel, const Vector3& gyro, float dt, bool skip_position)
 {
     if (!initialized_ || dt <= 0) return;
 
@@ -205,6 +205,7 @@ void ESKF::predict(const Vector3& accel, const Vector3& gyro, float dt)
     }
 
     // 回転行列要素を直接計算（3x3行列を避ける）
+    // 共分散更新でも使用するためif文の外で定義
     const Quaternion& q = state_.orientation;
     float q0 = q.w, q1 = q.x, q2 = q.y, q3 = q.z;
 
@@ -219,20 +220,25 @@ void ESKF::predict(const Vector3& accel, const Vector3& gyro, float dt)
     float R21 = 2*(q2*q3 + q0*q1);
     float R22 = 1 - 2*(q1*q1 + q2*q2);
 
-    // ワールド座標系での加速度 = R * accel_corrected + gravity
+    // 加速度（共分散更新でも使用）
     float ax = accel_corrected.x, ay = accel_corrected.y, az = accel_corrected.z;
-    float accel_world_x = R00*ax + R01*ay + R02*az;
-    float accel_world_y = R10*ax + R11*ay + R12*az;
-    float accel_world_z = R20*ax + R21*ay + R22*az + config_.gravity;
 
-    // 名目状態の更新
-    float half_dt_sq = 0.5f * dt * dt;
-    state_.position.x += state_.velocity.x * dt + accel_world_x * half_dt_sq;
-    state_.position.y += state_.velocity.y * dt + accel_world_y * half_dt_sq;
-    state_.position.z += state_.velocity.z * dt + accel_world_z * half_dt_sq;
-    state_.velocity.x += accel_world_x * dt;
-    state_.velocity.y += accel_world_y * dt;
-    state_.velocity.z += accel_world_z * dt;
+    // 位置・速度の更新（接地中はスキップ、共分散は更新継続）
+    if (!skip_position) {
+        // ワールド座標系での加速度 = R * accel_corrected + gravity
+        float accel_world_x = R00*ax + R01*ay + R02*az;
+        float accel_world_y = R10*ax + R11*ay + R12*az;
+        float accel_world_z = R20*ax + R21*ay + R22*az + config_.gravity;
+
+        // 名目状態の更新
+        float half_dt_sq = 0.5f * dt * dt;
+        state_.position.x += state_.velocity.x * dt + accel_world_x * half_dt_sq;
+        state_.position.y += state_.velocity.y * dt + accel_world_y * half_dt_sq;
+        state_.position.z += state_.velocity.z * dt + accel_world_z * half_dt_sq;
+        state_.velocity.x += accel_world_x * dt;
+        state_.velocity.y += accel_world_y * dt;
+        state_.velocity.z += accel_world_z * dt;
+    }
 
     // 姿勢: q = q ⊗ exp(ω*dt)
     Vector3 dtheta = gyro_corrected * dt;
