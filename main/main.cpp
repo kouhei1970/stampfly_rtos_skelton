@@ -658,23 +658,28 @@ extern "C" void app_main(void)
             if (current_sec > last_log_sec) {
                 last_log_sec = current_sec;
                 ESP_LOGI(TAG, "=== SENSOR STATS t=%ds ===", current_sec);
-                ESP_LOGI(TAG, "  Accel std: %.4f (th=%.3f) %s",
+                ESP_LOGI(TAG, "  Accel std: %.4f (th=%.3f) avg=(%.3f,%.3f,%.3f) n=%d %s",
                          accel_std_norm, ACCEL_STD_THRESHOLD,
+                         accel_avg.x, accel_avg.y, accel_avg.z, accel_n,
                          accel_std_norm < ACCEL_STD_THRESHOLD ? "OK" : "NG");
-                ESP_LOGI(TAG, "  Gyro std:  %.5f (th=%.3f) %s",
+                ESP_LOGI(TAG, "  Gyro std:  %.5f (th=%.3f) avg=(%.4f,%.4f,%.4f) n=%d %s",
                          gyro_std_norm, GYRO_STD_THRESHOLD,
+                         gyro_avg.x, gyro_avg.y, gyro_avg.z, gyro_n,
                          gyro_std_norm < GYRO_STD_THRESHOLD ? "OK" : "NG");
-                ESP_LOGI(TAG, "  Mag std:   %.3f (th=%.1f) %s",
+                ESP_LOGI(TAG, "  Mag std:   %.3f (th=%.1f) avg=(%.1f,%.1f,%.1f) n=%d %s",
                          mag_std_norm, MAG_STD_THRESHOLD,
+                         mag_avg.x, mag_avg.y, mag_avg.z, mag_n,
                          mag_std_norm < MAG_STD_THRESHOLD ? "OK" : "NG");
-                ESP_LOGI(TAG, "  Baro std:  %.4f m (th=%.2f) avg=%.2f m %s",
+                ESP_LOGI(TAG, "  Baro std:  %.4f m (th=%.2f) avg=%.2f m n=%d idx=%d %s",
                          baro_std, BARO_STD_THRESHOLD, baro_avg,
+                         baro_n, g_baro_buffer_index,
                          baro_std < BARO_STD_THRESHOLD ? "OK" : "NG");
-                ESP_LOGI(TAG, "  ToF std:   %.4f (th=%.3f) %s",
-                         tof_std, TOF_STD_THRESHOLD,
+                ESP_LOGI(TAG, "  ToF std:   %.4f (th=%.3f) avg=%.1f mm n=%d %s",
+                         tof_std, TOF_STD_THRESHOLD, tof_avg, tof_n,
                          tof_std < TOF_STD_THRESHOLD ? "OK" : "NG");
-                ESP_LOGI(TAG, "  Flow std:  %.1f (th=%.1f) %s",
+                ESP_LOGI(TAG, "  Flow std:  %.1f (th=%.1f) avg=(%.1f,%.1f) n=%d %s",
                          optflow_std, OPTFLOW_STD_THRESHOLD,
+                         dx_avg, dy_avg, flow_n,
                          optflow_std < OPTFLOW_STD_THRESHOLD ? "OK" : "NG");
                 ESP_LOGI(TAG, "  ----------------------------------------");
             }
