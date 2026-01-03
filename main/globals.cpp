@@ -25,7 +25,7 @@ stampfly::PowerMonitor g_power;
 // =============================================================================
 
 stampfly::MotorDriver g_motor;
-stampfly::LED g_led;
+// g_led は削除済み - LEDManager を使用
 stampfly::Buzzer g_buzzer;
 stampfly::Button g_button;
 
@@ -160,7 +160,7 @@ SemaphoreHandle_t g_control_semaphore = nullptr;
 stampfly::MagCalibrator* g_mag_calibrator = nullptr;
 stampfly::Logger* g_logger_ptr = nullptr;
 stampfly::ControllerComm* g_comm_ptr = nullptr;
-stampfly::LED* g_led_ptr = nullptr;
+// g_led_ptr は削除済み - LEDManager を使用
 stampfly::MotorDriver* g_motor_ptr = nullptr;
 stampfly::Buzzer* g_buzzer_ptr = nullptr;
 sf::SensorFusion* g_fusion_ptr = nullptr;

@@ -89,9 +89,8 @@ extern stampfly::Logger* g_logger_ptr;
 #include "controller_comm.hpp"
 extern stampfly::ControllerComm* g_comm_ptr;
 
-// External reference to LED (defined in main.cpp)
-#include "led.hpp"
-extern stampfly::LED* g_led_ptr;
+// LED Manager
+#include "led_manager.hpp"
 
 // External reference to motor driver (defined in main.cpp)
 #include "motor_driver.hpp"
@@ -1166,21 +1165,17 @@ static void cmd_debug(int argc, char** argv, void* context)
 static void cmd_led(int argc, char** argv, void* context)
 {
     CLI* cli = static_cast<CLI*>(context);
-
-    if (g_led_ptr == nullptr) {
-        cli->print("LED not available\r\n");
-        return;
-    }
+    auto& led_mgr = stampfly::LEDManager::getInstance();
 
     if (argc < 2) {
-        cli->print("LED brightness: %d (0-255)\r\n", g_led_ptr->getBrightness());
+        cli->print("LED brightness: %d (0-255)\r\n", led_mgr.getBrightness());
         cli->print("Usage: led brightness <0-255>\r\n");
         return;
     }
 
     if (strcmp(argv[1], "brightness") == 0) {
         if (argc < 3) {
-            cli->print("Current brightness: %d\r\n", g_led_ptr->getBrightness());
+            cli->print("Current brightness: %d\r\n", led_mgr.getBrightness());
             cli->print("Usage: led brightness <0-255>\r\n");
             return;
         }
@@ -1189,7 +1184,7 @@ static void cmd_led(int argc, char** argv, void* context)
             cli->print("Invalid brightness. Use 0-255.\r\n");
             return;
         }
-        g_led_ptr->setBrightness(static_cast<uint8_t>(brightness), true);  // save to NVS
+        led_mgr.setBrightness(static_cast<uint8_t>(brightness), true);  // save to NVS
         cli->print("LED brightness set to %d (saved)\r\n", brightness);
     } else {
         cli->print("Usage: led brightness <0-255>\r\n");

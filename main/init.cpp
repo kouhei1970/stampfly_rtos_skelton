@@ -251,20 +251,8 @@ esp_err_t actuators()
         }
     }
 
-    // Legacy LED (後方互換性のため残す - 将来削除予定)
-    {
-        stampfly::LED::Config cfg;
-        cfg.gpio = GPIO_LED;
-        cfg.num_leds = led::NUM_LEDS;
-
-        ret = g_led.init(cfg);
-        if (ret != ESP_OK) {
-            ESP_LOGW(TAG, "Legacy LED init failed: %s", esp_err_to_name(ret));
-        } else {
-            ESP_LOGI(TAG, "Legacy LED initialized (deprecated)");
-            g_led_ptr = &g_led;  // Set pointer for CLI access
-        }
-    }
+    // Legacy g_led は削除済み - LEDManager を使用
+    // CLI用ポインタはLEDManager経由で提供予定
 
     // Buzzer
     {

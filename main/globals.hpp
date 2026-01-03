@@ -62,7 +62,7 @@ extern stampfly::PowerMonitor g_power;
 // =============================================================================
 
 extern stampfly::MotorDriver g_motor;
-extern stampfly::LED g_led;
+// g_led は削除済み - LEDManager を使用
 extern stampfly::Buzzer g_buzzer;
 extern stampfly::Button g_button;
 
@@ -206,7 +206,7 @@ extern SemaphoreHandle_t g_control_semaphore;
 extern stampfly::MagCalibrator* g_mag_calibrator;
 extern stampfly::Logger* g_logger_ptr;
 extern stampfly::ControllerComm* g_comm_ptr;
-extern stampfly::LED* g_led_ptr;
+// g_led_ptr は削除済み - LEDManager を使用
 extern stampfly::MotorDriver* g_motor_ptr;
 extern stampfly::Buzzer* g_buzzer_ptr;
 extern sf::SensorFusion* g_fusion_ptr;
