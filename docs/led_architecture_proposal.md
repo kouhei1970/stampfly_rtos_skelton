@@ -7,8 +7,8 @@ StampFlyには**3つのWS2812 LED**が搭載されている：
 | LED | GPIO | 数量 | 位置 | 用途（提案） |
 |-----|------|------|------|-------------|
 | MCU LED | GPIO21 | 1個 | M5Stamp S3上 | システム状態（起動/エラー） |
-| Body LED 0 | GPIO39 | 1個 | ドローン本体（前） | 飛行状態 |
-| Body LED 1 | GPIO39 | 1個 | ドローン本体（後） | センサー/バッテリー |
+| Body LED 0 | GPIO39 | 1個 | ドローン本体（上面/表） | 飛行状態 |
+| Body LED 1 | GPIO39 | 1個 | ドローン本体（下面/裏） | センサー/バッテリー |
 
 **注意**: Body LED 0/1はGPIO39で直列接続（WS2812デイジーチェーン）
 
@@ -22,13 +22,13 @@ StampFlyには**3つのWS2812 LED**が搭載されている：
 └─────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────┐
-│  Body LED 0 (前)      │ 飛行状態                            │
+│  Body LED 0 (上面)    │ 飛行状態                            │
 │  ・IDLE: 緑 Solid      │ ・ARMED: 緑 Blink                   │
 │  ・FLYING: 黄 Solid    │ ・LANDING: 緑 Fast Blink            │
 └─────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────┐
-│  Body LED 1 (後)      │ センサー/バッテリー                 │
+│  Body LED 1 (下面)    │ センサー/バッテリー                 │
 │  ・正常: 緑 Solid      │ ・低電圧: シアン Blink              │
 │  ・センサー異常: 赤    │ ・デバッグ: 黄                      │
 └─────────────────────────────────────────────────────────────┘
@@ -141,8 +141,8 @@ enum class LEDPriority : uint8_t {
 ```cpp
 enum class LEDIndex : uint8_t {
     MCU = 0,      // M5Stamp S3内蔵 (GPIO21)
-    BODY_FRONT,   // ドローン前部 (GPIO39, index 0)
-    BODY_REAR,    // ドローン後部 (GPIO39, index 1)
+    BODY_TOP,     // ドローン上面/表 (GPIO39, index 0)
+    BODY_BOTTOM,  // ドローン下面/裏 (GPIO39, index 1)
     ALL,          // 全LED一括
     NUM_LEDS = 3
 };
@@ -150,8 +150,8 @@ enum class LEDIndex : uint8_t {
 // 各LEDの担当チャンネル
 enum class LEDChannel : uint8_t {
     SYSTEM,       // MCU LED: システム状態（起動/エラー/ペアリング）
-    FLIGHT,       // BODY_FRONT: 飛行状態
-    STATUS,       // BODY_REAR: センサー/バッテリー状態
+    FLIGHT,       // BODY_TOP: 飛行状態
+    STATUS,       // BODY_BOTTOM: センサー/バッテリー状態
 };
 ```
 
@@ -237,20 +237,20 @@ led.requestChannel(LEDChannel::SYSTEM, LEDPriority::BOOT,
 led.releaseChannel(LEDChannel::SYSTEM, LEDPriority::BOOT);
 
 // =====================================================
-// 飛行状態（FLIGHT チャンネル = BODY_FRONT LED）
+// 飛行状態（FLIGHT チャンネル = BODY_TOP LED）
 // =====================================================
 
 // FlightState変更時に自動更新（onFlightStateChangedから呼ばれる）
 led.onFlightStateChanged(FlightState::ARMED);
-// → BODY_FRONT が緑点滅になる
+// → BODY_TOP（上面）が緑点滅になる
 
 // =====================================================
-// センサー/バッテリー（STATUS チャンネル = BODY_REAR LED）
+// センサー/バッテリー（STATUS チャンネル = BODY_BOTTOM LED）
 // =====================================================
 
 // 低電圧警告
 led.onBatteryStateChanged(3.3f, true);
-// → BODY_REAR がシアン点滅になる
+// → BODY_BOTTOM（下面）がシアン点滅になる
 
 // デバッグ表示（1秒後に自動解除）
 led.requestChannel(LEDChannel::STATUS, LEDPriority::DEBUG_ALERT,
@@ -302,8 +302,8 @@ app_main()
 ├── Phase 4: Ready
 │   ├── releaseChannel(SYSTEM, BOOT)
 │   │   → MCU LED: 自動的に緑 Solidに
-│   ├── BODY_FRONT: IDLE状態 → 緑 Solid
-│   └── BODY_REAR: センサー正常 → 緑 Solid
+│   ├── BODY_TOP（上面）: IDLE状態 → 緑 Solid
+│   └── BODY_BOTTOM（下面）: センサー正常 → 緑 Solid
 │
 └── メインループ
     └── 各タスクからonXxxChanged()でLED自動更新
@@ -418,9 +418,9 @@ inline constexpr int NUM_LEDS_MCU = 1;
 inline constexpr int GPIO_BODY = 39;
 inline constexpr int NUM_LEDS_BODY = 2;
 
-// LED インデックス
-inline constexpr int IDX_BODY_FRONT = 0;
-inline constexpr int IDX_BODY_REAR = 1;
+// LED インデックス（GPIO39のデイジーチェーン内）
+inline constexpr int IDX_BODY_TOP = 0;     // 上面/表
+inline constexpr int IDX_BODY_BOTTOM = 1;  // 下面/裏
 }  // namespace led
 ```
 
@@ -435,8 +435,8 @@ inline constexpr int IDX_BODY_REAR = 1;
 
 1. **3つのLEDの有効活用**
    - MCU LED (GPIO21): システム状態（起動/エラー）
-   - BODY_FRONT (GPIO39-0): 飛行状態
-   - BODY_REAR (GPIO39-1): センサー/バッテリー
+   - BODY_TOP (GPIO39-0, 上面): 飛行状態
+   - BODY_BOTTOM (GPIO39-1, 下面): センサー/バッテリー
 
 2. **チャンネルベースの制御**
    - 各LEDが担当する情報カテゴリを明確化
