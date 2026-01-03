@@ -356,9 +356,9 @@ namespace rate_control {
 // 感度設定 (Sensitivity)
 // スティック入力 ±1.0 に対する最大目標角速度 [rad/s]
 // -----------------------------------------------------------------------------
-inline constexpr float ROLL_RATE_MAX = 5.0f;       // ロール最大角速度 [rad/s] (~286 deg/s)
-inline constexpr float PITCH_RATE_MAX = 5.0f;      // ピッチ最大角速度 [rad/s] (~286 deg/s)
-inline constexpr float YAW_RATE_MAX = 3.0f;        // ヨー最大角速度 [rad/s] (~172 deg/s)
+inline constexpr float ROLL_RATE_MAX = 1.0f;       // ロール最大角速度 [rad/s] (~286 deg/s)
+inline constexpr float PITCH_RATE_MAX = 1.0f;      // ピッチ最大角速度 [rad/s] (~286 deg/s)
+inline constexpr float YAW_RATE_MAX = 5.0f;        // ヨー最大角速度 [rad/s] (~172 deg/s)
 
 // -----------------------------------------------------------------------------
 // PIDゲイン (Rate Controller)
@@ -366,23 +366,23 @@ inline constexpr float YAW_RATE_MAX = 3.0f;        // ヨー最大角速度 [rad
 // -----------------------------------------------------------------------------
 
 // Roll rate PID
-inline constexpr float ROLL_RATE_KP = 0.15f;       // 比例ゲイン
-inline constexpr float ROLL_RATE_TI = 0.5f;        // 積分時間 [s] (0以下で無効)
+inline constexpr float ROLL_RATE_KP = 0.65f;       // 比例ゲイン
+inline constexpr float ROLL_RATE_TI = 0.7f;        // 積分時間 [s] (0以下で無効)
 inline constexpr float ROLL_RATE_TD = 0.01f;       // 微分時間 [s] (0以下で無効)
 
 // Pitch rate PID
-inline constexpr float PITCH_RATE_KP = 0.15f;      // 比例ゲイン
-inline constexpr float PITCH_RATE_TI = 0.5f;       // 積分時間 [s]
+inline constexpr float PITCH_RATE_KP = 0.65f;      // 比例ゲイン
+inline constexpr float PITCH_RATE_TI = 0.7f;       // 積分時間 [s]
 inline constexpr float PITCH_RATE_TD = 0.01f;      // 微分時間 [s]
 
 // Yaw rate PID
-inline constexpr float YAW_RATE_KP = 0.2f;         // 比例ゲイン
-inline constexpr float YAW_RATE_TI = 0.8f;         // 積分時間 [s]
-inline constexpr float YAW_RATE_TD = 0.0f;         // 微分時間 [s] (ヨーは微分なしが安定)
+inline constexpr float YAW_RATE_KP = 3.0f;         // 比例ゲイン
+inline constexpr float YAW_RATE_TI = 0.7f;         // 積分時間 [s]
+inline constexpr float YAW_RATE_TD = 0.01f;         // 微分時間 [s] (ヨーは微分なしが安定)
 
 // 共通パラメータ
-inline constexpr float PID_ETA = 0.1f;             // 不完全微分フィルタ係数 (0.1~0.2)
-inline constexpr float OUTPUT_LIMIT = 0.5f;        // PID出力制限 [-0.5, 0.5]
+inline constexpr float PID_ETA = 0.125f;             // 不完全微分フィルタ係数 (0.1~0.2)
+inline constexpr float OUTPUT_LIMIT = 1.0f;        // PID出力制限 [-0.5, 0.5]
 
 } // namespace rate_control
 

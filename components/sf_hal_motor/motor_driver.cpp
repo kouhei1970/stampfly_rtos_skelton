@@ -138,10 +138,10 @@ void MotorDriver::setMixerOutput(float thrust, float roll, float pitch, float ya
     // M2 (RR, CW):  T - R - P - Y
     // M3 (RL, CCW): T + R - P + Y
     // M4 (FL, CW):  T + R + P - Y
-    float m1 = thrust - roll + pitch + yaw;
-    float m2 = thrust - roll - pitch - yaw;
-    float m3 = thrust + roll - pitch + yaw;
-    float m4 = thrust + roll + pitch - yaw;
+    float m1 = thrust + 0.25*(- roll + pitch + yaw)/3.7;
+    float m2 = thrust + 0.25*(- roll - pitch - yaw)/3.7;
+    float m3 = thrust + 0.25*(  roll - pitch + yaw)/3.7;
+    float m4 = thrust + 0.25*(  roll + pitch - yaw)/3.7;
 
     setMotor(MOTOR_FR, m1);
     setMotor(MOTOR_RR, m2);
