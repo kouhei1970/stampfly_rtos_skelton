@@ -168,10 +168,10 @@ void ControlTask(void* pvParameters)
         float yaw_rate_target = yaw_cmd * g_rate_controller.yaw_rate_max;
 
         // =====================================================================
-        // 3. 現在の角速度取得（バイアス補正済み）
+        // 3. 現在の角速度取得（生データ - バイアス推定が不安定な場合用）
         // =====================================================================
         stampfly::Vec3 accel, gyro;
-        state.getIMUCorrected(accel, gyro);
+        state.getIMUData(accel, gyro);  // TODO: バイアス推定安定後は getIMUCorrected() に戻す
 
         float roll_rate_current = gyro.x;   // [rad/s]
         float pitch_rate_current = gyro.y;  // [rad/s]
