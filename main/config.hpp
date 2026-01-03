@@ -393,9 +393,15 @@ inline constexpr float OUTPUT_LIMIT = 3.7f;        // PID出力制限 [V] (電�
 // =============================================================================
 namespace safety {
 
-// 衝撃検出（自動Disarm）
-inline constexpr float IMPACT_THRESHOLD_G = 3.0f;      // 衝撃検出閾値 [G]
-inline constexpr float IMPACT_THRESHOLD_MS2 = IMPACT_THRESHOLD_G * 9.81f;  // [m/s^2]
+// 衝撃検出（自動Disarm）- 加速度ベース
+inline constexpr float IMPACT_ACCEL_THRESHOLD_G = 3.0f;    // 加速度閾値 [G]
+inline constexpr float IMPACT_ACCEL_THRESHOLD_MS2 = IMPACT_ACCEL_THRESHOLD_G * 9.81f;  // [m/s^2]
+
+// 異常角速度検出（自動Disarm）- ジャイロベース
+inline constexpr float IMPACT_GYRO_THRESHOLD_DPS = 800.0f;  // 角速度閾値 [deg/s]
+inline constexpr float IMPACT_GYRO_THRESHOLD_RPS = IMPACT_GYRO_THRESHOLD_DPS * 3.14159f / 180.0f;  // [rad/s]
+
+// 共通パラメータ
 inline constexpr int IMPACT_COUNT_THRESHOLD = 2;       // 連続検出回数（誤検出防止）
 
 } // namespace safety

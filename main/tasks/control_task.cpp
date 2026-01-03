@@ -16,8 +16,9 @@ using namespace globals;
 // Debug: Yaw alert counter (1秒 = 400カウント @ 400Hz)
 volatile int g_yaw_alert_counter = 0;
 
-// 衝撃検出用カウンタ
-static int g_impact_count = 0;
+// 衝撃検出用カウンタ（加速度・角速度それぞれ）
+static int g_impact_accel_count = 0;
+static int g_impact_gyro_count = 0;
 
 // =============================================================================
 // Rate Controller Implementation
@@ -180,30 +181,55 @@ void ControlTask(void* pvParameters)
         state.getIMUData(accel, gyro);  // TODO: バイアス推定安定後は getIMUCorrected() に戻す
 
         // =====================================================================
-        // 衝撃検出 - 加速度が閾値を超えたら自動Disarm
+        // 衝撃・異常検出 - 加速度または角速度が閾値を超えたら自動Disarm
         // =====================================================================
         float accel_magnitude = std::sqrt(accel.x * accel.x + accel.y * accel.y + accel.z * accel.z);
-        if (accel_magnitude > safety::IMPACT_THRESHOLD_MS2) {
-            g_impact_count++;
-            if (g_impact_count >= safety::IMPACT_COUNT_THRESHOLD) {
-                // 衝撃検出 → 自動Disarm
-                ESP_LOGE(TAG, "IMPACT DETECTED! accel=%.1f m/s^2 (%.1fG) - Auto DISARM",
-                         accel_magnitude, accel_magnitude / 9.81f);
+        float gyro_magnitude = std::sqrt(gyro.x * gyro.x + gyro.y * gyro.y + gyro.z * gyro.z);
 
-                // Disarm処理
-                if (state.requestDisarm()) {
-                    g_motor.disarm();
-                    g_buzzer.errorTone();
-                    stampfly::LEDManager::getInstance().requestChannel(
-                        stampfly::LEDChannel::SYSTEM, stampfly::LEDPriority::CRITICAL_ERROR,
-                        stampfly::LEDPattern::BLINK_FAST, 0xFF0000, 5000);  // 赤点滅5秒
-                    ESP_LOGE(TAG, "Motors DISARMED due to impact");
-                }
-                g_impact_count = 0;
-                continue;  // このサイクルはスキップ
+        bool impact_detected = false;
+        const char* impact_reason = nullptr;
+
+        // 加速度チェック
+        if (accel_magnitude > safety::IMPACT_ACCEL_THRESHOLD_MS2) {
+            g_impact_accel_count++;
+            if (g_impact_accel_count >= safety::IMPACT_COUNT_THRESHOLD) {
+                impact_detected = true;
+                impact_reason = "HIGH_ACCEL";
+                ESP_LOGE(TAG, "IMPACT: accel=%.1f m/s^2 (%.1fG)",
+                         accel_magnitude, accel_magnitude / 9.81f);
             }
         } else {
-            g_impact_count = 0;  // 閾値以下ならリセット
+            g_impact_accel_count = 0;
+        }
+
+        // 角速度チェック
+        if (gyro_magnitude > safety::IMPACT_GYRO_THRESHOLD_RPS) {
+            g_impact_gyro_count++;
+            if (g_impact_gyro_count >= safety::IMPACT_COUNT_THRESHOLD) {
+                impact_detected = true;
+                impact_reason = "HIGH_GYRO";
+                ESP_LOGE(TAG, "IMPACT: gyro=%.1f rad/s (%.0f deg/s)",
+                         gyro_magnitude, gyro_magnitude * 180.0f / 3.14159f);
+            }
+        } else {
+            g_impact_gyro_count = 0;
+        }
+
+        // 衝撃検出時 → 自動Disarm
+        if (impact_detected) {
+            ESP_LOGE(TAG, "CRASH DETECTED [%s] - Auto DISARM", impact_reason);
+
+            if (state.requestDisarm()) {
+                g_motor.disarm();
+                g_buzzer.errorTone();
+                stampfly::LEDManager::getInstance().requestChannel(
+                    stampfly::LEDChannel::SYSTEM, stampfly::LEDPriority::CRITICAL_ERROR,
+                    stampfly::LEDPattern::BLINK_FAST, 0xFF0000, 5000);  // 赤点滅5秒
+                ESP_LOGE(TAG, "Motors DISARMED due to crash");
+            }
+            g_impact_accel_count = 0;
+            g_impact_gyro_count = 0;
+            continue;  // このサイクルはスキップ
         }
 
         float roll_rate_current = gyro.x;   // [rad/s]
