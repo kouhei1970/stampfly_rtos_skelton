@@ -18,9 +18,6 @@ static const char* TAG = "LED";
 
 namespace stampfly {
 
-// Static variables for LED strip handle
-static led_strip_handle_t s_led_strip = nullptr;
-
 // Pattern timing constants
 static constexpr uint32_t BLINK_SLOW_PERIOD_MS = 1000;
 static constexpr uint32_t BLINK_FAST_PERIOD_MS = 200;
@@ -57,14 +54,14 @@ esp_err_t LED::init(const Config& config)
         },
     };
 
-    esp_err_t ret = led_strip_new_rmt_device(&strip_config, &rmt_config, &s_led_strip);
+    esp_err_t ret = led_strip_new_rmt_device(&strip_config, &rmt_config, &led_strip_);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to create LED strip: %s", esp_err_to_name(ret));
         return ret;
     }
 
     // Clear all LEDs
-    led_strip_clear(s_led_strip);
+    led_strip_clear(led_strip_);
 
     initialized_ = true;
     last_update_ms_ = esp_timer_get_time() / 1000;
@@ -80,7 +77,7 @@ esp_err_t LED::init(const Config& config)
 
 void LED::setColor(uint8_t index, uint32_t color)
 {
-    if (!initialized_ || index >= config_.num_leds || s_led_strip == nullptr) {
+    if (!initialized_ || index >= config_.num_leds || led_strip_ == nullptr) {
         return;
     }
 
@@ -88,8 +85,8 @@ void LED::setColor(uint8_t index, uint32_t color)
     uint8_t g = (color >> 8) & 0xFF;
     uint8_t b = color & 0xFF;
 
-    led_strip_set_pixel(s_led_strip, index, r, g, b);
-    led_strip_refresh(s_led_strip);
+    led_strip_set_pixel(led_strip_, index, r, g, b);
+    led_strip_refresh(led_strip_);
 }
 
 void LED::setPattern(Pattern pattern, uint32_t color)
@@ -153,7 +150,7 @@ esp_err_t LED::loadFromNVS()
 
 void LED::update()
 {
-    if (!initialized_ || s_led_strip == nullptr) return;
+    if (!initialized_ || led_strip_ == nullptr) return;
 
     uint32_t now_ms = esp_timer_get_time() / 1000;
     uint32_t elapsed = now_ms - last_update_ms_;
@@ -167,13 +164,13 @@ void LED::update()
     switch (current_pattern_) {
         case Pattern::OFF:
             for (int i = 0; i < config_.num_leds; i++) {
-                led_strip_set_pixel(s_led_strip, i, 0, 0, 0);
+                led_strip_set_pixel(led_strip_, i, 0, 0, 0);
             }
             break;
 
         case Pattern::SOLID:
             for (int i = 0; i < config_.num_leds; i++) {
-                led_strip_set_pixel(s_led_strip, i, r, g, b);
+                led_strip_set_pixel(led_strip_, i, r, g, b);
             }
             break;
 
@@ -181,9 +178,9 @@ void LED::update()
             bool on = ((now_ms / (BLINK_SLOW_PERIOD_MS / 2)) % 2) == 0;
             for (int i = 0; i < config_.num_leds; i++) {
                 if (on) {
-                    led_strip_set_pixel(s_led_strip, i, r, g, b);
+                    led_strip_set_pixel(led_strip_, i, r, g, b);
                 } else {
-                    led_strip_set_pixel(s_led_strip, i, 0, 0, 0);
+                    led_strip_set_pixel(led_strip_, i, 0, 0, 0);
                 }
             }
             break;
@@ -193,9 +190,9 @@ void LED::update()
             bool on = ((now_ms / (BLINK_FAST_PERIOD_MS / 2)) % 2) == 0;
             for (int i = 0; i < config_.num_leds; i++) {
                 if (on) {
-                    led_strip_set_pixel(s_led_strip, i, r, g, b);
+                    led_strip_set_pixel(led_strip_, i, r, g, b);
                 } else {
-                    led_strip_set_pixel(s_led_strip, i, 0, 0, 0);
+                    led_strip_set_pixel(led_strip_, i, 0, 0, 0);
                 }
             }
             break;
@@ -209,7 +206,7 @@ void LED::update()
             uint8_t bg = static_cast<uint8_t>(g * breath);
             uint8_t bb = static_cast<uint8_t>(b * breath);
             for (int i = 0; i < config_.num_leds; i++) {
-                led_strip_set_pixel(s_led_strip, i, br, bg, bb);
+                led_strip_set_pixel(led_strip_, i, br, bg, bb);
             }
             break;
         }
@@ -237,13 +234,13 @@ void LED::update()
                 uint8_t pg = static_cast<uint8_t>((gf + m) * 255 * bright_scale);
                 uint8_t pb = static_cast<uint8_t>((bf + m) * 255 * bright_scale);
 
-                led_strip_set_pixel(s_led_strip, i, pr, pg, pb);
+                led_strip_set_pixel(led_strip_, i, pr, pg, pb);
             }
             break;
         }
     }
 
-    led_strip_refresh(s_led_strip);
+    led_strip_refresh(led_strip_);
     last_update_ms_ = now_ms;
 }
 

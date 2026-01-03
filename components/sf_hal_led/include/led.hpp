@@ -9,6 +9,7 @@
 
 #include <cstdint>
 #include "esp_err.h"
+#include "led_strip.h"
 
 namespace stampfly {
 
@@ -103,6 +104,7 @@ private:
     uint32_t current_color_ = 0;
     uint32_t last_update_ms_ = 0;
     uint8_t brightness_ = 32;  // Default brightness (0-255), 32 = ~12%
+    led_strip_handle_t led_strip_ = nullptr;  // インスタンス固有のハンドル
 };
 
 }  // namespace stampfly
