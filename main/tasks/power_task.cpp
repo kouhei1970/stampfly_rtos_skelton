@@ -20,7 +20,9 @@ void PowerTask(void* pvParameters)
     auto& state = stampfly::StampFlyState::getInstance();
     static uint32_t log_counter = 0;
     static bool first_read = true;
-    static bool low_battery_warned = false;
+    static bool low_battery_active = false;
+    static uint32_t warning_interval_counter = 0;
+    constexpr uint32_t WARNING_INTERVAL = 100;  // 10秒間隔 (10Hz × 100)
 
     while (true) {
         if (g_power.isInitialized()) {
@@ -36,19 +38,32 @@ void PowerTask(void* pvParameters)
                     first_read = false;
                 }
 
-                // Low battery warning (only warn once to avoid continuous buzzing)
-                if (g_power.isLowBattery() && !low_battery_warned) {
-                    ESP_LOGW(TAG, "LOW BATTERY WARNING: %.2fV", power.voltage_v);
-                    state.setError(stampfly::ErrorCode::LOW_BATTERY);
-                    // LEDManagerに低バッテリー通知（全LEDに赤点滅）
-                    stampfly::LEDManager::getInstance().onBatteryStateChanged(
-                        power.voltage_v, true);
-                    g_buzzer.lowBatteryWarning();
-                    low_battery_warned = true;
-                }
-                // Reset warning flag when battery is charged again
-                if (!g_power.isLowBattery()) {
-                    low_battery_warned = false;
+                // Low battery warning (警告のみ、エラーにはしない)
+                if (g_power.isLowBattery()) {
+                    if (!low_battery_active) {
+                        // 最初の検出時
+                        ESP_LOGW(TAG, "LOW BATTERY WARNING: %.2fV - Land soon!", power.voltage_v);
+                        stampfly::LEDManager::getInstance().onBatteryStateChanged(
+                            power.voltage_v, true);
+                        g_buzzer.lowBatteryWarning();
+                        low_battery_active = true;
+                        warning_interval_counter = 0;
+                    } else {
+                        // 継続中: 定期的にブザーで警告
+                        if (++warning_interval_counter >= WARNING_INTERVAL) {
+                            ESP_LOGW(TAG, "LOW BATTERY: %.2fV - Land immediately!", power.voltage_v);
+                            g_buzzer.lowBatteryWarning();
+                            warning_interval_counter = 0;
+                        }
+                    }
+                } else {
+                    // バッテリー回復時（充電された場合など）
+                    if (low_battery_active) {
+                        ESP_LOGI(TAG, "Battery recovered: %.2fV", power.voltage_v);
+                        stampfly::LEDManager::getInstance().onBatteryStateChanged(
+                            power.voltage_v, false);
+                        low_battery_active = false;
+                    }
                 }
             }
         }
