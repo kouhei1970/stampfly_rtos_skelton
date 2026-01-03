@@ -369,18 +369,18 @@ inline constexpr float YAW_RATE_MAX = 5.0f;        // ヨー最大角速度 [rad
 
 // Roll rate PID
 inline constexpr float ROLL_RATE_KP = 0.65f;       // 比例ゲイン
-inline constexpr float ROLL_RATE_TI = 0.0f;        // 積分時間 [s] (0以下で無効) ← P制御のみ
-inline constexpr float ROLL_RATE_TD = 0.0f;        // 微分時間 [s] (0以下で無効) ← P制御のみ
+inline constexpr float ROLL_RATE_TI = 0.7f;        // 積分時間 [s] (0以下で無効) ← P制御のみ
+inline constexpr float ROLL_RATE_TD = 0.01f;        // 微分時間 [s] (0以下で無効) ← P制御のみ
 
 // Pitch rate PID
-inline constexpr float PITCH_RATE_KP = 0.65f;      // 比例ゲイン
-inline constexpr float PITCH_RATE_TI = 0.0f;       // 積分時間 [s] ← P制御のみ
-inline constexpr float PITCH_RATE_TD = 0.0f;       // 微分時間 [s] ← P制御のみ
+inline constexpr float PITCH_RATE_KP = 0.95f;      // 比例ゲイン
+inline constexpr float PITCH_RATE_TI = 0.7f;       // 積分時間 [s] ← P制御のみ
+inline constexpr float PITCH_RATE_TD = 0.025f;       // 微分時間 [s] ← P制御のみ
 
 // Yaw rate PID
 inline constexpr float YAW_RATE_KP = 3.0f;         // 比例ゲイン
-inline constexpr float YAW_RATE_TI = 0.0f;         // 積分時間 [s] ← P制御のみ
-inline constexpr float YAW_RATE_TD = 0.0f;         // 微分時間 [s] ← P制御のみ
+inline constexpr float YAW_RATE_TI = 0.8f;         // 積分時間 [s] ← P制御のみ
+inline constexpr float YAW_RATE_TD = 0.01f;         // 微分時間 [s] ← P制御のみ
 
 // 共通パラメータ
 inline constexpr float PID_ETA = 0.125f;             // 不完全微分フィルタ係数 (0.1~0.2)
