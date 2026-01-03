@@ -185,14 +185,19 @@ void ControlTask(void* pvParameters)
         static float prev_yaw_gyro = 0.0f;
         float yaw_cmd_diff = std::abs(yaw_cmd - prev_yaw_cmd);
         float yaw_gyro_diff = std::abs(yaw_rate_current - prev_yaw_gyro);
+        auto& led_mgr = stampfly::LEDManager::getInstance();
         if (yaw_cmd_diff > 0.3f) {
-            // 指令が急変 → 黄色点滅（1秒間）
-            g_led.setPattern(stampfly::LED::Pattern::BLINK_FAST, 0xFFFF00);
+            // 指令が急変 → 黄色点滅（1秒間）- DEBUG_ALERT優先度、タイムアウト付き
+            led_mgr.requestChannel(stampfly::LEDChannel::STATUS,
+                stampfly::LEDPriority::DEBUG_ALERT,
+                stampfly::LEDPattern::BLINK_FAST, 0xFFFF00, 1000);
             g_yaw_alert_counter = 400;
         }
         if (yaw_gyro_diff > 1.0f) {
-            // ジャイロが急変 → 黄色点灯（1秒間）
-            g_led.setPattern(stampfly::LED::Pattern::SOLID, 0xFFFF00);
+            // ジャイロが急変 → 黄色点灯（1秒間）- DEBUG_ALERT優先度、タイムアウト付き
+            led_mgr.requestChannel(stampfly::LEDChannel::STATUS,
+                stampfly::LEDPriority::DEBUG_ALERT,
+                stampfly::LEDPattern::SOLID, 0xFFFF00, 1000);
             g_yaw_alert_counter = 400;
         }
         if (g_yaw_alert_counter > 0) {

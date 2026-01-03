@@ -260,7 +260,10 @@ void onButtonEvent(stampfly::Button::Event event)
             ESP_LOGI(TAG, "Button: LONG_PRESS (3s) - Entering pairing mode");
             g_comm.enterPairingMode();
             state.setPairingState(stampfly::PairingState::PAIRING);
-            g_led.setPattern(stampfly::LED::Pattern::BLINK_FAST, 0x0000FF);  // Blue fast blink
+            // ペアリングモード: 青色高速点滅（PAIRING優先度）
+            stampfly::LEDManager::getInstance().requestChannel(
+                stampfly::LEDChannel::SYSTEM, stampfly::LEDPriority::PAIRING,
+                stampfly::LEDPattern::BLINK_FAST, 0x0000FF);
             g_buzzer.beep();
             break;
 
@@ -462,17 +465,21 @@ extern "C" void app_main(void)
     ESP_LOGI(TAG, "Initializing actuators...");
     init::actuators();
 
+    // LEDManagerを取得
+    auto& led_mgr = stampfly::LEDManager::getInstance();
+
     // =========================================================================
     // Phase 1: Place on ground (White breathing) - 3 seconds
     // =========================================================================
     ESP_LOGI(TAG, "Phase 1: Place aircraft on ground (3 seconds)...");
     g_buzzer.startTone();
-    g_led.setPattern(stampfly::LED::Pattern::BREATHE, 0xFFFFFF);  // White
+    led_mgr.requestChannel(stampfly::LEDChannel::SYSTEM, stampfly::LEDPriority::BOOT,
+                           stampfly::LEDPattern::BREATHE, 0xFFFFFF);  // White
     for (int i = 3; i > 0; i--) {
         ESP_LOGI(TAG, "  %d...", i);
         // LED更新を手動で行う（LEDタスクはまだ起動していない）
         for (int j = 0; j < 30; j++) {
-            g_led.update();
+            led_mgr.update();
             vTaskDelay(pdMS_TO_TICKS(33));  // ~30Hz
         }
     }
@@ -481,12 +488,13 @@ extern "C" void app_main(void)
     // Phase 2: Sensor initialization (Blue breathing)
     // =========================================================================
     ESP_LOGI(TAG, "Phase 2: Initializing sensors...");
-    g_led.setPattern(stampfly::LED::Pattern::BREATHE, 0x0000FF);  // Blue
+    led_mgr.requestChannel(stampfly::LEDChannel::SYSTEM, stampfly::LEDPriority::BOOT,
+                           stampfly::LEDPattern::BREATHE, 0x0000FF);  // Blue
 
     // LED更新ヘルパー（初期化中に数回呼び出す）
     auto updateLedDuringInit = [&]() {
         for (int i = 0; i < 10; i++) {
-            g_led.update();
+            led_mgr.update();
             vTaskDelay(pdMS_TO_TICKS(20));
         }
     };
@@ -528,9 +536,9 @@ extern "C" void app_main(void)
     // Phase 3: Sensor stabilization (Magenta blinking)
     // =========================================================================
     // g_eskf_ready = false なので IMUTask は sensor fusion 処理をスキップしている
-    // 注意: まだIDLE状態に遷移しない（led_taskがshowIdle()で上書きするのを防ぐ）
     ESP_LOGI(TAG, "Phase 3: Waiting for sensors to stabilize...");
-    g_led.setPattern(stampfly::LED::Pattern::BLINK_SLOW, 0xFF00FF);  // Magenta blink
+    led_mgr.requestChannel(stampfly::LEDChannel::SYSTEM, stampfly::LEDPriority::BOOT,
+                           stampfly::LEDPattern::BLINK_SLOW, 0xFF00FF);  // Magenta blink
 
     // 安定判定パラメータ（config.hpp から取得）
     using namespace config::stability;
@@ -553,7 +561,7 @@ extern "C" void app_main(void)
 
     while (elapsed_ms < MAX_WAIT_MS) {
         // LED更新（LEDタスクが動いていても念のため）
-        g_led.update();
+        led_mgr.update();
         vTaskDelay(pdMS_TO_TICKS(CHECK_INTERVAL_MS));
         elapsed_ms += CHECK_INTERVAL_MS;
 
@@ -808,7 +816,10 @@ extern "C" void app_main(void)
 
     // IDLE状態に遷移（led_taskが通常のLED表示を開始）
     state.setFlightState(stampfly::FlightState::IDLE);
-    g_led.setPattern(stampfly::LED::Pattern::SOLID, 0x00FF00);  // Green = ready
+
+    // BOOTシーケンス終了 - 優先度を解放してled_taskに制御を移行
+    led_mgr.releaseChannel(stampfly::LEDChannel::SYSTEM, stampfly::LEDPriority::BOOT);
+    // led_taskがFlightState::IDLEを検出してFLIGHT_STATE優先度で緑表示を行う
 
     ESP_LOGI(TAG, "========================================");
     ESP_LOGI(TAG, "StampFly initialized successfully!");

@@ -40,7 +40,9 @@ void PowerTask(void* pvParameters)
                 if (g_power.isLowBattery() && !low_battery_warned) {
                     ESP_LOGW(TAG, "LOW BATTERY WARNING: %.2fV", power.voltage_v);
                     state.setError(stampfly::ErrorCode::LOW_BATTERY);
-                    g_led.setPattern(stampfly::LED::Pattern::BLINK_FAST, 0xFF0000);
+                    // LEDManagerに低バッテリー通知（全LEDに赤点滅）
+                    stampfly::LEDManager::getInstance().onBatteryStateChanged(
+                        power.voltage_v, true);
                     g_buzzer.lowBatteryWarning();
                     low_battery_warned = true;
                 }

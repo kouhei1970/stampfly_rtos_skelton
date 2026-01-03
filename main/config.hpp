@@ -37,7 +37,9 @@ inline constexpr int GPIO_MOTOR_M3 = 10;  // RL, CCW
 inline constexpr int GPIO_MOTOR_M4 = 5;   // FL, CW
 
 // Peripherals
-inline constexpr int GPIO_LED = 39;
+inline constexpr int GPIO_LED_MCU = 21;    // M5Stamp S3 内蔵LED
+inline constexpr int GPIO_LED_BODY = 39;   // StampFly ボード上LED（2個直列）
+inline constexpr int GPIO_LED = 39;        // 後方互換性のため残す（deprecated）
 inline constexpr int GPIO_BUZZER = 40;
 inline constexpr int GPIO_BUTTON = 0;
 
@@ -391,7 +393,18 @@ inline constexpr int DEBOUNCE_MS = 50;             // デバウンス時間 [ms]
 } // namespace button
 
 namespace led {
-inline constexpr int NUM_LEDS = 1;                 // LED数
+// M5Stamp S3 内蔵LED
+inline constexpr int NUM_LEDS_MCU = 1;
+
+// StampFly ボード上LED（デイジーチェーン）
+inline constexpr int NUM_LEDS_BODY = 2;
+
+// LED インデックス（GPIO_LED_BODYのデイジーチェーン内）
+inline constexpr int IDX_BODY_TOP = 0;     // 上面/表
+inline constexpr int IDX_BODY_BOTTOM = 1;  // 下面/裏
+
+// 後方互換性のため残す（deprecated）
+inline constexpr int NUM_LEDS = 1;
 } // namespace led
 
 } // namespace config

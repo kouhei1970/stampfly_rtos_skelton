@@ -24,6 +24,7 @@
 // Actuators
 #include "motor_driver.hpp"
 #include "led.hpp"
+#include "led_manager.hpp"
 #include "buzzer.hpp"
 #include "button.hpp"
 

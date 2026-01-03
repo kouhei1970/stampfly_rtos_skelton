@@ -240,7 +240,18 @@ esp_err_t actuators()
         g_motor_ptr = &g_motor;  // Set pointer for CLI access
     }
 
-    // LED
+    // LED Manager (3つのLEDを管理: MCU=GPIO21, BODY=GPIO39x2)
+    {
+        auto& led_mgr = stampfly::LEDManager::getInstance();
+        ret = led_mgr.init();
+        if (ret != ESP_OK) {
+            ESP_LOGW(TAG, "LEDManager init failed: %s", esp_err_to_name(ret));
+        } else {
+            ESP_LOGI(TAG, "LEDManager initialized (MCU=GPIO21, BODY=GPIO39x2)");
+        }
+    }
+
+    // Legacy LED (後方互換性のため残す - 将来削除予定)
     {
         stampfly::LED::Config cfg;
         cfg.gpio = GPIO_LED;
@@ -248,9 +259,9 @@ esp_err_t actuators()
 
         ret = g_led.init(cfg);
         if (ret != ESP_OK) {
-            ESP_LOGW(TAG, "LED init failed: %s", esp_err_to_name(ret));
+            ESP_LOGW(TAG, "Legacy LED init failed: %s", esp_err_to_name(ret));
         } else {
-            ESP_LOGI(TAG, "LED initialized");
+            ESP_LOGI(TAG, "Legacy LED initialized (deprecated)");
             g_led_ptr = &g_led;  // Set pointer for CLI access
         }
     }
