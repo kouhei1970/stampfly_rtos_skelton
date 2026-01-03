@@ -4,34 +4,70 @@
 
 ## 目次
 
-1. [main.cppの構造](#maincppの構造)
+1. [プロジェクト構造](#プロジェクト構造)
 2. [タスク構成とタイミング](#タスク構成とタイミング)
 3. [データフロー](#データフロー)
-4. [飛行制御コードの追加方法](#飛行制御コードの追加方法)
-5. [新しいセンサーの追加](#新しいセンサーの追加)
-6. [CLIコマンドの追加](#cliコマンドの追加)
-7. [状態管理](#状態管理)
-8. [デバッグ方法](#デバッグ方法)
-9. [StampFlyState APIリファレンス](#stampflystate-apiリファレンス)
-10. [列挙型（Enum）リファレンス](#列挙型enum-リファレンス)
+4. [飛行制御（Rate Control）](#飛行制御rate-control)
+5. [安全機能](#安全機能)
+6. [LED表示システム](#led表示システム)
+7. [CLIコマンド](#cliコマンド)
+8. [バイナリログとESKFデバッグ](#バイナリログとeskfデバッグ)
+9. [設定パラメータ](#設定パラメータ)
+10. [APIリファレンス](#apiリファレンス)
 11. [座標系](#座標系)
 
 ---
 
-## main.cppの構造
+## プロジェクト構造
 
-`main/main.cpp`は以下のセクションで構成されています：
+### ディレクトリ構成
 
-| # | セクション | 行 | 内容 |
-|:-:|------------|---:|------|
-| 1 | インクルードと定数定義 | 1-110 | GPIO定義、タスク優先度、スタックサイズ |
-| 2 | グローバルインスタンス | 112-202 | センサードライバ (`g_imu`, `g_mag`, `g_baro`, etc.)、アクチュエータ、推定器、通信、タスクハンドル |
-| 3 | ヘルパー関数 | 204-256 | `setMagReferenceFromBuffer()`, `onBinlogStart()` |
-| 4 | タイマーコールバック | 258-273 | `imu_timer_callback()` - 400Hz精密タイミング |
-| 5 | **タスク関数** ★重要 | 275-1140 | IMUTask (400Hz) - ESKF更新、ControlTask (400Hz) - 飛行制御、OptFlow/Mag/Baro/ToF/Power/LED/Button/Comm/CLI |
-| 6 | イベントハンドラ | 1039-1129 | `onButtonEvent()`, `onControlPacket()` |
-| 7 | 初期化関数 | 1131-1627 | `initI2C/Sensors/Actuators/Estimators/Communication/CLI` |
-| 8 | エントリポイント | 1629-1747 | `app_main()` - 初期化シーケンス |
+```
+stampfly_rtos_skelton/
+├── main/
+│   ├── main.cpp              # エントリポイント（薄く保つ）
+│   ├── config.hpp            # 全設定パラメータ
+│   ├── globals.hpp/cpp       # グローバル変数定義
+│   ├── init.cpp              # 初期化関数群
+│   ├── rate_controller.hpp   # レート制御器定義
+│   └── tasks/                # タスク実装（分離済み）
+│       ├── tasks.hpp         # タスクプロトタイプ
+│       ├── tasks_common.hpp  # 共通インクルード
+│       ├── imu_task.cpp      # IMU + ESKF (400Hz)
+│       ├── control_task.cpp  # PID制御 (400Hz)
+│       ├── optflow_task.cpp  # 光学フロー (100Hz)
+│       ├── mag_task.cpp      # 地磁気 (100Hz)
+│       ├── baro_task.cpp     # 気圧 (50Hz)
+│       ├── tof_task.cpp      # ToF (30Hz)
+│       ├── comm_task.cpp     # ESP-NOW (50Hz)
+│       ├── power_task.cpp    # 電源監視 (10Hz)
+│       ├── led_task.cpp      # LED更新 (30Hz)
+│       ├── button_task.cpp   # ボタン (50Hz)
+│       ├── cli_task.cpp      # USB CLI
+│       └── telemetry_task.cpp # WebSocket (50Hz)
+├── components/               # コンポーネント群
+├── docs/                     # ドキュメント
+└── tools/                    # 開発ツール
+```
+
+### コンポーネント命名規則
+
+| Prefix | レイヤー | FreeRTOS依存 | 例 |
+|--------|---------|-------------|-----|
+| `sf_hal_*` | HALドライバ | 極力なし | bmi270, motor, led |
+| `sf_algo_*` | アルゴリズム | なし | eskf, pid, filter |
+| `sf_svc_*` | サービス | あり | state, cli, led_manager |
+
+### main.cpp構造
+
+main.cppは**薄く**保ち、主要ロジックはタスクファイルに分離：
+
+| セクション | 行 | 内容 |
+|-----------|---:|------|
+| ヘルパー関数 | 64-166 | 姿勢初期化、binlogコールバック |
+| イベントハンドラ | 210-329 | ボタン、コントローラパケット |
+| startTasks() | 332-411 | 全タスク生成 |
+| app_main() | 417-839 | 4段階起動シーケンス |
 
 ---
 
@@ -41,344 +77,129 @@
 
 | Core | タスク | 理由 |
 |------|--------|------|
-| Core 1 | IMUTask (400Hz) | 高頻度処理、Core 0と分離 |
-| Core 1 | ControlTask (400Hz) | IMUと同期、リアルタイム制御 |
-| Core 1 | OptFlowTask (100Hz) | SPI通信、IMUと同じCore |
-| Core 0 | MagTask, BaroTask, ToFTask | I2Cセンサー群 |
-| Core 0 | その他すべて | 低優先度タスク |
+| Core 1 | IMUTask, ControlTask, OptFlowTask | 高頻度・リアルタイム制御 |
+| Core 0 | その他すべて | I2Cセンサー、通信、UI |
 
-### タスク優先度 (高い順)
+### タスク優先度（高い順）
 
 | 優先度 | タスク | 周波数 | 役割 |
 |--------|--------|--------|------|
-| 24 | IMUTask | 400Hz | センサー読み取り + ESKF |
-| 23 | **ControlTask** | 400Hz | **飛行制御 (スタブ)** |
-| 20 | OptFlowTask | 100Hz | オプティカルフロー |
-| 18 | MagTask | 100Hz | 地磁気 |
-| 16 | BaroTask | 50Hz | 気圧 |
+| 24 | IMUTask | 400Hz | センサー読取 + ESKF予測 |
+| 23 | ControlTask | 400Hz | PID制御 + モーター出力 |
+| 20 | OptFlowTask | 100Hz | 光学フロー読取 |
+| 18 | MagTask | 100Hz | 地磁気読取 |
+| 16 | BaroTask | 50Hz | 気圧読取 |
 | 15 | CommTask | 50Hz | ESP-NOW通信 |
-| 14 | ToFTask | 30Hz | ToFセンサー |
-| 12 | PowerTask | 10Hz | 電源監視 |
-| 10 | ButtonTask | 100Hz | ボタン入力 |
-| 8 | LEDTask | 30Hz | LED制御 |
+| 14 | ToFTask | 30Hz | ToF距離測定 |
+| 12 | PowerTask | 10Hz | 電源監視 + 低バッテリー警告 |
+| 10 | ButtonTask | 50Hz | ボタン入力 |
+| 8 | LEDTask | 30Hz | LED更新 |
 | 5 | CLITask | - | USBシリアル |
+
+### 起動シーケンス（4段階）
+
+| Phase | LED | 時間 | 内容 |
+|-------|-----|------|------|
+| 1 | 白・ブリーズ | 3秒 | 地面配置確認 |
+| 2 | 青・ブリーズ | - | センサータスク起動待ち |
+| 3 | マゼンタ・点滅 | MAX 10秒 | 全センサー安定判定 |
+| 4 | 緑・点灯 | - | Ready (IDLE状態) |
 
 ---
 
 ## データフロー
 
-```mermaid
-flowchart TB
-    subgraph Sensors["センサータスク"]
-        IMU["IMUTask<br/>(400Hz)"]
-        MAG["MagTask<br/>(100Hz)"]
-        BARO["BaroTask<br/>(50Hz)"]
-        TOF["ToFTask<br/>(30Hz)"]
-        FLOW["OptFlowTask<br/>(100Hz)"]
-    end
-
-    subgraph ESKF["ESKF (IMUTask内で実行)"]
-        PREDICT["g_eskf.predict()"]
-        UPDATE_MAG["g_eskf.updateMag()"]
-        UPDATE_BARO["g_eskf.updateBaro()"]
-        UPDATE_TOF["g_eskf.updateToF()"]
-        UPDATE_FLOW["g_eskf.updateFlow()"]
-    end
-
-    subgraph State["StampFlyState (共有状態)"]
-        SENSOR_DATA["センサーデータ<br/>accel, gyro, mag, baro, tof, flow"]
-        EST_STATE["推定状態<br/>position, velocity, roll, pitch, yaw"]
-        CTRL_INPUT["制御入力<br/>throttle, roll, pitch, yaw"]
-        SYS_STATE["システム状態<br/>flight_state, error_code"]
-    end
-
-    subgraph Control["ControlTask (400Hz)"]
-        GET_STATE["姿勢/入力取得"]
-        PID["PID計算"]
-        MOTOR["g_motor.setMixerOutput()"]
-    end
-
-    IMU -->|"400Hz"| PREDICT
-    MAG -->|"data_ready"| UPDATE_MAG
-    BARO -->|"data_ready"| UPDATE_BARO
-    TOF -->|"data_ready"| UPDATE_TOF
-    FLOW -->|"data_ready"| UPDATE_FLOW
-
-    PREDICT --> EST_STATE
-    UPDATE_MAG --> EST_STATE
-    UPDATE_BARO --> EST_STATE
-    UPDATE_TOF --> EST_STATE
-    UPDATE_FLOW --> EST_STATE
-
-    IMU -->|"セマフォ"| GET_STATE
-    EST_STATE --> GET_STATE
-    CTRL_INPUT --> GET_STATE
-    GET_STATE --> PID
-    PID --> MOTOR
+```
+[センサータスク]              [ESKF (IMUTask内)]           [ControlTask]
+     │                              │                          │
+ IMUTask ──400Hz──→ predict() ──→ 姿勢推定 ──→ セマフォ ──→ PID制御
+ MagTask ──────────→ updateMag()      │                          │
+ BaroTask ─────────→ updateBaro()     │                          │
+ ToFTask ──────────→ updateToF()      ↓                          ↓
+ OptFlowTask ──────→ updateFlow() → StampFlyState ←──────── モーター出力
+                                      ↑
+                              CommTask (入力)
 ```
 
-**StampFlyState の内容:**
+### StampFlyState（共有状態）
 
 | カテゴリ | データ |
 |---------|--------|
-| センサーデータ | accel_, gyro_, mag_, baro_, tof_, flow_ |
-| 推定状態 | position_, velocity_, roll_, pitch_, yaw_ |
-| 制御入力 | ctrl_throttle_, ctrl_roll_, ctrl_pitch_, ctrl_yaw_ |
-| システム状態 | flight_state_, error_code_, pairing_state_ |
+| センサーデータ | accel, gyro, mag, baro, tof, flow |
+| 推定状態 | position, velocity, roll, pitch, yaw |
+| 制御入力 | throttle, roll, pitch, yaw (正規化済み) |
+| システム状態 | flight_state, error_code, pairing_state |
 
 ---
 
-## 飛行制御コードの追加方法
+## 飛行制御（Rate Control）
 
-### ControlTaskについて
+### 現在の実装
 
-**ControlTask**は`main.cpp`の569行目付近に実装されています。
-このタスクは400HzでIMUTaskと同期して実行されます。
-
-現在のスタブ実装では、スロットル入力をそのまま全モーターに送っているだけです：
+ControlTask（`main/tasks/control_task.cpp`）にPID角速度制御が実装済み：
 
 ```cpp
-// Simple throttle control: all motors receive same throttle value
-g_motor.setMotor(stampfly::MotorDriver::MOTOR_FR, throttle);  // M1
-g_motor.setMotor(stampfly::MotorDriver::MOTOR_RR, throttle);  // M2
-g_motor.setMotor(stampfly::MotorDriver::MOTOR_RL, throttle);  // M3
-g_motor.setMotor(stampfly::MotorDriver::MOTOR_FL, throttle);  // M4
+// 制御ループ概要
+while (true) {
+    xSemaphoreTake(g_control_semaphore, ...);  // IMUTaskから同期
+
+    // 1. コントローラ入力取得
+    state.getControlInput(throttle, roll_cmd, pitch_cmd, yaw_cmd);
+
+    // 2. 目標角速度計算 [rad/s]
+    float roll_rate_target = roll_cmd * g_rate_controller.roll_rate_max;
+    float pitch_rate_target = pitch_cmd * g_rate_controller.pitch_rate_max;
+    float yaw_rate_target = yaw_cmd * g_rate_controller.yaw_rate_max;
+
+    // 3. IMUデータ取得
+    state.getIMUData(accel, gyro);
+
+    // 4. 衝撃検出（省略 - 安全機能セクション参照）
+
+    // 5. PID制御
+    float roll_out = g_rate_controller.roll_pid.update(
+        roll_rate_target, gyro.x, dt);
+    float pitch_out = g_rate_controller.pitch_pid.update(
+        pitch_rate_target, gyro.y, dt);
+    float yaw_out = g_rate_controller.yaw_pid.update(
+        yaw_rate_target, gyro.z, dt);
+
+    // 6. モーターミキサー
+    g_motor.setMixerOutput(throttle, roll_out, pitch_out, yaw_out);
+}
 ```
 
-この状態では姿勢制御が行われないため、**安定した飛行はできません**。
-飛行制御を実装するには、以下のステップで角速度制御を追加する必要があります。
-
-### IMUデータ取得API
-
-制御に使用するIMUデータには2種類のAPIがあります：
-
-| API | 内容 | 用途 |
-|-----|------|------|
-| `getIMUData()` | フィルタ済み生データ | ログ、デバッグ |
-| `getIMUCorrected()` | バイアス補正済み | **制御用（推奨）** |
-
-ESKFが推定したジャイロ/加速度バイアスが`getIMUCorrected()`に反映されます。
-制御には必ずバイアス補正済みのデータを使用してください。
-
-### Step 1: 角速度制御（Rate Control）の実装
-
-まず**角速度制御**を実装します。これはジャイロセンサから得られる角速度を目標角速度に追従させる制御です。
+### PIDゲイン設定（config.hpp）
 
 ```cpp
-// 角速度制御ゲイン
-constexpr float KP_RATE_ROLL  = 0.5f;
-constexpr float KP_RATE_PITCH = 0.5f;
-constexpr float KP_RATE_YAW   = 0.3f;
+namespace rate_control {
+// 感度（スティック最大時の目標角速度 [rad/s]）
+inline constexpr float ROLL_RATE_MAX = 5.0f;   // ~286 deg/s
+inline constexpr float PITCH_RATE_MAX = 5.0f;
+inline constexpr float YAW_RATE_MAX = 5.0f;
 
-// ジャイロ（角速度）を取得（バイアス補正済み）
-stampfly::Vec3 accel, gyro;
-state.getIMUCorrected(accel, gyro);  // 制御用にはこちらを使用
+// Roll PID
+inline constexpr float ROLL_RATE_KP = 0.65f;
+inline constexpr float ROLL_RATE_TI = 0.7f;    // 積分時間 [s]
+inline constexpr float ROLL_RATE_TD = 0.01f;   // 微分時間 [s]
 
-// コントローラー入力を取得
-// throttle: 0.0 ~ 1.0, roll/pitch/yaw: -1.0 ~ +1.0
-float throttle_cmd, roll_cmd, pitch_cmd, yaw_cmd;
-state.getControlInput(throttle_cmd, roll_cmd, pitch_cmd, yaw_cmd);
+// Pitch PID
+inline constexpr float PITCH_RATE_KP = 0.95f;
+inline constexpr float PITCH_RATE_TI = 0.7f;
+inline constexpr float PITCH_RATE_TD = 0.025f;
 
-// 目標角速度 [rad/s]
-constexpr float MAX_RATE = 3.0f;  // 最大角速度 約170 deg/s
-float roll_rate_target  = roll_cmd  * MAX_RATE;
-float pitch_rate_target = pitch_cmd * MAX_RATE;
-float yaw_rate_target   = yaw_cmd   * MAX_RATE;
+// Yaw PID
+inline constexpr float YAW_RATE_KP = 3.0f;
+inline constexpr float YAW_RATE_TI = 0.8f;
+inline constexpr float YAW_RATE_TD = 0.01f;
 
-// 角速度誤差
-float roll_rate_error  = roll_rate_target  - gyro.x;
-float pitch_rate_error = pitch_rate_target - gyro.y;
-float yaw_rate_error   = yaw_rate_target   - gyro.z;
-
-// P制御（シンプルな例）
-float roll_out  = KP_RATE_ROLL  * roll_rate_error;
-float pitch_out = KP_RATE_PITCH * pitch_rate_error;
-float yaw_out   = KP_RATE_YAW   * yaw_rate_error;
-
-// ※ 実用的にはPID制御を推奨（Step 2参照）
-
-// モーターミキシング
-g_motor.setMixerOutput(throttle_cmd, roll_out, pitch_out, yaw_out);
+// 共通
+inline constexpr float PID_ETA = 0.125f;       // 不完全微分係数
+inline constexpr float OUTPUT_LIMIT = 3.7f;    // 出力制限 [V]
+}
 ```
 
-角速度制御のみでも、スティックを離せば角速度がゼロに収束するため、
-ある程度の安定性は得られます（アクロバットモード相当）。
-
-### Step 2: 姿勢制御（Attitude Control）の実装【課題】
-
-**姿勢制御の実装はユーザーへの課題とします。**
-
-姿勢制御を実装する際は、**カスケード制御（2重ループ制御）** を強く推奨します：
-
-```mermaid
-flowchart LR
-    subgraph outer["アウターループ"]
-        TARGET["目標姿勢"]
-        ANGLE_CTRL["角度制御器<br/>(PID制御)"]
-        TARGET --> ANGLE_CTRL
-    end
-
-    subgraph inner["インナーループ"]
-        RATE_TARGET["目標角速度"]
-        RATE_CTRL["角速度制御器<br/>(PID制御)"]
-        RATE_TARGET --> RATE_CTRL
-    end
-
-    ANGLE_CTRL --> RATE_TARGET
-    RATE_CTRL --> MOTOR["モーター"]
-
-    ESKF["現在姿勢<br/>(ESKF)"]
-    GYRO["現在角速度<br/>(ジャイロ)"]
-
-    ESKF -.->|"フィードバック"| ANGLE_CTRL
-    GYRO -.->|"フィードバック"| RATE_CTRL
-
-    style outer fill:#e8f4e8,stroke:#4a4
-    style inner fill:#e8e8f4,stroke:#44a
-```
-
-**なぜカスケード制御か？**
-
-1. **インナーループ（角速度制御）**: 高速応答（400Hz）、外乱抑制
-2. **アウターループ（角度制御）**: 目標姿勢への追従
-
-この構造により：
-- 角速度制御が高速に動作し、機体の安定性を確保
-- 角度制御は角速度制御を「アクチュエータ」として使用
-- チューニングが容易（まずインナー、次にアウター）
-
-**実装のヒント：**
-
-```cpp
-// PIDゲイン（例）
-constexpr float KP_ANGLE = 5.0f;   // 角度制御 P
-constexpr float KI_ANGLE = 0.5f;   // 角度制御 I
-constexpr float KP_RATE  = 0.5f;   // 角速度制御 P
-constexpr float KI_RATE  = 0.1f;   // 角速度制御 I
-constexpr float KD_RATE  = 0.01f;  // 角速度制御 D
-
-// 積分項（static変数で保持）
-static float roll_angle_integral = 0.0f;
-static float roll_rate_integral = 0.0f;
-static float prev_roll_rate_error = 0.0f;
-
-// --- アウターループ（角度制御：PI） ---
-float roll_error = roll_target - roll_current;
-roll_angle_integral += roll_error * dt;
-
-// アウターループの出力 = インナーループの目標角速度
-float roll_rate_target = KP_ANGLE * roll_error + KI_ANGLE * roll_angle_integral;
-
-// --- インナーループ（角速度制御：PID） ---
-float roll_rate_error = roll_rate_target - gyro.x;
-roll_rate_integral += roll_rate_error * dt;
-float roll_rate_derivative = (roll_rate_error - prev_roll_rate_error) / dt;
-prev_roll_rate_error = roll_rate_error;
-
-float roll_out = KP_RATE * roll_rate_error
-               + KI_RATE * roll_rate_integral
-               + KD_RATE * roll_rate_derivative;
-```
-
-> **Note:** 実用的なPID制御の実装には以下の考慮が必要です：
-> - **積分ワインドアップ対策**: 積分項に上限値を設定
-> - **不完全微分（擬似微分）**: 微分項は高周波ノイズを増幅するため、ローパスフィルタを併用
-> - **微分先行型PID**: 目標値の急変による微分キック（Derivative Kick）を避けるため、誤差ではなく測定値を微分する手法も一般的
-
-**チューニング手順：**
-
-1. **インナーループ（角速度制御）から開始**
-   - まずP項のみで調整（I, Dはゼロ）
-   - 振動しない範囲でKP_RATEを上げる
-   - 定常偏差があればKI_RATEを少しずつ追加
-   - 振動抑制にKD_RATEを追加（ノイズ注意）
-
-2. **アウターループ（角度制御）を追加**
-   - インナーが安定してから追加
-   - P項のみで開始、控えめなゲインから
-   - 必要に応じてI項を追加
-
-### モーターミキシングとは
-
-クアッドコプターでは、4つのモーターを協調して動かすことで機体を制御します。
-パイロット（または制御器）からの入力は「スラスト・ロール・ピッチ・ヨー」の4つですが、
-これを4つの個別モーター出力に変換する必要があります。この変換を**モーターミキシング**と呼びます。
-
-```mermaid
-flowchart LR
-    subgraph input["制御入力"]
-        T["Thrust<br/>(上昇/下降)"]
-        R["Roll<br/>(左右傾き)"]
-        P["Pitch<br/>(前後傾き)"]
-        Y["Yaw<br/>(回転)"]
-    end
-
-    MIXER["ミキサー<br/>(混合計算)"]
-
-    subgraph output["モーター出力"]
-        M1["M1 (FR)"]
-        M2["M2 (RR)"]
-        M3["M3 (RL)"]
-        M4["M4 (FL)"]
-    end
-
-    T --> MIXER
-    R --> MIXER
-    P --> MIXER
-    Y --> MIXER
-    MIXER --> M1
-    MIXER --> M2
-    MIXER --> M3
-    MIXER --> M4
-```
-
-### X-Quadミキシングの原理
-
-X配置のクアッドコプターでは、各モーターが複数の軸に影響を与えます：
-
-| 動作 | FR (M1) | RR (M2) | RL (M3) | FL (M4) |
-|------|---------|---------|---------|---------|
-| Thrust（上昇） | ↑ | ↑ | ↑ | ↑ |
-| Roll（右傾き） | ↓ | ↓ | ↑ | ↑ |
-| Pitch（前傾き）| ↑ | ↓ | ↓ | ↑ |
-| Yaw（右回転） | ↑ | ↓ | ↑ | ↓ |
-
-これをまとめると、以下のミキシング式になります：
-
-```
-M1 (FR, CCW) = Thrust - Roll + Pitch + Yaw
-M2 (RR, CW)  = Thrust - Roll - Pitch - Yaw
-M3 (RL, CCW) = Thrust + Roll - Pitch + Yaw
-M4 (FL, CW)  = Thrust + Roll + Pitch - Yaw
-```
-
-> **Yawの符号について**: CCWモーターを強くするとCW方向に機体が回転し、
-> CWモーターを強くするとCCW方向に機体が回転します（反作用トルク）。
-
-### ミキシングAPI
-
-本プロジェクトでは、上記のミキシング計算を内部で行う高レベルAPIを提供しています：
-
-```cpp
-// 推奨: 高レベルAPI（ミキシング計算を自動で行う）
-// thrust: 0.0 ~ 1.0, roll/pitch/yaw: -1.0 ~ +1.0（制御出力）
-g_motor.setMixerOutput(thrust, roll, pitch, yaw);
-```
-
-制御器からの出力をそのまま渡すだけで、適切なモーター出力に変換されます。
-
-低レベルAPIを使って個別にモーターを制御することも可能ですが、
-通常の飛行制御では`setMixerOutput()`の使用を推奨します：
-
-```cpp
-// 低レベル: 個別モーター制御（テスト用途など）
-g_motor.setMotor(stampfly::MotorDriver::MOTOR_FR, value);  // 0.0-1.0
-g_motor.setMotor(stampfly::MotorDriver::MOTOR_RR, value);
-g_motor.setMotor(stampfly::MotorDriver::MOTOR_RL, value);
-g_motor.setMotor(stampfly::MotorDriver::MOTOR_FL, value);
-```
-
-### X-Quadモーター配置
+### モーターミキシング（X-Quad）
 
 ```
           前方
@@ -388,495 +209,279 @@ g_motor.setMotor(stampfly::MotorDriver::MOTOR_FL, value);
            X
      CCW  ╱ ╲  CW
     RL(M3)     RR(M2)
-           ▽
           後方
+
+M1 (FR) = Thrust - Roll + Pitch + Yaw
+M2 (RR) = Thrust - Roll - Pitch - Yaw
+M3 (RL) = Thrust + Roll - Pitch + Yaw
+M4 (FL) = Thrust + Roll + Pitch - Yaw
 ```
-
-| モーター | 位置 | 回転方向 | GPIO |
-|---------|------|---------|------|
-| M1 (FR) | 前右 | CCW (反時計回り) | 42 |
-| M2 (RR) | 後右 | CW (時計回り) | 41 |
-| M3 (RL) | 後左 | CCW (反時計回り) | 10 |
-| M4 (FL) | 前左 | CW (時計回り) | 5 |
-
-> **Note:** 対角のモーターは同じ回転方向（FL-RR=CW、FR-RL=CCW）
 
 ---
 
-## 新しいセンサーの追加
+## 安全機能
 
-### 1. コンポーネントの作成
+### 衝撃検出（自動Disarm）
 
-```
-components/stampfly_newsensor/
-├── CMakeLists.txt
-├── include/
-│   └── newsensor.hpp
-└── newsensor.cpp
-```
+`control_task.cpp` で実装。飛行中に衝撃を検出すると即座にDisarm。
 
-### 2. main.cppへの統合
+| 検出タイプ | 閾値 | 検出対象 |
+|-----------|------|---------|
+| HIGH_ACCEL | 3G (29.4 m/s²) | 衝突の衝撃 |
+| HIGH_GYRO | 800 deg/s | 急激な回転・転倒 |
 
 ```cpp
-// グローバルインスタンス追加
-stampfly::NewSensor g_newsensor;
-
-// initSensors()に初期化コード追加
-{
-    stampfly::NewSensor::Config cfg;
-    cfg.i2c_bus = g_i2c_bus;
-    ret = g_newsensor.init(cfg);
-    if (ret == ESP_OK) {
-        ESP_LOGI(TAG, "NewSensor initialized");
-    }
-}
-
-// 必要に応じて専用タスクを追加
-static void NewSensorTask(void* pvParameters) {
-    // ...
+// config.hpp
+namespace safety {
+inline constexpr float IMPACT_ACCEL_THRESHOLD_G = 3.0f;
+inline constexpr float IMPACT_GYRO_THRESHOLD_DPS = 800.0f;
+inline constexpr int IMPACT_COUNT_THRESHOLD = 2;  // 連続検出回数
 }
 ```
 
----
+**動作:**
+1. 閾値超過を連続2回検出
+2. 自動Disarm（モーター停止）
+3. エラートーン + 赤LED点滅5秒
+4. ログ出力: `CRASH DETECTED [HIGH_ACCEL/HIGH_GYRO]`
 
-## CLIコマンドの追加
+### 低バッテリー警告
 
-### 1. cli.cppにハンドラ追加
+`power_task.cpp` で実装。**警告のみ**で飛行は継続可能。
 
-```cpp
-// Forward declaration
-static void cmd_mycommand(int argc, char** argv, void* context);
+| 項目 | 値 |
+|------|-----|
+| 閾値 | 3.4V |
+| LED | シアン・遅い点滅 |
+| ブザー | 初回 + 10秒間隔で繰り返し |
 
-// registerDefaultCommands()に登録
-registerCommand("mycommand", cmd_mycommand, "My new command", this);
+**重要**: 低バッテリーはエラー状態にせず、パイロットが自主的に着陸。
 
-// ハンドラ実装
-static void cmd_mycommand(int argc, char** argv, void* context)
-{
-    CLI* cli = static_cast<CLI*>(context);
-    cli->print("Hello from mycommand!\r\n");
-}
-```
+### センサー安定判定（起動時）
 
-### 2. 外部グローバル変数へのアクセス
+Phase 3で全6センサーの安定を確認：
 
-```cpp
-// cli.cpp先頭で宣言
-extern stampfly::MyClass* g_myclass_ptr;
-
-// main.cppでポインタ設定
-stampfly::MyClass* g_myclass_ptr = nullptr;
-// 初期化後に
-g_myclass_ptr = &g_myclass;
-```
+| センサー | 判定基準 |
+|---------|---------|
+| Accel | 標準偏差 < 0.1 m/s² |
+| Gyro | 標準偏差 < 0.01 rad/s |
+| Mag | 標準偏差 < 5.0 μT |
+| Baro | 標準偏差 < 0.5 m |
+| ToF | 標準偏差 < 0.02 m |
+| Flow | dx+dy標準偏差 < 5.0 |
 
 ---
 
-## 状態管理
+## LED表示システム
 
-### FlightState（飛行状態）
+### ハードウェア構成
 
-```mermaid
-stateDiagram-v2
-    [*] --> INIT
-    INIT --> CALIBRATING : センサー準備完了
-    CALIBRATING --> IDLE : キャリブレーション完了
+| LED | GPIO | チャンネル | 用途 |
+|-----|------|-----------|------|
+| MCU LED | 21 | SYSTEM | 起動/エラー/ペアリング |
+| BODY_TOP | 39-0 | FLIGHT | 飛行状態 |
+| BODY_BOTTOM | 39-1 | STATUS | センサー/バッテリー |
 
-    IDLE --> ARMED : ARMボタン
-    ARMED --> IDLE : DISARMボタン
+### 優先度システム
 
-    ARMED --> FLYING : スロットル上げ
-    FLYING --> ARMED : 着陸
+| 優先度 | 用途 |
+|--------|------|
+| 0: BOOT | 起動シーケンス |
+| 1: CRITICAL_ERROR | センサー異常 |
+| 2: LOW_BATTERY | 低バッテリー |
+| 3: DEBUG_ALERT | デバッグ通知 |
+| 4: PAIRING | ペアリング中 |
+| 5: FLIGHT_STATE | 飛行状態 |
+| 6: DEFAULT | 待機状態 |
 
-    IDLE --> ERROR : エラー発生
-    ARMED --> ERROR : エラー発生
-    FLYING --> ERROR : エラー発生
+### 飛行状態LED（FLIGHT チャンネル）
 
-    ERROR --> IDLE : エラー解除
-```
+| 状態 | 色 | パターン |
+|------|-----|---------|
+| INIT | 青 | ブリーズ |
+| CALIBRATING | 黄 | 高速点滅 |
+| IDLE | 緑 | 点灯 |
+| ARMED | 緑 | 遅い点滅 |
+| FLYING | 黄 | 点灯 |
+| ERROR | 赤 | 高速点滅 |
 
-| 状態 | 説明 | LED |
-|------|------|-----|
-| INIT | 初期化中 | 青・呼吸 |
-| CALIBRATING | キャリブレーション中 | 黄・高速点滅 |
-| IDLE | 待機中（ARM可能） | 緑・常灯 |
-| ARMED | アーム済み（飛行準備完了） | 緑・低速点滅 |
-| FLYING | 飛行中 | 黄・常灯 |
-| ERROR | エラー発生 | 赤・高速点滅 |
-
-### StampFlyStateへのアクセス
-
-```cpp
-auto& state = stampfly::StampFlyState::getInstance();
-
-// 読み取り
-float voltage = state.getVoltage();
-stampfly::FlightState fs = state.getFlightState();
-
-// 書き込み
-state.updateAttitude(roll, pitch, yaw);
-state.setFlightState(stampfly::FlightState::FLYING);
-```
+詳細: [docs/led_display.md](led_display.md)
 
 ---
 
-## デバッグ方法
+## CLIコマンド
 
-### CLIコマンド一覧
+USB Serial (115200bps) で接続。
 
-USBシリアル（115200bps）でCLIに接続できます。
-
-#### システム情報
+### システム
 
 | コマンド | 説明 |
 |----------|------|
-| `help` | 利用可能なコマンド一覧 |
-| `status` | システム状態（FlightState, Error, バッテリー等） |
-| `version` | ESP-IDFバージョン、チップ情報 |
+| `help` | コマンド一覧 |
+| `status` | システム状態表示 |
 | `reset` | システムリセット |
 
-#### センサーデータ
+### センサー
 
 | コマンド | 説明 |
 |----------|------|
-| `sensor imu` | 加速度・ジャイロ表示 |
-| `sensor mag` | 地磁気表示 |
-| `sensor baro` | 気圧・高度表示 |
-| `sensor tof` | ToF距離表示 |
-| `sensor flow` | オプティカルフロー表示 |
-| `sensor power` | 電圧・電流表示 |
-| `sensor all` | 全センサーデータ表示 |
-| `attitude` | 姿勢角表示 |
+| `sensor all` | 全センサーデータ |
+| `sensor imu` | 加速度・ジャイロ |
+| `sensor mag` | 地磁気 |
+| `sensor baro` | 気圧・高度 |
+| `sensor tof` | ToF距離 |
+| `sensor flow` | 光学フロー |
 
-#### コントローラー
+### 制御
 
 | コマンド | 説明 |
 |----------|------|
-| `ctrl` | コントローラー入力（1回表示） |
-| `ctrl watch` | 入力監視（10秒間、10Hz） |
-| `ctrl watch 30` | 入力監視（30秒間） |
-
-#### ログ・データ出力
-
-| コマンド | 説明 |
-|----------|------|
-| `teleplot on` | Teleplot形式出力開始（VSCode拡張対応） |
-| `teleplot off` | Teleplot出力停止 |
-| `log on` | CSVログ開始（20Hz） |
-| `log off` | CSVログ停止 |
-| `log header` | CSVヘッダー出力 |
-| `binlog on` | 400Hzバイナリログ開始（128B/pkt） |
-| `binlog off` | バイナリログ停止 |
-| `binlog freq 100` | ログ周波数設定（10-1000Hz） |
-| `loglevel info` | ESP_LOGレベル設定（全コンポーネント） |
-| `loglevel debug ESKF` | 特定タグのログレベル設定 |
-
-ログレベル: `none`, `error`, `warn`, `info`, `debug`, `verbose`
-
-#### モーター制御
-
-| コマンド | 説明 |
-|----------|------|
-| `motor test 1 50` | モーター1を50%で回転（1-4, 0-100%） |
-| `motor all 30` | 全モーター30%回転 |
+| `ctrl` | コントローラ入力（1回） |
+| `ctrl watch` | 入力監視（10秒間） |
+| `motor test 1 50` | モーター1を50%で回転 |
 | `motor stop` | 全モーター停止 |
 
-モーター配置:
-```
-     Front
- M4(FL)  M1(FR)
-       X
- M3(RL)  M2(RR)
-     Rear
-```
-
-#### キャリブレーション
+### ログ
 
 | コマンド | 説明 |
 |----------|------|
-| `calib gyro` | ジャイロキャリブレーション |
-| `calib accel` | 加速度キャリブレーション |
-| `magcal start` | 地磁気キャリブレーション開始（8の字回転） |
-| `magcal stop` | キャリブレーション終了・計算 |
-| `magcal status` | キャリブレーション状態表示 |
-| `magcal save` | NVSに保存 |
-| `magcal clear` | 保存済みキャリブレーションをクリア |
+| `binlog on` | 400Hzバイナリログ開始 |
+| `binlog off` | ログ停止 |
+| `binlog freq 100` | 周波数設定 (10-1000Hz) |
+| `loglevel info` | ESP_LOGレベル設定 |
 
-#### ペアリング（ESP-NOW）
-
-| コマンド | 説明 |
-|----------|------|
-| `pair` | ペアリング状態表示 |
-| `pair start` | ペアリングモード開始 |
-| `pair stop` | ペアリングモード終了 |
-| `pair channel 6` | WiFiチャンネル設定（1-13） |
-| `unpair` | ペアリング解除 |
-
-#### デバッグ・その他
+### その他
 
 | コマンド | 説明 |
 |----------|------|
 | `debug on` | デバッグモード（ARM時エラー無視） |
-| `debug off` | デバッグモード解除 |
-| `led brightness 128` | LED明るさ設定（0-255、NVS保存） |
-| `gain kp_roll 1.5` | 制御ゲイン設定（スタブ） |
+| `led brightness 64` | LED明るさ (0-255) |
+| `magcal start/stop` | 磁気キャリブレーション |
+| `pair start` | ペアリングモード |
 
-### ESP_LOGの使用
+---
 
-```cpp
-ESP_LOGI(TAG, "Info message: %d", value);
-ESP_LOGW(TAG, "Warning message");
-ESP_LOGE(TAG, "Error message");
-```
+## バイナリログとESKFデバッグ
 
-CLIで有効化：`loglevel info` または `loglevel debug`
-
-### 3. バイナリログの解析
+### ワークフロー
 
 ```bash
-# ログ収集
-python tools/scripts/log_capture.py /dev/ttyACM0 output.bin
+# 1. ログ取得 (60秒)
+python tools/scripts/log_capture.py capture \
+  -p /dev/tty.usbmodem* -o logs/flight.bin -d 60
 
-# 解析（tools/eskf_debugで）
-./eskf_replay output.bin
+# 2. 可視化（バイナリ直接）
+python tools/scripts/visualize_eskf.py logs/flight.bin --all
+
+# 3. PCでESKFリプレイ
+./tools/eskf_debug/build/eskf_replay logs/flight.bin logs/result.csv
+
+# 4. PC vs デバイス比較
+python tools/scripts/visualize_eskf.py logs/result.csv --compare
 ```
+
+### LogPacket構造 (128バイト)
+
+| オフセット | サイズ | 内容 |
+|-----------|--------|------|
+| 0 | 2B | ヘッダ (0xAA 0x56) |
+| 2 | 4B | タイムスタンプ [ms] |
+| 6 | 24B | IMU (accel 12B + gyro 12B) |
+| 30 | 12B | 地磁気 |
+| 42 | 8B | 気圧 + 高度 |
+| 50 | 8B | ToF (bottom + front) |
+| 58 | 5B | Flow (dx, dy, quality) |
+| 63 | 52B | ESKF推定値 |
+| 115 | 1B | ステータス |
+| 116 | 11B | 予約 |
+| 127 | 1B | チェックサム (XOR) |
 
 ---
 
-## ファイル構成
+## 設定パラメータ
 
-```
-stampfly_rtos_skelton/
-├── main/
-│   └── main.cpp              ← メインエントリポイント
-├── components/
-│   ├── stampfly_state/       ← 状態管理（シングルトン）
-│   ├── stampfly_imu/         ← BMI270ドライバ
-│   ├── stampfly_mag/         ← BMM150ドライバ
-│   ├── stampfly_baro/        ← BMP280ドライバ
-│   ├── stampfly_tof/         ← VL53L3CXドライバ
-│   ├── stampfly_opticalflow/ ← PMW3901ドライバ
-│   ├── stampfly_power/       ← INA3221ドライバ
-│   ├── stampfly_motor/       ← モータードライバ
-│   ├── stampfly_led/         ← WS2812 LEDドライバ
-│   ├── stampfly_buzzer/      ← ブザードライバ
-│   ├── stampfly_button/      ← ボタンドライバ
-│   ├── stampfly_eskf/        ← ESKFフィルター
-│   ├── stampfly_filter/      ← LPF/推定器
-│   ├── stampfly_comm/        ← ESP-NOW通信
-│   ├── stampfly_cli/         ← USBシリアルCLI
-│   ├── stampfly_logger/      ← バイナリログ
-│   └── stampfly_math/        ← 数学ライブラリ
-├── docs/                     ← ドキュメント
-└── tools/                    ← 開発ツール
-```
+### config.hpp 名前空間一覧
+
+| 名前空間 | 内容 |
+|---------|------|
+| `config` | GPIO、タスク優先度、スタックサイズ |
+| `timing` | タスク周期 |
+| `eskf` | Q/R行列、初期共分散 |
+| `stability` | センサー安定判定閾値 |
+| `lpf` | ローパスフィルタ設定 |
+| `rate_control` | PIDゲイン、感度 |
+| `safety` | 衝撃検出閾値 |
+| `led` | LED設定 |
 
 ---
 
-## 注意事項
+## APIリファレンス
 
-1. **スレッドセーフティ**: `StampFlyState`はmutexで保護されています。直接メンバーにアクセスせず、getter/setterを使用してください。
-
-2. **タイミング**: IMUTaskは400Hzの精密タイミングが必要です。同じCore 1で重い処理を追加しないでください。
-
-3. **I2Cバス**: 複数のI2Cセンサーが同じバスを共有しています。各タスクはCore 0で実行され、I2Cドライバ内部でスレッドセーフに処理されます。
-
-4. **ESKF更新**: すべてのESKF更新はIMUTask内で行われます。他のセンサータスクはデータをキャッシュしてフラグを立てるだけです（レースコンディション防止）。
-
-5. **モーター安全**: `g_motor.setThrottle()`を呼ぶ前に、必ずフライト状態をチェックしてください。
-
----
-
-## StampFlyState APIリファレンス
-
-制御に必要なセンサー値や推定値は`StampFlyState`シングルトンから取得します。
-すべてのAPIはスレッドセーフです。
+### StampFlyState
 
 ```cpp
 auto& state = stampfly::StampFlyState::getInstance();
-```
 
-### IMUデータ（加速度・ジャイロ）
+// IMUデータ
+state.getIMUData(accel, gyro);         // フィルタ済み生データ
+state.getIMUCorrected(accel, gyro);    // バイアス補正済み（制御用）
 
-| API | 戻り値 | 説明 |
-|-----|--------|------|
-| `getIMUData(accel, gyro)` | void | フィルタ済み生データ（ログ用） |
-| `getIMUCorrected(accel, gyro)` | void | **バイアス補正済み（制御用推奨）** |
+// 姿勢
+state.getAttitudeEuler(roll, pitch, yaw);  // [rad]
 
-```cpp
-stampfly::Vec3 accel, gyro;
-state.getIMUCorrected(accel, gyro);  // 制御用
-// accel: [m/s²], gyro: [rad/s], 機体座標系(NED)
-```
+// 位置・速度
+auto pos = state.getPosition();   // [m] NED
+auto vel = state.getVelocity();   // [m/s] NED
 
-### 姿勢（ESKF推定値）
-
-| API | 戻り値 | 説明 |
-|-----|--------|------|
-| `getAttitudeEuler(roll, pitch, yaw)` | void | オイラー角 [rad] |
-| `getAttitude()` | StateVector3 | {roll, pitch, yaw} [rad] |
-
-```cpp
-float roll, pitch, yaw;
-state.getAttitudeEuler(roll, pitch, yaw);
-// roll: 右翼下げ正, pitch: 機首上げ正, yaw: 右回り正
-```
-
-### 位置・速度（ESKF推定値）
-
-| API | 戻り値 | 説明 |
-|-----|--------|------|
-| `getPosition()` | StateVector3 | 位置 [m] NED座標系 |
-| `getVelocity()` | StateVector3 | 速度 [m/s] NED座標系 |
-| `getAltitude()` | float | 高度 [m]（気圧基準） |
-
-```cpp
-auto pos = state.getPosition();   // {x, y, z} [m]
-auto vel = state.getVelocity();   // {vx, vy, vz} [m/s]
-float alt = state.getAltitude();  // [m]
-```
-
-### センサーデータ
-
-| API | 戻り値 | 説明 |
-|-----|--------|------|
-| `getMagData(mag)` | void | 地磁気 [μT] |
-| `getBaroData(alt, pressure)` | void | 高度 [m], 気圧 [Pa] |
-| `getToFData(bottom, front)` | void | ToF距離 [m] |
-| `getFlowData(vx, vy)` | void | フロー速度 [m/s] |
-| `getPowerData(voltage, current)` | void | 電圧 [V], 電流 [A] |
-
-```cpp
-stampfly::Vec3 mag;
-state.getMagData(mag);  // [μT]
-
-float alt, pressure;
-state.getBaroData(alt, pressure);  // [m], [Pa]
-
-float tof_bottom, tof_front;
-state.getToFData(tof_bottom, tof_front);  // [m]
-
-float voltage, current;
-state.getPowerData(voltage, current);  // [V], [A]
-```
-
-### コントローラー入力
-
-| API | 戻り値 | 説明 |
-|-----|--------|------|
-| `getControlInput(t, r, p, y)` | void | 正規化済み入力 |
-| `getRawControlInput(t, r, p, y)` | void | 生ADC値 |
-| `getControlFlags()` | uint8_t | フラグビット |
-
-```cpp
-float throttle, roll, pitch, yaw;
+// 制御入力
 state.getControlInput(throttle, roll, pitch, yaw);
 // throttle: 0.0~1.0, roll/pitch/yaw: -1.0~+1.0
+
+// システム状態
+auto fs = state.getFlightState();  // INIT/IDLE/ARMED/FLYING/ERROR
+auto err = state.getErrorCode();   // NONE/SENSOR_*/LOW_BATTERY/...
 ```
 
-### システム状態
-
-| API | 戻り値 | 説明 |
-|-----|--------|------|
-| `getFlightState()` | FlightState | 飛行状態 |
-| `getErrorCode()` | ErrorCode | エラーコード |
-| `isESKFInitialized()` | bool | ESKF初期化済みか |
-| `getVoltage()` | float | バッテリー電圧 [V] |
+### LEDManager
 
 ```cpp
-auto flight_state = state.getFlightState();
-if (flight_state == stampfly::FlightState::FLYING) {
-    // 飛行中の処理
-}
+auto& led = stampfly::LEDManager::getInstance();
+
+// チャンネル表示要求（優先度付き）
+led.requestChannel(LEDChannel::SYSTEM, LEDPriority::BOOT,
+                   LEDPattern::BREATHE, 0xFFFFFF);
+
+// タイムアウト付き（5秒後に自動解除）
+led.requestChannel(LEDChannel::STATUS, LEDPriority::DEBUG_ALERT,
+                   LEDPattern::BLINK_FAST, 0xFFFF00, 5000);
+
+// 解除
+led.releaseChannel(LEDChannel::SYSTEM, LEDPriority::BOOT);
+
+// イベント通知
+led.onFlightStateChanged(FlightState::ARMED);
+led.onBatteryStateChanged(voltage, is_low);
 ```
 
-### バイアス値（ESKF推定）
-
-| API | 戻り値 | 説明 |
-|-----|--------|------|
-| `getGyroBias()` | StateVector3 | ジャイロバイアス [rad/s] |
-| `getAccelBias()` | StateVector3 | 加速度バイアス [m/s²] |
+### MotorDriver
 
 ```cpp
-auto gyro_bias = state.getGyroBias();
-// ESKFが推定したバイアス値（デバッグ用）
-```
+// 推奨: ミキサー経由
+g_motor.setMixerOutput(thrust, roll, pitch, yaw);
 
----
+// 低レベル: 個別モーター
+g_motor.setMotor(MotorDriver::MOTOR_FR, value);  // 0.0-1.0
 
-## 列挙型（Enum）リファレンス
-
-### FlightState（飛行状態）
-
-```cpp
-enum class FlightState {
-    INIT,        // 初期化中
-    CALIBRATING, // キャリブレーション中
-    IDLE,        // 待機中（ARM可能）
-    ARMED,       // アーム済み（飛行準備完了）
-    FLYING,      // 飛行中
-    LANDING,     // 着陸中
-    ERROR        // エラー発生
-};
-```
-
-使用例：
-```cpp
-auto state = stampfly::StampFlyState::getInstance().getFlightState();
-if (state == stampfly::FlightState::ARMED) {
-    // アーム済みの処理
-}
-```
-
-### ErrorCode（エラーコード）
-
-```cpp
-enum class ErrorCode {
-    NONE,               // エラーなし
-    SENSOR_IMU,         // IMUセンサーエラー
-    SENSOR_MAG,         // 地磁気センサーエラー
-    SENSOR_BARO,        // 気圧センサーエラー
-    SENSOR_TOF,         // ToFセンサーエラー
-    SENSOR_FLOW,        // オプティカルフローエラー
-    SENSOR_POWER,       // 電源センサーエラー
-    LOW_BATTERY,        // 低バッテリー（<3.4V）
-    COMM_LOST,          // 通信途絶
-    CALIBRATION_FAILED  // キャリブレーション失敗
-};
-```
-
-### PairingState（ペアリング状態）
-
-```cpp
-enum class PairingState {
-    NOT_PAIRED,  // 未ペアリング
-    PAIRING,     // ペアリング中
-    PAIRED       // ペアリング完了
-};
-```
-
-### コントロールフラグ（ビットフラグ）
-
-```cpp
-constexpr uint8_t CTRL_FLAG_ARM      = 0x01;  // ARMボタン
-constexpr uint8_t CTRL_FLAG_FLIP     = 0x02;  // FLIPボタン
-constexpr uint8_t CTRL_FLAG_MODE     = 0x04;  // MODEボタン
-constexpr uint8_t CTRL_FLAG_ALT_MODE = 0x08;  // ALT_MODEボタン
-```
-
-使用例：
-```cpp
-uint8_t flags = state.getControlFlags();
-if (flags & stampfly::CTRL_FLAG_ARM) {
-    // ARMボタンが押されている
-}
+// Arm/Disarm
+g_motor.arm();
+g_motor.disarm();
 ```
 
 ---
 
 ## 座標系
 
-本プロジェクトでは**NED座標系**（North-East-Down）を採用しています：
+**NED座標系**（North-East-Down）を採用：
 
 | 軸 | 方向 | 正の向き |
 |----|------|---------|
@@ -888,6 +493,18 @@ if (flags & stampfly::CTRL_FLAG_ARM) {
 |------|-----|---------|
 | Roll | X軸周り | 右翼下げ |
 | Pitch | Y軸周り | 機首上げ |
-| Yaw | Z軸周り | 右回り（時計回り） |
+| Yaw | Z軸周り | 右回り |
 
+---
 
+## 注意事項
+
+1. **タスク分離**: 制御ロジックは`main/tasks/`に実装。main.cppは薄く保つ。
+
+2. **スレッドセーフティ**: `StampFlyState`はmutex保護済み。getter/setterを使用。
+
+3. **タイミング**: IMUTask/ControlTaskは400Hz。Core 1で重い処理を避ける。
+
+4. **安全機能**: 衝撃検出は自動Disarm。低バッテリーは警告のみ。
+
+5. **LED優先度**: 複数の表示要求は優先度で制御。高優先度が表示される。
