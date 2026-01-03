@@ -388,6 +388,18 @@ inline constexpr float OUTPUT_LIMIT = 3.7f;        // PID出力制限 [V] (電�
 
 } // namespace rate_control
 
+// =============================================================================
+// Safety Parameters - 安全機能パラメータ
+// =============================================================================
+namespace safety {
+
+// 衝撃検出（自動Disarm）
+inline constexpr float IMPACT_THRESHOLD_G = 3.0f;      // 衝撃検出閾値 [G]
+inline constexpr float IMPACT_THRESHOLD_MS2 = IMPACT_THRESHOLD_G * 9.81f;  // [m/s^2]
+inline constexpr int IMPACT_COUNT_THRESHOLD = 2;       // 連続検出回数（誤検出防止）
+
+} // namespace safety
+
 namespace button {
 inline constexpr int DEBOUNCE_MS = 50;             // デバウンス時間 [ms]
 } // namespace button
