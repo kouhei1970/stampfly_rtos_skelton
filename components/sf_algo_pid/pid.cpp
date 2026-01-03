@@ -122,8 +122,9 @@ float PID::updateDerivative(float error, float measurement, float dt)
     float deriv_b = 2.0f * Td_ / ((alpha + 1.0f) * dt);
 
     // Incomplete derivative filter (bilinear transform)
+    // y[k] = ((α-1)/(α+1))·y[k-1] + (2·Td/(dt·(α+1)))·(x[k] - x[k-1])
     float deriv_diff = deriv_input - prev_deriv_input_;
-    deriv_filtered_ = -deriv_a * deriv_filtered_ + deriv_b * deriv_diff;
+    deriv_filtered_ = deriv_a * deriv_filtered_ + deriv_b * deriv_diff;
 
     // Update previous derivative input
     prev_deriv_input_ = deriv_input;

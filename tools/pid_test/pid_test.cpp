@@ -6,7 +6,7 @@
  * - P-only: output = Kp * error
  * - PI with trapezoidal integration: I[k] = I[k-1] + (dt/(2*Ti)) * (e[k] + e[k-1])
  * - PD with incomplete derivative (bilinear transform):
- *   D[k] = -a * D[k-1] + b * (input[k] - input[k-1])
+ *   D[k] = a * D[k-1] + b * (input[k] - input[k-1])
  *   where α = 2*η*Td/dt, a = (α-1)/(α+1), b = 2*Td/((α+1)*dt)
  * - Anti-windup with back-calculation
  */
@@ -188,7 +188,7 @@ void test_pd_incomplete_derivative() {
 
     float output2 = pid.update(setpoint, measurement, dt);
 
-    // D[1] = -a * D[0] + b * (e[1] - e[0]) = 0 + 6.667 * 10 = 66.67
+    // D[1] = a * D[0] + b * (e[1] - e[0]) = 0 + 6.667 * 10 = 66.67
     float D_filt_1 = deriv_b * (e1 - e0);  // b * 10 = 66.67
     float expected_D2 = config.Kp * D_filt_1;
     float expected_P2 = config.Kp * e1;
@@ -203,8 +203,8 @@ void test_pd_incomplete_derivative() {
     float e2 = e1;  // Still 10
     float output3 = pid.update(setpoint, measurement, dt);
 
-    // D[2] = -a * D[1] + b * (e[2] - e[1]) = -0.333 * 66.67 + 0 = -22.22
-    float D_filt_2 = -deriv_a * D_filt_1 + deriv_b * (e2 - e1);
+    // D[2] = a * D[1] + b * (e[2] - e[1]) = 0.333 * 66.67 + 0 = 22.22
+    float D_filt_2 = deriv_a * D_filt_1 + deriv_b * (e2 - e1);
     float expected_D3 = config.Kp * D_filt_2;
     float expected_P3 = config.Kp * e2;
     float expected_3 = expected_P3 + expected_D3;
@@ -218,7 +218,7 @@ void test_pd_incomplete_derivative() {
     float e3 = e2;
     float output4 = pid.update(setpoint, measurement, dt);
 
-    float D_filt_3 = -deriv_a * D_filt_2 + deriv_b * (e3 - e2);
+    float D_filt_3 = deriv_a * D_filt_2 + deriv_b * (e3 - e2);
     float expected_D4 = config.Kp * D_filt_3;
 
     ASSERT_NEAR(expected_D4, pid.getDerivative(), 1e-3f, "D component step 4 (decay)");
@@ -284,7 +284,7 @@ void test_full_pid() {
             first_run = false;
         } else {
             float deriv_diff = error - prev_deriv_input;
-            deriv_filt = -deriv_a * deriv_filt + deriv_b * deriv_diff;
+            deriv_filt = deriv_a * deriv_filt + deriv_b * deriv_diff;
             expected_D = config.Kp * deriv_filt;
             prev_deriv_input = error;
         }
