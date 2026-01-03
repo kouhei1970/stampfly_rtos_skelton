@@ -1,5 +1,41 @@
 # LED アーキテクチャ設計提案
 
+## 0. ハードウェア構成
+
+StampFlyには**3つのWS2812 LED**が搭載されている：
+
+| LED | GPIO | 数量 | 位置 | 用途（提案） |
+|-----|------|------|------|-------------|
+| MCU LED | GPIO21 | 1個 | M5Stamp S3上 | システム状態（起動/エラー） |
+| Body LED 0 | GPIO39 | 1個 | ドローン本体（前） | 飛行状態 |
+| Body LED 1 | GPIO39 | 1個 | ドローン本体（後） | センサー/バッテリー |
+
+**注意**: Body LED 0/1はGPIO39で直列接続（WS2812デイジーチェーン）
+
+### 各LEDの役割分担（提案）
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  MCU LED (GPIO21)     │ システム状態                        │
+│  ・起動中: 白 Breathe  │ ・エラー: 赤 Blink                  │
+│  ・Ready: 緑 Solid     │ ・ペアリング: 青 Blink              │
+└─────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────┐
+│  Body LED 0 (前)      │ 飛行状態                            │
+│  ・IDLE: 緑 Solid      │ ・ARMED: 緑 Blink                   │
+│  ・FLYING: 黄 Solid    │ ・LANDING: 緑 Fast Blink            │
+└─────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────┐
+│  Body LED 1 (後)      │ センサー/バッテリー                 │
+│  ・正常: 緑 Solid      │ ・低電圧: シアン Blink              │
+│  ・センサー異常: 赤    │ ・デバッグ: 黄                      │
+└─────────────────────────────────────────────────────────────┘
+```
+
+---
+
 ## 1. 現状の問題点
 
 ### 1.1 責任の分散と混在
@@ -100,7 +136,26 @@ enum class LEDPriority : uint8_t {
 };
 ```
 
-### 2.4 表示要求API
+### 2.4 LEDインデックス定義
+
+```cpp
+enum class LEDIndex : uint8_t {
+    MCU = 0,      // M5Stamp S3内蔵 (GPIO21)
+    BODY_FRONT,   // ドローン前部 (GPIO39, index 0)
+    BODY_REAR,    // ドローン後部 (GPIO39, index 1)
+    ALL,          // 全LED一括
+    NUM_LEDS = 3
+};
+
+// 各LEDの担当チャンネル
+enum class LEDChannel : uint8_t {
+    SYSTEM,       // MCU LED: システム状態（起動/エラー/ペアリング）
+    FLIGHT,       // BODY_FRONT: 飛行状態
+    STATUS,       // BODY_REAR: センサー/バッテリー状態
+};
+```
+
+### 2.5 表示要求API
 
 ```cpp
 class LEDManager {
@@ -108,68 +163,105 @@ public:
     // シングルトン
     static LEDManager& getInstance();
 
-    // 初期化（LED HALを内部で管理）
-    esp_err_t init(const LED::Config& config);
+    // 初期化（2つのLEDストリップを管理）
+    esp_err_t init();
 
-    // 表示要求
-    // source: 要求元の優先度
-    // pattern: 表示パターン
-    // color: 色
-    // timeout_ms: 0=永続、>0=指定時間後に自動解除
-    void request(LEDPriority source, LED::Pattern pattern,
-                 uint32_t color, uint32_t timeout_ms = 0);
+    // === チャンネルベースAPI（推奨）===
+    // 各チャンネルに表示を要求（優先度で自動管理）
+    void requestChannel(LEDChannel channel, LEDPriority priority,
+                        LED::Pattern pattern, uint32_t color,
+                        uint32_t timeout_ms = 0);
+    void releaseChannel(LEDChannel channel, LEDPriority priority);
 
-    // 表示解除（その優先度の要求をクリア）
-    void release(LEDPriority source);
+    // === 直接制御API（デバッグ用）===
+    // 特定のLEDを直接制御（優先度システムをバイパス）
+    void setDirect(LEDIndex led, LED::Pattern pattern, uint32_t color);
 
-    // フライト状態変更通知（内部でFLIGHT_STATE優先度の表示を更新）
+    // === イベント通知API ===
+    // フライト状態変更（内部でFLIGHTチャンネルを更新）
     void onFlightStateChanged(FlightState state);
+
+    // バッテリー状態変更（内部でSTATUSチャンネルを更新）
+    void onBatteryStateChanged(float voltage, bool low_battery);
+
+    // センサー状態変更（内部でSTATUSチャンネルを更新）
+    void onSensorHealthChanged(bool all_healthy);
 
     // 更新（LEDタスクから呼び出し）
     void update();
 
 private:
-    struct DisplayRequest {
-        bool active;
-        LED::Pattern pattern;
-        uint32_t color;
-        uint32_t expire_time_ms;  // 0=永続
+    // 各チャンネルの表示要求キュー
+    struct ChannelState {
+        struct Request {
+            bool active;
+            LEDPriority priority;
+            LED::Pattern pattern;
+            uint32_t color;
+            uint32_t expire_time_ms;
+        };
+        Request requests[8];  // 優先度数分
+        LEDIndex target_led;
     };
 
-    DisplayRequest requests_[static_cast<int>(LEDPriority::DEFAULT) + 1];
-    LED led_;  // HAL
+    ChannelState channels_[3];  // SYSTEM, FLIGHT, STATUS
+
+    // HAL（2つのLEDストリップ）
+    LEDStrip mcu_led_;   // GPIO21, 1個
+    LEDStrip body_led_;  // GPIO39, 2個
 };
 ```
 
-### 2.5 使用例
+### 2.6 使用例
 
 ```cpp
-// 起動シーケンス（最高優先度、永続）
-LEDManager::getInstance().request(
-    LEDPriority::BOOT,
-    LED::Pattern::BREATHE,
-    0xFFFFFF,  // White
-    0          // 永続（手動で解除）
-);
+auto& led = LEDManager::getInstance();
 
-// 低電圧警告（永続）
-LEDManager::getInstance().request(
-    LEDPriority::LOW_BATTERY,
-    LED::Pattern::BLINK_SLOW,
-    0x00FFFF,  // Cyan
-    0
-);
+// =====================================================
+// 起動シーケンス（SYSTEM チャンネル = MCU LED）
+// =====================================================
+
+// Phase 1: Place on ground（白 Breathe）
+led.requestChannel(LEDChannel::SYSTEM, LEDPriority::BOOT,
+                   LED::Pattern::BREATHE, 0xFFFFFF);
+
+// Phase 2: Sensor init（青 Breathe）
+led.requestChannel(LEDChannel::SYSTEM, LEDPriority::BOOT,
+                   LED::Pattern::BREATHE, 0x0000FF);
+
+// Phase 3: Stabilization（マゼンタ Blink）
+led.requestChannel(LEDChannel::SYSTEM, LEDPriority::BOOT,
+                   LED::Pattern::BLINK_SLOW, 0xFF00FF);
+
+// Phase 4: Ready（緑 Solid → BOOT解除で自動表示）
+led.releaseChannel(LEDChannel::SYSTEM, LEDPriority::BOOT);
+
+// =====================================================
+// 飛行状態（FLIGHT チャンネル = BODY_FRONT LED）
+// =====================================================
+
+// FlightState変更時に自動更新（onFlightStateChangedから呼ばれる）
+led.onFlightStateChanged(FlightState::ARMED);
+// → BODY_FRONT が緑点滅になる
+
+// =====================================================
+// センサー/バッテリー（STATUS チャンネル = BODY_REAR LED）
+// =====================================================
+
+// 低電圧警告
+led.onBatteryStateChanged(3.3f, true);
+// → BODY_REAR がシアン点滅になる
 
 // デバッグ表示（1秒後に自動解除）
-LEDManager::getInstance().request(
-    LEDPriority::DEBUG_ALERT,
-    LED::Pattern::BLINK_FAST,
-    0xFFFF00,  // Yellow
-    1000       // 1秒後に解除
-);
+led.requestChannel(LEDChannel::STATUS, LEDPriority::DEBUG_ALERT,
+                   LED::Pattern::BLINK_FAST, 0xFFFF00, 1000);
 
-// 起動完了時に解除
-LEDManager::getInstance().release(LEDPriority::BOOT);
+// =====================================================
+// 全LED一括制御（緊急時）
+// =====================================================
+
+// 致命的エラー（全LED赤点滅）
+led.setDirect(LEDIndex::ALL, LED::Pattern::BLINK_FAST, 0xFF0000);
 ```
 
 ---
@@ -191,20 +283,30 @@ app_main()
 
 ```
 app_main()
-├── アクチュエータ初期化（LED含む）
-├── LEDタスク起動（最優先で起動）
-│   └── BOOT優先度で表示開始
-├── Phase 1: Place on ground (White breathing)
-│   └── LEDManager::request(BOOT, BREATHE, WHITE)
-├── Phase 2: Sensor init (Blue breathing)
-│   └── LEDManager::request(BOOT, BREATHE, BLUE)
+├── NVS初期化
+├── LEDManager初期化（GPIO21 + GPIO39）
+├── LEDタスク起動（最優先で起動）  ← 他の全タスクより前
+│   └── 以降、手動update()不要
+│
+├── Phase 1: Place on ground (MCU=白 Breathe)
+│   └── requestChannel(SYSTEM, BOOT, BREATHE, WHITE)
+│
+├── Phase 2: Sensor init (MCU=青 Breathe)
+│   └── requestChannel(SYSTEM, BOOT, BREATHE, BLUE)
+│
 ├── 他のタスク起動
-├── Phase 3: Stabilization (Magenta blink)
-│   └── LEDManager::request(BOOT, BLINK_SLOW, MAGENTA)
+│
+├── Phase 3: Stabilization (MCU=マゼンタ Blink)
+│   └── requestChannel(SYSTEM, BOOT, BLINK_SLOW, MAGENTA)
+│
 ├── Phase 4: Ready
-│   └── LEDManager::release(BOOT)
-│       → FLIGHT_STATE(IDLE)の表示に自動遷移
+│   ├── releaseChannel(SYSTEM, BOOT)
+│   │   → MCU LED: 自動的に緑 Solidに
+│   ├── BODY_FRONT: IDLE状態 → 緑 Solid
+│   └── BODY_REAR: センサー正常 → 緑 Solid
+│
 └── メインループ
+    └── 各タスクからonXxxChanged()でLED自動更新
 ```
 
 ### 3.3 利点
@@ -281,15 +383,45 @@ app_main()
 
 ```
 components/
-├── sf_hal_led/               # HAL層
-│   ├── include/led.hpp       # ハードウェア制御のみ
-│   └── led.cpp
-├── sf_svc_led/               # サービス層（新規）
-│   ├── include/led_manager.hpp
+├── sf_hal_led/                    # HAL層（ハードウェア制御のみ）
+│   ├── include/
+│   │   └── led_strip.hpp          # 単一GPIOのLEDストリップ制御
+│   └── led_strip.cpp
+│
+├── sf_svc_led/                    # サービス層（新規）
+│   ├── include/
+│   │   ├── led_manager.hpp        # LEDManager クラス
+│   │   ├── led_types.hpp          # LEDIndex, LEDChannel, LEDPriority
+│   │   └── led_patterns.hpp       # パターン定義
 │   └── led_manager.cpp
+│
 main/
+├── config.hpp                     # GPIO定義追加
+│   # GPIO_LED_MCU = 21
+│   # GPIO_LED_BODY = 39
+│   # NUM_LEDS_MCU = 1
+│   # NUM_LEDS_BODY = 2
+│
 └── tasks/
-    └── led_task.cpp          # 簡素化されたタスク
+    └── led_task.cpp               # 簡素化（update()呼び出しのみ）
+```
+
+### 7.1 config.hpp への追加
+
+```cpp
+namespace led {
+// M5Stamp S3 内蔵LED
+inline constexpr int GPIO_MCU = 21;
+inline constexpr int NUM_LEDS_MCU = 1;
+
+// StampFly ボード上LED（デイジーチェーン）
+inline constexpr int GPIO_BODY = 39;
+inline constexpr int NUM_LEDS_BODY = 2;
+
+// LED インデックス
+inline constexpr int IDX_BODY_FRONT = 0;
+inline constexpr int IDX_BODY_REAR = 1;
+}  // namespace led
 ```
 
 ---
@@ -297,11 +429,29 @@ main/
 ## 8. 結論
 
 現在のLED制御は場当たり的な修正が積み重なり、保守性が低下しています。
-優先度ベースの表示管理システムを導入することで：
+また、3つのLEDが存在するにも関わらず1つしか活用していません。
 
-1. **単一の制御点** - 全ての表示要求が一箇所を通る
-2. **明確な優先度** - 表示の競合が自動解決
-3. **早期起動** - 手動update()が不要
-4. **拡張性** - 新しい表示要求を追加しやすい
+新アーキテクチャを導入することで：
 
-これにより、コードの品質と保守性が大幅に向上します。
+1. **3つのLEDの有効活用**
+   - MCU LED (GPIO21): システム状態（起動/エラー）
+   - BODY_FRONT (GPIO39-0): 飛行状態
+   - BODY_REAR (GPIO39-1): センサー/バッテリー
+
+2. **チャンネルベースの制御**
+   - 各LEDが担当する情報カテゴリを明確化
+   - 複数情報を同時に表示可能
+
+3. **優先度ベースの表示管理**
+   - 各チャンネル内で優先度により自動解決
+   - タイムアウト付き一時表示
+
+4. **早期起動**
+   - LEDタスクを最初に起動
+   - 手動update()呼び出しが不要
+
+5. **イベント駆動**
+   - onFlightStateChanged(), onBatteryStateChanged()
+   - 各タスクからの通知で自動更新
+
+これにより、パイロットはLEDを見るだけで「システム状態」「飛行状態」「センサー/バッテリー状態」を一目で把握できるようになります。
