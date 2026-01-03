@@ -81,11 +81,53 @@ public:
 
     bool isInitialized() const { return initialized_; }
 
+    // Motor duty statistics
+    struct MotorStats {
+        float sum;
+        float min;
+        float max;
+        uint32_t count;
+    };
+
+    /**
+     * @brief Get motor duty statistics
+     * @param motor Motor index (0-3)
+     * @return Statistics for the motor
+     */
+    MotorStats getStats(int motor) const;
+
+    /**
+     * @brief Reset all motor statistics
+     */
+    void resetStats();
+
+    /**
+     * @brief Save statistics to NVS
+     */
+    void saveStatsToNVS();
+
+    /**
+     * @brief Load statistics from NVS
+     * @return true if loaded successfully
+     */
+    bool loadStatsFromNVS();
+
+    /**
+     * @brief Get last flight statistics (from NVS)
+     */
+    MotorStats getLastFlightStats(int motor) const { return last_flight_stats_[motor]; }
+
 private:
     bool initialized_ = false;
     bool armed_ = false;
     Config config_;
     float motor_output_[NUM_MOTORS] = {0};
+
+    // Statistics (current flight)
+    MotorStats stats_[NUM_MOTORS] = {};
+
+    // Last flight statistics (loaded from NVS)
+    MotorStats last_flight_stats_[NUM_MOTORS] = {};
 };
 
 }  // namespace stampfly

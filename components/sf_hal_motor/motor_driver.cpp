@@ -6,6 +6,8 @@
 #include "motor_driver.hpp"
 #include "esp_log.h"
 #include "driver/ledc.h"
+#include "nvs_flash.h"
+#include "nvs.h"
 #include <algorithm>
 
 static const char* TAG = "MotorDriver";
@@ -119,6 +121,18 @@ void MotorDriver::setMotor(int motor, float value)
 
     motor_output_[motor] = std::clamp(value, 0.0f, 1.0f);
 
+    // Update statistics
+    float v = motor_output_[motor];
+    stats_[motor].sum += v;
+    stats_[motor].count++;
+    if (stats_[motor].count == 1) {
+        stats_[motor].min = v;
+        stats_[motor].max = v;
+    } else {
+        if (v < stats_[motor].min) stats_[motor].min = v;
+        if (v > stats_[motor].max) stats_[motor].max = v;
+    }
+
     // Calculate duty cycle based on resolution
     uint32_t max_duty = (1U << config_.pwm_resolution_bits) - 1;
     uint32_t duty = static_cast<uint32_t>(motor_output_[motor] * max_duty);
@@ -165,6 +179,64 @@ void MotorDriver::testMotor(int motor, int throttle_percent)
     // Directly set PWM for testing (bypasses arm check)
     ledc_set_duty(LEDC_MODE, MOTOR_CHANNELS[motor], duty);
     ledc_update_duty(LEDC_MODE, MOTOR_CHANNELS[motor]);
+}
+
+MotorDriver::MotorStats MotorDriver::getStats(int motor) const
+{
+    if (motor < 0 || motor >= NUM_MOTORS) {
+        return {};
+    }
+    return stats_[motor];
+}
+
+void MotorDriver::resetStats()
+{
+    for (int i = 0; i < NUM_MOTORS; i++) {
+        stats_[i] = {};
+    }
+}
+
+void MotorDriver::saveStatsToNVS()
+{
+    nvs_handle_t handle;
+    esp_err_t ret = nvs_open("motor", NVS_READWRITE, &handle);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to open NVS for motor stats: %s", esp_err_to_name(ret));
+        return;
+    }
+
+    // Save as blob
+    ret = nvs_set_blob(handle, "stats", stats_, sizeof(stats_));
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to save motor stats: %s", esp_err_to_name(ret));
+    } else {
+        nvs_commit(handle);
+        ESP_LOGI(TAG, "Motor stats saved to NVS");
+    }
+
+    nvs_close(handle);
+}
+
+bool MotorDriver::loadStatsFromNVS()
+{
+    nvs_handle_t handle;
+    esp_err_t ret = nvs_open("motor", NVS_READONLY, &handle);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "No motor stats in NVS");
+        return false;
+    }
+
+    size_t size = sizeof(last_flight_stats_);
+    ret = nvs_get_blob(handle, "stats", last_flight_stats_, &size);
+    nvs_close(handle);
+
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to load motor stats: %s", esp_err_to_name(ret));
+        return false;
+    }
+
+    ESP_LOGI(TAG, "Motor stats loaded from NVS");
+    return true;
 }
 
 }  // namespace stampfly

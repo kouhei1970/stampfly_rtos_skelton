@@ -235,11 +235,13 @@ void onButtonEvent(stampfly::Button::Event event)
                 if (state.requestArm()) {
                     // ARM時に姿勢を初期化（現在の向き=Yaw 0°）
                     initializeAttitudeFromBuffers();
+                    g_motor.resetStats();  // モーター統計リセット
                     g_buzzer.armTone();
                     ESP_LOGI(TAG, "Motors ARMED");
                 }
             } else if (state.getFlightState() == stampfly::FlightState::ARMED) {
                 if (state.requestDisarm()) {
+                    g_motor.saveStatsToNVS();  // モーター統計保存
                     g_buzzer.disarmTone();
                     ESP_LOGI(TAG, "Motors DISARMED");
                 }
@@ -306,12 +308,14 @@ void onControlPacket(const stampfly::ControlPacket& packet)
             if (state.requestArm()) {
                 g_motor.arm();  // Enable motor driver
                 initializeAttitudeFromBuffers();
+                g_motor.resetStats();  // モーター統計リセット
                 g_buzzer.armTone();
                 ESP_LOGI(TAG, "Motors ARMED (from controller)");
             }
         } else if (flight_state == stampfly::FlightState::ARMED) {
             // ARMED → DISARM
             if (state.requestDisarm()) {
+                g_motor.saveStatsToNVS();  // モーター統計保存
                 g_motor.disarm();  // Disable motor driver and stop motors
                 g_buzzer.disarmTone();
                 ESP_LOGI(TAG, "Motors DISARMED (from controller)");
@@ -458,46 +462,75 @@ extern "C" void app_main(void)
     ESP_LOGI(TAG, "Initializing actuators...");
     init::actuators();
 
-    // Play startup tone early to indicate boot progress
-    ESP_LOGI(TAG, "Playing startup tone...");
+    // =========================================================================
+    // Phase 1: Place on ground (White breathing) - 3 seconds
+    // =========================================================================
+    ESP_LOGI(TAG, "Phase 1: Place aircraft on ground (3 seconds)...");
     g_buzzer.startTone();
-    g_led.showInit();
+    g_led.setPattern(stampfly::LED::Pattern::BREATHE, 0xFFFFFF);  // White
+    for (int i = 3; i > 0; i--) {
+        ESP_LOGI(TAG, "  %d...", i);
+        // LED更新を手動で行う（LEDタスクはまだ起動していない）
+        for (int j = 0; j < 30; j++) {
+            g_led.update();
+            vTaskDelay(pdMS_TO_TICKS(33));  // ~30Hz
+        }
+    }
 
-    // Initialize sensors (may fail partially, that's OK)
-    ESP_LOGI(TAG, "Initializing sensors...");
+    // =========================================================================
+    // Phase 2: Sensor initialization (Blue breathing)
+    // =========================================================================
+    ESP_LOGI(TAG, "Phase 2: Initializing sensors...");
+    g_led.setPattern(stampfly::LED::Pattern::BREATHE, 0x0000FF);  // Blue
+
+    // LED更新ヘルパー（初期化中に数回呼び出す）
+    auto updateLedDuringInit = [&]() {
+        for (int i = 0; i < 10; i++) {
+            g_led.update();
+            vTaskDelay(pdMS_TO_TICKS(20));
+        }
+    };
+
+    updateLedDuringInit();
     init::sensors();
+    updateLedDuringInit();
 
     // Initialize estimators
     ESP_LOGI(TAG, "Initializing estimators...");
     init::estimators();
+    updateLedDuringInit();
 
     // Initialize communication (ESP-NOW)
     ESP_LOGI(TAG, "Initializing communication...");
     init::communication();
+    updateLedDuringInit();
 
     // Initialize CLI
     ESP_LOGI(TAG, "Initializing CLI...");
     init::cli();
+    updateLedDuringInit();
 
     // Initialize Logger (400Hz binary log)
     ESP_LOGI(TAG, "Initializing Logger...");
     init::logger();
+    updateLedDuringInit();
 
     // Initialize Telemetry (WebSocket server)
     ESP_LOGI(TAG, "Initializing Telemetry...");
     init::telemetry();
+    updateLedDuringInit();
 
     // Start all tasks
     ESP_LOGI(TAG, "Starting tasks...");
     startTasks();
 
-    // Transition to IDLE state after initialization
-    vTaskDelay(pdMS_TO_TICKS(1000));
-    state.setFlightState(stampfly::FlightState::IDLE);
-
-    // Wait for sensors to stabilize based on standard deviation
+    // =========================================================================
+    // Phase 3: Sensor stabilization (Magenta blinking)
+    // =========================================================================
     // g_eskf_ready = false なので IMUTask は sensor fusion 処理をスキップしている
-    ESP_LOGI(TAG, "Waiting for sensors to stabilize (std-based detection)...");
+    // 注意: まだIDLE状態に遷移しない（led_taskがshowIdle()で上書きするのを防ぐ）
+    ESP_LOGI(TAG, "Phase 3: Waiting for sensors to stabilize...");
+    g_led.setPattern(stampfly::LED::Pattern::BLINK_SLOW, 0xFF00FF);  // Magenta blink
 
     // 安定判定パラメータ（config.hpp から取得）
     using namespace config::stability;
@@ -519,6 +552,8 @@ extern "C" void app_main(void)
     int last_log_sec = 0;
 
     while (elapsed_ms < MAX_WAIT_MS) {
+        // LED更新（LEDタスクが動いていても念のため）
+        g_led.update();
         vTaskDelay(pdMS_TO_TICKS(CHECK_INTERVAL_MS));
         elapsed_ms += CHECK_INTERVAL_MS;
 
@@ -761,13 +796,18 @@ extern "C" void app_main(void)
         ESP_LOGI(TAG, "Sensor fusion initialized and ready to run");
     }
 
-    // ESKF ready notification - 3 short beeps + green LED
-    ESP_LOGI(TAG, "ESKF ready - playing notification...");
+    // =========================================================================
+    // Phase 4: Ready (Green solid)
+    // =========================================================================
+    ESP_LOGI(TAG, "Phase 4: System ready!");
     g_buzzer.beep();
     vTaskDelay(pdMS_TO_TICKS(150));
     g_buzzer.beep();
     vTaskDelay(pdMS_TO_TICKS(150));
     g_buzzer.beep();
+
+    // IDLE状態に遷移（led_taskが通常のLED表示を開始）
+    state.setFlightState(stampfly::FlightState::IDLE);
     g_led.setPattern(stampfly::LED::Pattern::SOLID, 0x00FF00);  // Green = ready
 
     ESP_LOGI(TAG, "========================================");

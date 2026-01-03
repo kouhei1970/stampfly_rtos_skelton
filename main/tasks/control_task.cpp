@@ -13,6 +13,9 @@ static const char* TAG = "ControlTask";
 using namespace config;
 using namespace globals;
 
+// Debug: Yaw alert counter (1秒 = 400カウント @ 400Hz)
+volatile int g_yaw_alert_counter = 0;
+
 // =============================================================================
 // Rate Controller Implementation
 // =============================================================================
@@ -176,6 +179,27 @@ void ControlTask(void* pvParameters)
         float roll_rate_current = gyro.x;   // [rad/s]
         float pitch_rate_current = gyro.y;  // [rad/s]
         float yaw_rate_current = gyro.z;    // [rad/s]
+
+        // デバッグ: ヨー関連の急変検出 → LED表示（1秒間維持）
+        static float prev_yaw_cmd = 0.0f;
+        static float prev_yaw_gyro = 0.0f;
+        float yaw_cmd_diff = std::abs(yaw_cmd - prev_yaw_cmd);
+        float yaw_gyro_diff = std::abs(yaw_rate_current - prev_yaw_gyro);
+        if (yaw_cmd_diff > 0.3f) {
+            // 指令が急変 → 黄色点滅（1秒間）
+            g_led.setPattern(stampfly::LED::Pattern::BLINK_FAST, 0xFFFF00);
+            g_yaw_alert_counter = 400;
+        }
+        if (yaw_gyro_diff > 1.0f) {
+            // ジャイロが急変 → 黄色点灯（1秒間）
+            g_led.setPattern(stampfly::LED::Pattern::SOLID, 0xFFFF00);
+            g_yaw_alert_counter = 400;
+        }
+        if (g_yaw_alert_counter > 0) {
+            g_yaw_alert_counter--;
+        }
+        prev_yaw_cmd = yaw_cmd;
+        prev_yaw_gyro = yaw_rate_current;
 
         // =====================================================================
         // 4. PID制御

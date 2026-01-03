@@ -783,6 +783,8 @@ static void cmd_motor(int argc, char** argv, void* context)
         cli->print("  test <id> <throttle> - Test single motor (id:1-4, throttle:0-100)\r\n");
         cli->print("  all <throttle>       - Test all motors (throttle:0-100)\r\n");
         cli->print("  stop                 - Stop all motors\r\n");
+        cli->print("  stats                - Show duty cycle statistics\r\n");
+        cli->print("  stats_reset          - Reset statistics\r\n");
         cli->print("\r\n");
         cli->print("Motor layout (top view):\r\n");
         cli->print("       Front\r\n");
@@ -840,6 +842,39 @@ static void cmd_motor(int argc, char** argv, void* context)
         const char* motor_names[] = {"FR (M1)", "RR (M2)", "RL (M3)", "FL (M4)"};
         g_motor_ptr->testMotor(id - 1, throttle);
         cli->print("Motor %s at %d%%\r\n", motor_names[id - 1], throttle);
+    }
+    else if (strcmp(cmd, "stats") == 0) {
+        // Load last flight stats from NVS and display
+        g_motor_ptr->loadStatsFromNVS();
+
+        const char* names[] = {"M1(FR)", "M2(RR)", "M3(RL)", "M4(FL)"};
+        const char* types[] = {"CCW", "CW ", "CCW", "CW "};
+        cli->print("Last Flight Motor Statistics:\r\n");
+        cli->print("Motor Type   Avg     Min     Max     Count\r\n");
+        cli->print("------------------------------------------\r\n");
+        for (int i = 0; i < 4; i++) {
+            auto stats = g_motor_ptr->getLastFlightStats(i);
+            float avg = (stats.count > 0) ? (stats.sum / stats.count) : 0.0f;
+            cli->print("%s  %s  %.3f   %.3f   %.3f   %lu\r\n",
+                       names[i], types[i], avg, stats.min, stats.max, stats.count);
+        }
+        // CCW vs CW comparison
+        auto s0 = g_motor_ptr->getLastFlightStats(0);
+        auto s1 = g_motor_ptr->getLastFlightStats(1);
+        auto s2 = g_motor_ptr->getLastFlightStats(2);
+        auto s3 = g_motor_ptr->getLastFlightStats(3);
+        float ccw_avg = 0, cw_avg = 0;
+        uint32_t ccw_count = s0.count + s2.count;
+        uint32_t cw_count = s1.count + s3.count;
+        if (ccw_count > 0) ccw_avg = (s0.sum + s2.sum) / ccw_count;
+        if (cw_count > 0) cw_avg = (s1.sum + s3.sum) / cw_count;
+        cli->print("------------------------------------------\r\n");
+        cli->print("CCW avg: %.3f, CW avg: %.3f, diff: %.3f\r\n",
+                   ccw_avg, cw_avg, ccw_avg - cw_avg);
+    }
+    else if (strcmp(cmd, "stats_reset") == 0) {
+        g_motor_ptr->resetStats();
+        cli->print("Motor statistics reset\r\n");
     }
     else {
         cli->print("Unknown motor command: %s\r\n", cmd);

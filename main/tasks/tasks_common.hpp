@@ -48,3 +48,6 @@
 // Helper functions defined in main.cpp
 extern void initializeAttitudeFromBuffers();
 extern void setMagReferenceFromBuffer();  // deprecated, use initializeAttitudeFromBuffers
+
+// Debug: Yaw alert counter (control_task sets, led_task checks)
+extern volatile int g_yaw_alert_counter;
